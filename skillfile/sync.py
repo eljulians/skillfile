@@ -6,13 +6,22 @@ from pathlib import Path
 from .lock import lock_key, read_lock, write_lock
 from .models import Entry, LockEntry
 from .parser import MANIFEST_NAME, parse_manifest
-from .resolver import _get, fetch_github_file, resolve_github_sha
+from .resolver import _get, fetch_github_file, list_github_dir, resolve_github_sha
 
 VENDOR_DIR = ".skillfile"
 
 
 def vendor_dir_for(entry: Entry, repo_root: Path) -> Path:
     return repo_root / VENDOR_DIR / f"{entry.entity_type}s" / entry.name
+
+
+def _is_dir_entry(entry: Entry) -> bool:
+    """True for github entries where path_in_repo points to a directory."""
+    return (
+        entry.source_type == "github"
+        and entry.path_in_repo != "."
+        and not entry.path_in_repo.endswith(".md")
+    )
 
 
 def _meta_sha(vdir: Path) -> str | None:
@@ -27,7 +36,10 @@ def _meta_sha(vdir: Path) -> str | None:
 
 
 def _content_file(entry: Entry) -> str:
-    """Return the expected content filename for a vendored entry."""
+    """Return the expected content filename for a vendored single-file entry.
+    Returns empty string for directory entries and local entries."""
+    if _is_dir_entry(entry):
+        return ""
     if entry.source_type == "github":
         effective_path = "SKILL.md" if entry.path_in_repo == "." else entry.path_in_repo
         return Path(effective_path).name
@@ -57,7 +69,13 @@ def sync_entry(
         locked_sha = None if update else (locked[key].sha if key in locked else None)
         meta_sha = _meta_sha(vdir)
 
-        content_exists = (vdir / _content_file(entry)).exists()
+        if _is_dir_entry(entry):
+            content_exists = vdir.is_dir() and any(
+                f for f in vdir.iterdir() if f.name != ".meta"
+            ) if vdir.exists() else False
+        else:
+            content_exists = (vdir / _content_file(entry)).exists()
+
         if locked_sha and meta_sha == locked_sha and content_exists:
             print(f"{label}: up to date (sha={locked_sha[:12]})")
             return locked
@@ -77,15 +95,23 @@ def sync_entry(
             print("[dry-run]")
             return locked
 
-        content = fetch_github_file(entry.owner_repo, entry.path_in_repo, sha)
-
-        effective_path = "SKILL.md" if entry.path_in_repo == "." else entry.path_in_repo
-        filename = Path(effective_path).name
-
         vdir.mkdir(parents=True, exist_ok=True)
-        (vdir / filename).write_bytes(content)
 
-        raw_url = f"https://raw.githubusercontent.com/{entry.owner_repo}/{sha}/{effective_path}"
+        if _is_dir_entry(entry):
+            files = list_github_dir(entry.owner_repo, entry.path_in_repo, sha)
+            for file_info in files:
+                file_content = _get(file_info["download_url"])
+                (vdir / file_info["name"]).write_bytes(file_content)
+            raw_url = f"https://api.github.com/repos/{entry.owner_repo}/contents/{entry.path_in_repo}?ref={sha}"
+            print(f"-> {vdir}/ ({len(files)} files)")
+        else:
+            content = fetch_github_file(entry.owner_repo, entry.path_in_repo, sha)
+            effective_path = "SKILL.md" if entry.path_in_repo == "." else entry.path_in_repo
+            filename = Path(effective_path).name
+            (vdir / filename).write_bytes(content)
+            raw_url = f"https://raw.githubusercontent.com/{entry.owner_repo}/{sha}/{effective_path}"
+            print(f"-> {vdir / filename}")
+
         meta = {
             "source_type": "github",
             "owner_repo": entry.owner_repo,
@@ -95,9 +121,7 @@ def sync_entry(
             "raw_url": raw_url,
         }
         (vdir / ".meta").write_text(json.dumps(meta, indent=2) + "\n")
-
         locked[key] = LockEntry(sha=sha, raw_url=raw_url)
-        print(f"-> {vdir / filename}")
 
     elif entry.source_type == "url":
         print(f"{label}: fetching {entry.url} ...", end=" ", flush=True)

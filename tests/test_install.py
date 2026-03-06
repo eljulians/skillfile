@@ -57,12 +57,12 @@ def test_resolve_target_dir_local_agent(tmp_path):
 
 def test_resolve_target_dir_global_skill(tmp_path):
     d = resolve_target_dir("claude-code", "skill", "global", tmp_path)
-    assert d == Path("~/.claude/commands").expanduser()
+    assert d == Path("~/.claude/skills").expanduser()
 
 
 def test_resolve_target_dir_local_skill(tmp_path):
     d = resolve_target_dir("claude-code", "skill", "local", tmp_path)
-    assert d == tmp_path / ".claude" / "commands"
+    assert d == tmp_path / ".claude" / "skills"
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def test_install_local_entry_symlink(tmp_path):
 
     install_entry(entry, target, tmp_path, copy_mode=False, dry_run=False)
 
-    dest = tmp_path / ".claude" / "commands" / "my-skill.md"
+    dest = tmp_path / ".claude" / "skills" / "my-skill.md"
     assert dest.is_symlink()
     assert dest.read_text() == "# My Skill"
 
@@ -94,7 +94,7 @@ def test_install_local_entry_copy(tmp_path):
 
     install_entry(entry, target, tmp_path, copy_mode=True, dry_run=False)
 
-    dest = tmp_path / ".claude" / "commands" / "my-skill.md"
+    dest = tmp_path / ".claude" / "skills" / "my-skill.md"
     assert dest.exists()
     assert not dest.is_symlink()
     assert dest.read_text() == "# My Skill"
@@ -110,7 +110,7 @@ def test_install_entry_dry_run_no_write(tmp_path):
 
     install_entry(entry, target, tmp_path, copy_mode=False, dry_run=True)
 
-    dest = tmp_path / ".claude" / "commands" / "my-skill.md"
+    dest = tmp_path / ".claude" / "skills" / "my-skill.md"
     assert not dest.exists()
 
 
@@ -119,7 +119,7 @@ def test_install_entry_overwrites_existing_symlink(tmp_path):
     source_file.parent.mkdir(parents=True)
     source_file.write_text("# New content")
 
-    dest_dir = tmp_path / ".claude" / "commands"
+    dest_dir = tmp_path / ".claude" / "skills"
     dest_dir.mkdir(parents=True)
     old_target = tmp_path / "old.md"
     old_target.write_text("# Old content")
@@ -151,6 +151,97 @@ def test_install_github_entry_symlink(tmp_path):
     dest = tmp_path / ".claude" / "agents" / "my-agent.md"
     assert dest.is_symlink()
     assert dest.read_text() == "# Agent"
+
+
+def test_install_github_dir_entry_symlinks_directory(tmp_path):
+    vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
+    vdir.mkdir(parents=True)
+    (vdir / "SKILL.md").write_text("# Python Pro")
+    (vdir / "examples.md").write_text("# Examples")
+
+    entry = Entry(
+        source_type="github",
+        entity_type="skill",
+        name="python-pro",
+        owner_repo="owner/repo",
+        path_in_repo="skills/python-pro",
+        ref="main",
+    )
+    target = make_target(adapter="claude-code", scope="local")
+
+    install_entry(entry, target, tmp_path, copy_mode=False, dry_run=False)
+
+    dest = tmp_path / ".claude" / "skills" / "python-pro"
+    assert dest.is_symlink()
+    assert (dest / "SKILL.md").read_text() == "# Python Pro"
+
+
+def test_install_github_dir_entry_copy_mode(tmp_path):
+    vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
+    vdir.mkdir(parents=True)
+    (vdir / "SKILL.md").write_text("# Python Pro")
+
+    entry = Entry(
+        source_type="github",
+        entity_type="skill",
+        name="python-pro",
+        owner_repo="owner/repo",
+        path_in_repo="skills/python-pro",
+        ref="main",
+    )
+    target = make_target(adapter="claude-code", scope="local")
+
+    install_entry(entry, target, tmp_path, copy_mode=True, dry_run=False)
+
+    dest = tmp_path / ".claude" / "skills" / "python-pro"
+    assert dest.is_dir()
+    assert not dest.is_symlink()
+    assert (dest / "SKILL.md").read_text() == "# Python Pro"
+
+
+def test_install_agent_dir_entry_explodes_to_individual_files(tmp_path):
+    vdir = tmp_path / ".skillfile" / "agents" / "core-dev"
+    vdir.mkdir(parents=True)
+    (vdir / "backend-developer.md").write_text("# Backend")
+    (vdir / "frontend-developer.md").write_text("# Frontend")
+    (vdir / ".meta").write_text("{}")
+
+    entry = Entry(
+        source_type="github",
+        entity_type="agent",
+        name="core-dev",
+        owner_repo="owner/repo",
+        path_in_repo="categories/core-dev",
+        ref="main",
+    )
+    target = make_target(adapter="claude-code", scope="local")
+    install_entry(entry, target, tmp_path, copy_mode=False, dry_run=False)
+
+    agents_dir = tmp_path / ".claude" / "agents"
+    assert (agents_dir / "backend-developer.md").is_symlink()
+    assert (agents_dir / "frontend-developer.md").is_symlink()
+    assert (agents_dir / "backend-developer.md").read_text() == "# Backend"
+    assert not (agents_dir / "core-dev").exists()
+
+
+def test_install_agent_dir_entry_copy_mode(tmp_path):
+    vdir = tmp_path / ".skillfile" / "agents" / "core-dev"
+    vdir.mkdir(parents=True)
+    (vdir / "backend-developer.md").write_text("# Backend")
+
+    entry = Entry(
+        source_type="github",
+        entity_type="agent",
+        name="core-dev",
+        owner_repo="owner/repo",
+        path_in_repo="categories/core-dev",
+        ref="main",
+    )
+    target = make_target(adapter="claude-code", scope="local")
+    install_entry(entry, target, tmp_path, copy_mode=True, dry_run=False)
+
+    dest = tmp_path / ".claude" / "agents" / "backend-developer.md"
+    assert dest.exists() and not dest.is_symlink()
 
 
 def test_install_entry_missing_source_warns(tmp_path, capsys):

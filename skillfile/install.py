@@ -6,7 +6,7 @@ from pathlib import Path
 from .lock import read_lock, write_lock
 from .models import Entry, InstallTarget
 from .parser import MANIFEST_NAME, parse_manifest
-from .sync import _content_file, sync_entry, vendor_dir_for
+from .sync import _content_file, _is_dir_entry, sync_entry, vendor_dir_for
 
 # Adapter target directories.
 # Paths starting with '~' are global (expanded at runtime).
@@ -14,7 +14,7 @@ from .sync import _content_file, sync_entry, vendor_dir_for
 ADAPTER_PATHS: dict[str, dict[str, dict[str, str]]] = {
     "claude-code": {
         "agent": {"global": "~/.claude/agents",  "local": ".claude/agents"},
-        "skill": {"global": "~/.claude/commands", "local": ".claude/commands"},
+        "skill": {"global": "~/.claude/skills",   "local": ".claude/skills"},
     },
 }
 
@@ -30,11 +30,12 @@ def resolve_target_dir(adapter: str, entity_type: str, scope: str, repo_root: Pa
 
 
 def _source_path(entry: Entry, repo_root: Path) -> Path | None:
-    """Return the path to the source file for an entry, or None if not available."""
+    """Return the path to the source file or directory for an entry."""
     if entry.source_type == "local":
         return repo_root / entry.local_path
-    # community entries (github, url)
     vdir = vendor_dir_for(entry, repo_root)
+    if _is_dir_entry(entry):
+        return vdir if vdir.exists() else None
     filename = _content_file(entry)
     if not filename:
         return None
@@ -57,25 +58,49 @@ def install_entry(
         return
 
     target_dir = resolve_target_dir(target.adapter, entry.entity_type, target.scope, repo_root)
-    dest = target_dir / f"{entry.name}.md"
-    label = f"  {entry.name} -> {dest}"
 
+    if _is_dir_entry(entry) and entry.entity_type == "agent":
+        # A directory of agents: each .md file is a separate agent, deployed individually.
+        # (Skills are a coherent unit — a skill IS its directory. Agents are not.)
+        _install_dir_exploded(source, target_dir, copy_mode, dry_run)
+    else:
+        # Single file (any entity type) or skill directory.
+        dest = target_dir / (entry.name if _is_dir_entry(entry) else f"{entry.name}.md")
+        _install_one(source, dest, is_dir=_is_dir_entry(entry), copy_mode=copy_mode, dry_run=dry_run)
+
+
+def _install_one(source: Path, dest: Path, is_dir: bool, copy_mode: bool, dry_run: bool) -> None:
+    label = f"  {source.name} -> {dest}"
     if dry_run:
-        action = "copy" if copy_mode else "symlink"
-        print(f"{label} [{action}, dry-run]")
+        print(f"{label} [{'copy' if copy_mode else 'symlink'}, dry-run]")
         return
-
-    target_dir.mkdir(parents=True, exist_ok=True)
-
+    dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() or dest.is_symlink():
-        dest.unlink()
-
+        shutil.rmtree(dest) if (dest.is_dir() and not dest.is_symlink()) else dest.unlink()
     if copy_mode:
-        shutil.copy2(source, dest)
+        shutil.copytree(source, dest) if is_dir else shutil.copy2(source, dest)
     else:
         dest.symlink_to(source.resolve())
-
     print(label)
+
+
+def _install_dir_exploded(source_dir: Path, target_dir: Path, copy_mode: bool, dry_run: bool) -> None:
+    """Install each .md file in source_dir as a separate entity in target_dir."""
+    md_files = sorted(f for f in source_dir.iterdir() if f.suffix == ".md")
+    if dry_run:
+        for src in md_files:
+            print(f"  {src.name} -> {target_dir / src.name} [{'copy' if copy_mode else 'symlink'}, dry-run]")
+        return
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for src in md_files:
+        dest = target_dir / src.name
+        if dest.exists() or dest.is_symlink():
+            dest.unlink()
+        if copy_mode:
+            shutil.copy2(src, dest)
+        else:
+            dest.symlink_to(src.resolve())
+        print(f"  {src.name} -> {dest}")
 
 
 def cmd_install(args: argparse.Namespace, repo_root: Path) -> None:

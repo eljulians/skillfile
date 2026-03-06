@@ -93,6 +93,61 @@ def test_fetch_using_locked_sha_when_vendor_missing(tmp_path):
     mock_fetch.assert_called_once_with("owner/repo", "agents/test.md", sha)
 
 
+def make_dir_entry(name="python-pro"):
+    return Entry(
+        source_type="github",
+        entity_type="skill",
+        name=name,
+        owner_repo="owner/repo",
+        path_in_repo="skills/python-pro",
+        ref="main",
+    )
+
+
+def test_github_dir_entry_fetches_all_files(tmp_path):
+    entry = make_dir_entry()
+    sha = "87321636a1c666283d8f17398b45c2644395044b"
+    dir_listing = [
+        {"name": "SKILL.md", "type": "file", "download_url": "https://raw.example.com/SKILL.md"},
+        {"name": "examples.md", "type": "file", "download_url": "https://raw.example.com/examples.md"},
+    ]
+
+    def fake_get(url):
+        if "SKILL.md" in url:
+            return b"# SKILL content"
+        return b"# examples content"
+
+    with patch("skillfile.sync.resolve_github_sha", return_value=sha):
+        with patch("skillfile.sync.list_github_dir", return_value=dir_listing):
+            with patch("skillfile.sync._get", side_effect=fake_get):
+                locked = sync_entry(entry, tmp_path, dry_run=False, locked={}, update=False)
+
+    vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
+    assert (vdir / "SKILL.md").read_bytes() == b"# SKILL content"
+    assert (vdir / "examples.md").read_bytes() == b"# examples content"
+    assert locked["github/skill/python-pro"].sha == sha
+
+
+def test_github_dir_entry_skip_when_up_to_date(tmp_path):
+    entry = make_dir_entry()
+    sha = "87321636a1c666283d8f17398b45c2644395044b"
+
+    vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
+    vdir.mkdir(parents=True)
+    (vdir / ".meta").write_text(json.dumps({"sha": sha}))
+    (vdir / "SKILL.md").write_bytes(b"# existing")
+
+    locked = {"github/skill/python-pro": LockEntry(sha=sha, raw_url="https://example.com")}
+
+    with patch("skillfile.sync.resolve_github_sha") as mock_resolve:
+        with patch("skillfile.sync.list_github_dir") as mock_list:
+            result = sync_entry(entry, tmp_path, dry_run=False, locked=locked, update=False)
+
+    mock_resolve.assert_not_called()
+    mock_list.assert_not_called()
+    assert result == locked
+
+
 def test_update_flag_re_resolves_despite_lock(tmp_path):
     entry = make_github_entry()
     old_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
