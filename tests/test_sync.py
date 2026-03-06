@@ -33,7 +33,7 @@ def test_local_entry_no_network_no_vendor(tmp_path):
 
     mock_resolve.assert_not_called()
     mock_fetch.assert_not_called()
-    assert not (tmp_path / "vendor").exists()
+    assert not (tmp_path / ".skillfile").exists()
     assert locked == {}
 
 
@@ -49,7 +49,7 @@ def test_github_entry_fetches_and_writes(tmp_path):
     mock_resolve.assert_called_once_with("owner/repo", "main")
     mock_fetch.assert_called_once_with("owner/repo", "agents/test.md", sha)
 
-    vdir = tmp_path / "vendor" / "agents" / "test-agent"
+    vdir = tmp_path / ".skillfile" / "agents" / "test-agent"
     assert (vdir / "test.md").read_bytes() == content
     meta = json.loads((vdir / ".meta").read_text())
     assert meta["sha"] == sha
@@ -62,7 +62,7 @@ def test_skip_when_locked_sha_matches_meta(tmp_path):
     entry = make_github_entry()
     sha = "87321636a1c666283d8f17398b45c2644395044b"
 
-    vdir = tmp_path / "vendor" / "agents" / "test-agent"
+    vdir = tmp_path / ".skillfile" / "agents" / "test-agent"
     vdir.mkdir(parents=True)
     (vdir / ".meta").write_text(json.dumps({"sha": sha}))
     (vdir / "test.md").write_bytes(b"# existing content")
@@ -99,7 +99,7 @@ def test_update_flag_re_resolves_despite_lock(tmp_path):
     new_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     content = b"# Updated content"
 
-    vdir = tmp_path / "vendor" / "agents" / "test-agent"
+    vdir = tmp_path / ".skillfile" / "agents" / "test-agent"
     vdir.mkdir(parents=True)
     (vdir / ".meta").write_text(json.dumps({"sha": old_sha}))
     (vdir / "test.md").write_bytes(b"# Old content")

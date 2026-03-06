@@ -1,0 +1,229 @@
+import argparse
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from skillfile.install import cmd_install, install_entry, resolve_target_dir
+from skillfile.models import Entry, InstallTarget
+
+
+def make_agent_entry(name="my-agent"):
+    return Entry(
+        source_type="github",
+        entity_type="agent",
+        name=name,
+        owner_repo="owner/repo",
+        path_in_repo="agents/agent.md",
+        ref="main",
+    )
+
+
+def make_skill_entry(name="my-skill"):
+    return Entry(
+        source_type="skill",
+        entity_type="skill",
+        name=name,
+        local_path="skills/my-skill.md",
+    )
+
+
+def make_local_entry(name="my-skill", local_path="skills/my-skill.md"):
+    return Entry(
+        source_type="local",
+        entity_type="skill",
+        name=name,
+        local_path=local_path,
+    )
+
+
+def make_target(adapter="claude-code", scope="local"):
+    return InstallTarget(adapter=adapter, scope=scope)
+
+
+# ---------------------------------------------------------------------------
+# resolve_target_dir
+# ---------------------------------------------------------------------------
+
+def test_resolve_target_dir_global_agent(tmp_path):
+    d = resolve_target_dir("claude-code", "agent", "global", tmp_path)
+    assert d == Path("~/.claude/agents").expanduser()
+
+
+def test_resolve_target_dir_local_agent(tmp_path):
+    d = resolve_target_dir("claude-code", "agent", "local", tmp_path)
+    assert d == tmp_path / ".claude" / "agents"
+
+
+def test_resolve_target_dir_global_skill(tmp_path):
+    d = resolve_target_dir("claude-code", "skill", "global", tmp_path)
+    assert d == Path("~/.claude/commands").expanduser()
+
+
+def test_resolve_target_dir_local_skill(tmp_path):
+    d = resolve_target_dir("claude-code", "skill", "local", tmp_path)
+    assert d == tmp_path / ".claude" / "commands"
+
+
+# ---------------------------------------------------------------------------
+# install_entry — local source
+# ---------------------------------------------------------------------------
+
+def test_install_local_entry_symlink(tmp_path):
+    source_file = tmp_path / "skills" / "my-skill.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# My Skill")
+
+    entry = make_local_entry(local_path="skills/my-skill.md")
+    target = make_target(scope="local")
+
+    install_entry(entry, target, tmp_path, copy_mode=False, dry_run=False)
+
+    dest = tmp_path / ".claude" / "commands" / "my-skill.md"
+    assert dest.is_symlink()
+    assert dest.read_text() == "# My Skill"
+
+
+def test_install_local_entry_copy(tmp_path):
+    source_file = tmp_path / "skills" / "my-skill.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# My Skill")
+
+    entry = make_local_entry(local_path="skills/my-skill.md")
+    target = make_target(scope="local")
+
+    install_entry(entry, target, tmp_path, copy_mode=True, dry_run=False)
+
+    dest = tmp_path / ".claude" / "commands" / "my-skill.md"
+    assert dest.exists()
+    assert not dest.is_symlink()
+    assert dest.read_text() == "# My Skill"
+
+
+def test_install_entry_dry_run_no_write(tmp_path):
+    source_file = tmp_path / "skills" / "my-skill.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# My Skill")
+
+    entry = make_local_entry(local_path="skills/my-skill.md")
+    target = make_target(scope="local")
+
+    install_entry(entry, target, tmp_path, copy_mode=False, dry_run=True)
+
+    dest = tmp_path / ".claude" / "commands" / "my-skill.md"
+    assert not dest.exists()
+
+
+def test_install_entry_overwrites_existing_symlink(tmp_path):
+    source_file = tmp_path / "skills" / "my-skill.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# New content")
+
+    dest_dir = tmp_path / ".claude" / "commands"
+    dest_dir.mkdir(parents=True)
+    old_target = tmp_path / "old.md"
+    old_target.write_text("# Old content")
+    dest = dest_dir / "my-skill.md"
+    dest.symlink_to(old_target)
+
+    entry = make_local_entry(local_path="skills/my-skill.md")
+    target = make_target(scope="local")
+
+    install_entry(entry, target, tmp_path, copy_mode=False, dry_run=False)
+
+    assert dest.read_text() == "# New content"
+
+
+# ---------------------------------------------------------------------------
+# install_entry — github (vendored) source
+# ---------------------------------------------------------------------------
+
+def test_install_github_entry_symlink(tmp_path):
+    vdir = tmp_path / ".skillfile" / "agents" / "my-agent"
+    vdir.mkdir(parents=True)
+    (vdir / "agent.md").write_text("# Agent")
+
+    entry = make_agent_entry()
+    target = make_target(adapter="claude-code", scope="local")
+
+    install_entry(entry, target, tmp_path, copy_mode=False, dry_run=False)
+
+    dest = tmp_path / ".claude" / "agents" / "my-agent.md"
+    assert dest.is_symlink()
+    assert dest.read_text() == "# Agent"
+
+
+def test_install_entry_missing_source_warns(tmp_path, capsys):
+    # vendor file does not exist
+    entry = make_agent_entry()
+    target = make_target(scope="local")
+
+    install_entry(entry, target, tmp_path, copy_mode=False, dry_run=False)
+
+    captured = capsys.readouterr()
+    assert "warning" in captured.err
+    assert "my-agent" in captured.err
+
+
+def test_install_entry_unknown_entity_type_skipped(tmp_path):
+    entry = Entry(
+        source_type="local",
+        entity_type="hook",  # unknown for claude-code adapter
+        name="my-hook",
+        local_path="hooks/my-hook.md",
+    )
+    target = make_target(scope="local")
+
+    # Should return without error or writing anything
+    install_entry(entry, target, tmp_path, copy_mode=False, dry_run=False)
+
+    assert not (tmp_path / ".claude").exists()
+
+
+# ---------------------------------------------------------------------------
+# cmd_install
+# ---------------------------------------------------------------------------
+
+def _make_args(dry_run=False, copy=False):
+    args = argparse.Namespace()
+    args.dry_run = dry_run
+    args.copy = copy
+    return args
+
+
+def test_cmd_install_no_manifest(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        cmd_install(_make_args(), tmp_path)
+    assert "not found" in capsys.readouterr().err
+
+
+def test_cmd_install_no_install_targets(tmp_path, capsys):
+    (tmp_path / "Skillfile").write_text("local  skill  foo  skills/foo.md\n")
+    with pytest.raises(SystemExit):
+        cmd_install(_make_args(), tmp_path)
+    assert "No install targets" in capsys.readouterr().err
+
+
+def test_cmd_install_unknown_adapter_warns(tmp_path, capsys):
+    sf = tmp_path / "Skillfile"
+    sf.write_text("install  unknown-adapter  global\nlocal  skill  foo  skills/foo.md\n")
+
+    source_file = tmp_path / "skills" / "foo.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# Foo")
+
+    cmd_install(_make_args(), tmp_path)
+    assert "unknown platform" in capsys.readouterr().err
+
+
+def test_cmd_install_dry_run_no_files(tmp_path):
+    sf = tmp_path / "Skillfile"
+    sf.write_text("install  claude-code  local\nlocal  skill  foo  skills/foo.md\n")
+
+    source_file = tmp_path / "skills" / "foo.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# Foo")
+
+    cmd_install(_make_args(dry_run=True), tmp_path)
+
+    assert not (tmp_path / ".claude").exists()

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -20,3 +20,15 @@ class Entry:
     local_path: str = ""
     # url
     url: str = ""
+
+
+@dataclass
+class InstallTarget:
+    adapter: str   # e.g. "claude-code"
+    scope: str     # "global" | "local"
+
+
+@dataclass
+class Manifest:
+    entries: list[Entry] = field(default_factory=list)
+    install_targets: list[InstallTarget] = field(default_factory=list)

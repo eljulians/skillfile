@@ -8,7 +8,7 @@ from .models import Entry, LockEntry
 from .parser import MANIFEST_NAME, parse_manifest
 from .resolver import _get, fetch_github_file, resolve_github_sha
 
-VENDOR_DIR = "vendor"
+VENDOR_DIR = ".skillfile"
 
 
 def vendor_dir_for(entry: Entry, repo_root: Path) -> Path:
@@ -47,7 +47,7 @@ def sync_entry(
     label = f"  {entry.source_type}/{entry.entity_type}/{entry.name}"
 
     if entry.source_type == "local":
-        print(f"{label}: local — no vendoring needed")
+        print(f"{label}: local — skipping")
         return locked
 
     vdir = vendor_dir_for(entry, repo_root)
@@ -129,7 +129,7 @@ def cmd_sync(args: argparse.Namespace, repo_root: Path) -> None:
         print(f"error: {MANIFEST_NAME} not found in {repo_root}", file=sys.stderr)
         sys.exit(1)
 
-    entries = parse_manifest(manifest_path)
+    entries = parse_manifest(manifest_path).entries
 
     if args.entry:
         entries = [e for e in entries if e.name == args.entry]

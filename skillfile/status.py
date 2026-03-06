@@ -14,7 +14,7 @@ def cmd_status(args: argparse.Namespace, repo_root: Path) -> None:
         print(f"error: {MANIFEST_NAME} not found in {repo_root}", file=sys.stderr)
         sys.exit(1)
 
-    entries = parse_manifest(manifest_path)
+    entries = parse_manifest(manifest_path).entries
     locked = read_lock(repo_root)
     check_upstream = getattr(args, "check_upstream", False)
 
@@ -38,7 +38,7 @@ def cmd_status(args: argparse.Namespace, repo_root: Path) -> None:
         meta_sha = _meta_sha(vdir)
 
         if meta_sha != sha:
-            status = f"locked    sha={sha[:12]}  (vendor missing or stale)"
+            status = f"locked    sha={sha[:12]}  (missing or stale)"
         elif check_upstream and entry.source_type == "github":
             upstream_sha = resolve_github_sha(entry.owner_repo, entry.ref)
             if upstream_sha == sha:

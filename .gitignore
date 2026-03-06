@@ -208,10 +208,10 @@ tags
 # Persistent undo
 [._]*.un~
 
-# Local dev
+# End of https://www.toptal.com/developers/gitignore/api/linux,vim,python
+
 .claude
 Skillfile
 Skillfile.lock
-vendor/
+.skillfile/
 
-# End of https://www.toptal.com/developers/gitignore/api/linux,vim,python
