@@ -17,8 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Protocol
 
-from ..core.models import Entry, LockEntry, SyncContext
-from .resolver import _get, fetch_github_file, list_github_dir_recursive, resolve_github_sha
+from skillfile.core.models import Entry, LockEntry, SyncContext
+from skillfile.sources.resolver import _get, fetch_github_file, list_github_dir_recursive, resolve_github_sha
 
 DEFAULT_REF = "main"
 

@@ -2,9 +2,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from ..core.parser import MANIFEST_NAME, parse_manifest
-from ..deploy.paths import ADAPTER_PATHS
-from ..exceptions import ManifestError
+from skillfile.core.parser import MANIFEST_NAME, parse_manifest
+from skillfile.deploy.adapter import ADAPTERS
+from skillfile.exceptions import ManifestError
 
 
 def cmd_validate(args: argparse.Namespace, repo_root: Path) -> None:
@@ -33,7 +33,7 @@ def cmd_validate(args: argparse.Namespace, repo_root: Path) -> None:
 
     # Unknown platforms.
     for target in manifest.install_targets:
-        if target.adapter not in ADAPTER_PATHS:
+        if target.adapter not in ADAPTERS:
             errors.append(f"unknown platform: '{target.adapter}'")
 
     if errors:

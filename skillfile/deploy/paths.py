@@ -1,76 +1,45 @@
-"""Path resolution for platform adapters and installed files."""
+"""Manifest-aware path helpers — bridge between Manifest install targets and adapters.
+
+These functions look up the first install target from a Manifest and delegate
+to the appropriate PlatformAdapter. They exist so callers in pin/diff/resolve/
+status don't have to repeat the "get first target, look up adapter" boilerplate.
+"""
 
 from pathlib import Path
 
-from ..core.models import Entry, Manifest
-from ..exceptions import ManifestError
-from ..sources.strategies import STRATEGIES
-from ..sources.sync import vendor_dir_for
+from skillfile.core.models import Entry, Manifest
+from skillfile.deploy.adapter import ADAPTERS, KNOWN_ADAPTERS, FileSystemAdapter
+from skillfile.exceptions import ManifestError
+from skillfile.sources.strategies import STRATEGIES
+from skillfile.sources.sync import vendor_dir_for
 
-# Adapter target directories.
-# Paths starting with '~' are global (expanded at runtime).
-# Relative paths are local (resolved from repo_root).
-ADAPTER_PATHS: dict[str, dict[str, dict[str, str]]] = {
-    "claude-code": {
-        "agent": {"global": "~/.claude/agents", "local": ".claude/agents"},
-        "skill": {"global": "~/.claude/skills", "local": ".claude/skills"},
-    },
-}
-
-KNOWN_ADAPTERS = list(ADAPTER_PATHS.keys())
+__all__ = ["KNOWN_ADAPTERS", "resolve_target_dir", "installed_path", "installed_dir_files", "_source_path"]
 
 
 def resolve_target_dir(adapter: str, entity_type: str, scope: str, repo_root: Path) -> Path:
-    paths = ADAPTER_PATHS[adapter][entity_type]
-    raw = paths[scope]
-    if raw.startswith("~"):
-        return Path(raw).expanduser()
-    return repo_root / raw
+    """Resolve absolute deploy directory for (adapter, entity_type, scope).
+
+    Convenience used by tests and validate. Requires a FileSystemAdapter.
+    """
+    a = ADAPTERS[adapter]
+    assert isinstance(a, FileSystemAdapter)
+    return a.target_dir(entity_type, scope, repo_root)
 
 
 def installed_path(entry: Entry, manifest: Manifest, repo_root: Path) -> Path:
-    """Return the platform-side installed path for a single-file entry (first install target)."""
-    if not manifest.install_targets:
-        raise ManifestError("no install targets configured — run `skillfile install` first")
-    target = manifest.install_targets[0]
-    if target.adapter not in ADAPTER_PATHS:
-        raise ManifestError(f"unknown adapter '{target.adapter}'")
-    target_dir = resolve_target_dir(target.adapter, entry.entity_type, target.scope, repo_root)
-    return target_dir / f"{entry.name}.md"
+    """Installed path for a single-file entry (first install target)."""
+    target = _first_target(manifest)
+    return target.installed_path(entry, manifest.install_targets[0].scope, repo_root)
 
 
 def installed_dir_files(entry: Entry, manifest: Manifest, repo_root: Path) -> dict[str, Path]:
-    """Return {relative_path: installed_path} for a directory entry's installed files."""
-    if not manifest.install_targets:
-        raise ManifestError("no install targets configured — run `skillfile install` first")
-    target = manifest.install_targets[0]
-    if target.adapter not in ADAPTER_PATHS:
-        raise ManifestError(f"unknown adapter '{target.adapter}'")
-    target_dir = resolve_target_dir(target.adapter, entry.entity_type, target.scope, repo_root)
-
-    if entry.entity_type == "skill":
-        # Skill dirs are installed as a whole directory: target_dir/name/
-        installed_dir = target_dir / entry.name
-        if not installed_dir.is_dir():
-            return {}
-        return {str(f.relative_to(installed_dir)): f for f in installed_dir.rglob("*") if f.is_file()}
-    else:
-        # Agent dirs are exploded: each .md file at target_dir/filename (flat, recursive).
-        # Key by relative path within vendor dir so pin/diff lookups match cache_file.relative_to(vdir).
-        vdir = vendor_dir_for(entry, repo_root)
-        if not vdir.is_dir():
-            return {}
-        result = {}
-        for f in vdir.rglob("*.md"):
-            relative_key = str(f.relative_to(vdir))
-            installed = target_dir / f.name
-            if installed.exists():
-                result[relative_key] = installed
-        return result
+    """Installed files for a directory entry (first install target)."""
+    target = _first_target(manifest)
+    return target.installed_dir_files(entry, manifest.install_targets[0].scope, repo_root)
 
 
 def _source_path(entry: Entry, repo_root: Path) -> Path | None:
-    """Return the path to the source file or directory for an entry."""
+    """Resolve the cache or local source path for an entry."""
     strategy = STRATEGIES[entry.source_type]
     if entry.source_type == "local":
         return repo_root / entry.local_path
@@ -81,3 +50,14 @@ def _source_path(entry: Entry, repo_root: Path) -> Path | None:
     if not filename:
         return None
     return vdir / filename
+
+
+def _first_target(manifest: Manifest):
+    """Return the PlatformAdapter for the first install target, or raise."""
+    if not manifest.install_targets:
+        raise ManifestError("no install targets configured — run `skillfile install` first")
+    t = manifest.install_targets[0]
+    adapter = ADAPTERS.get(t.adapter)
+    if adapter is None:
+        raise ManifestError(f"unknown adapter '{t.adapter}'")
+    return adapter

@@ -33,14 +33,14 @@ def write_lock(tmp_path, locked: dict):
 
 
 def write_meta(tmp_path, entity_type, name, sha):
-    vdir = tmp_path / ".skillfile" / f"{entity_type}s" / name
+    vdir = tmp_path / ".skillfile" / "cache" / f"{entity_type}s" / name
     vdir.mkdir(parents=True, exist_ok=True)
     (vdir / ".meta").write_text(json.dumps({"sha": sha}))
 
 
 def write_vendor_content(tmp_path, entity_type, name, filename, content):
     """Write a vendor cache content file (for _is_modified_local to read)."""
-    vdir = tmp_path / ".skillfile" / f"{entity_type}s" / name
+    vdir = tmp_path / ".skillfile" / "cache" / f"{entity_type}s" / name
     vdir.mkdir(parents=True, exist_ok=True)
     (vdir / filename).write_text(content)
 

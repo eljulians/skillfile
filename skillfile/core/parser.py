@@ -1,14 +1,14 @@
 import sys
 from pathlib import Path
 
-from ..sources.strategies import STRATEGIES
-from .models import Entry, InstallTarget, Manifest
+from skillfile.core.models import Entry, InstallTarget, Manifest
+from skillfile.sources.strategies import STRATEGIES
 
 MANIFEST_NAME = "Skillfile"
 
 
 def find_entry_in(name: str, manifest: Manifest) -> Entry:
-    from ..exceptions import ManifestError
+    from skillfile.exceptions import ManifestError
 
     matching = [e for e in manifest.entries if e.name == name]
     if not matching:

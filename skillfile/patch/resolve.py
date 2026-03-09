@@ -7,12 +7,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ..core.conflict import clear_conflict, read_conflict
-from ..core.parser import MANIFEST_NAME, find_entry, parse_manifest
-from ..deploy.paths import installed_dir_files, installed_path
-from ..exceptions import InstallError, ManifestError
-from ..sources.strategies import STRATEGIES
-from .patch import (
+from skillfile.core.conflict import clear_conflict, read_conflict
+from skillfile.core.parser import MANIFEST_NAME, find_entry, parse_manifest
+from skillfile.deploy.paths import installed_dir_files, installed_path
+from skillfile.exceptions import InstallError, ManifestError
+from skillfile.patch.patch import (
     apply_patch_pure,
     dir_patch_path,
     generate_patch,
@@ -23,6 +22,7 @@ from .patch import (
     write_dir_patch,
     write_patch,
 )
+from skillfile.sources.strategies import STRATEGIES
 
 
 def _three_way_merge(base: str, theirs: str, yours: str, filename: str) -> tuple[str, bool]:

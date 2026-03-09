@@ -3,15 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ..core.lock import lock_key, read_lock
-from ..core.models import Entry, Manifest
-from ..core.parser import MANIFEST_NAME, find_entry_in, parse_manifest
-from ..deploy.install import install_entry
-from ..deploy.paths import installed_dir_files, installed_path
-from ..exceptions import ManifestError
-from ..sources.strategies import STRATEGIES
-from ..sources.sync import vendor_dir_for
-from .patch import (
+from skillfile.core.lock import lock_key, read_lock
+from skillfile.core.models import Entry, Manifest
+from skillfile.core.parser import MANIFEST_NAME, find_entry_in, parse_manifest
+from skillfile.deploy.install import install_entry
+from skillfile.deploy.paths import installed_dir_files, installed_path
+from skillfile.exceptions import ManifestError
+from skillfile.patch.patch import (
     generate_patch,
     has_dir_patch,
     has_patch,
@@ -21,6 +19,8 @@ from .patch import (
     write_dir_patch,
     write_patch,
 )
+from skillfile.sources.strategies import STRATEGIES
+from skillfile.sources.sync import vendor_dir_for
 
 
 def _pin_dir_entry(entry: Entry, manifest: Manifest, repo_root: Path) -> str:

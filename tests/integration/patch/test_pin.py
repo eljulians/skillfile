@@ -50,14 +50,14 @@ def setup_vendor_cache(
     tmp_path, name: str, content: str, entity_type: str = "agent", content_file: str = "test.md"
 ) -> None:
     """Write a single-file entry's content to the vendor cache."""
-    vdir = tmp_path / ".skillfile" / f"{entity_type}s" / name
+    vdir = tmp_path / ".skillfile" / "cache" / f"{entity_type}s" / name
     vdir.mkdir(parents=True, exist_ok=True)
     (vdir / content_file).write_text(content)
 
 
 def setup_vendor_cache_dir(tmp_path, name: str, files: dict[str, str], entity_type: str = "skill") -> None:
     """Write a dir entry's files to the vendor cache. files = {relative_path: content}."""
-    vdir = tmp_path / ".skillfile" / f"{entity_type}s" / name
+    vdir = tmp_path / ".skillfile" / "cache" / f"{entity_type}s" / name
     vdir.mkdir(parents=True, exist_ok=True)
     for filename, content in files.items():
         f = vdir / filename

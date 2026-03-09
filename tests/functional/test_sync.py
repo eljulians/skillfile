@@ -10,7 +10,7 @@ def test_sync_golden_path(repo, github_token):
 
     # Lock and cache exist
     assert (repo / "Skillfile.lock").exists()
-    assert (repo / ".skillfile" / "agents" / "code-refactorer").is_dir()
+    assert (repo / ".skillfile" / "cache" / "agents" / "code-refactorer").is_dir()
 
     # NOT deployed
     assert not (repo / ".claude").exists()

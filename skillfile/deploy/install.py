@@ -1,16 +1,17 @@
 """Entry deployment: copy/symlink to platform directories, apply patches."""
 
 import argparse
-import shutil
 import sys
 from pathlib import Path
 
-from ..core.conflict import ConflictState, read_conflict, write_conflict
-from ..core.lock import lock_key, read_lock, write_lock
-from ..core.models import Entry, InstallOptions, InstallTarget, Manifest, SyncContext
-from ..core.parser import MANIFEST_NAME, parse_manifest
-from ..exceptions import InstallError, ManifestError
-from ..patch.patch import (
+from skillfile.core.conflict import ConflictState, read_conflict, write_conflict
+from skillfile.core.lock import lock_key, read_lock, write_lock
+from skillfile.core.models import Entry, InstallOptions, InstallTarget, Manifest, SyncContext
+from skillfile.core.parser import MANIFEST_NAME, parse_manifest
+from skillfile.deploy.adapter import ADAPTERS
+from skillfile.deploy.paths import _source_path, installed_dir_files, installed_path
+from skillfile.exceptions import InstallError, ManifestError
+from skillfile.patch.patch import (
     PatchConflictError,
     apply_patch_pure,
     dir_patch_path,
@@ -21,9 +22,8 @@ from ..patch.patch import (
     write_dir_patch,
     write_patch,
 )
-from ..sources.strategies import STRATEGIES
-from ..sources.sync import sync_entries_parallel, vendor_dir_for
-from .paths import ADAPTER_PATHS, _source_path, installed_dir_files, installed_path, resolve_target_dir
+from skillfile.sources.strategies import STRATEGIES
+from skillfile.sources.sync import sync_entries_parallel, vendor_dir_for
 
 # ---------------------------------------------------------------------------
 # Patch application helpers — apply patches to installed copies, NOT the cache
@@ -50,7 +50,7 @@ def _apply_single_file_patch(entry: Entry, dest: Path, source: Path, repo_root: 
         if new_patch:
             write_patch(entry, new_patch, repo_root)
         else:
-            from ..patch.patch import remove_patch
+            from skillfile.patch.patch import remove_patch
 
             remove_patch(entry, repo_root)
 
@@ -80,62 +80,6 @@ def _apply_dir_patches(entry: Entry, installed_files: dict[str, Path], source_di
 
 
 # ---------------------------------------------------------------------------
-# Low-level deploy helpers
-# ---------------------------------------------------------------------------
-
-
-def _install_one(source: Path, dest: Path, is_dir: bool, opts: InstallOptions) -> bool:
-    """Copy (or link) source to dest. Returns True if deployed, False if skipped.
-
-    Skips if overwrite=False and dest already exists as a regular file/dir (not a symlink).
-    Symlinks are always replaced (migration from old symlink-based installs).
-    """
-    if not opts.overwrite and not opts.dry_run:
-        if is_dir and dest.is_dir() and not dest.is_symlink():
-            return False
-        if not is_dir and dest.is_file() and not dest.is_symlink():
-            return False
-
-    label = f"  {source.name} -> {dest}"
-    if opts.dry_run:
-        print(f"{label} [{'link' if opts.link_mode else 'copy'}, dry-run]")
-        return True
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() or dest.is_symlink():
-        shutil.rmtree(dest) if (dest.is_dir() and not dest.is_symlink()) else dest.unlink()
-
-    if opts.link_mode:
-        dest.symlink_to(source.resolve())
-    else:
-        shutil.copytree(source, dest) if is_dir else shutil.copy2(source, dest)
-
-    print(label)
-    return True
-
-
-def _install_dir_exploded(source_dir: Path, target_dir: Path, opts: InstallOptions) -> None:
-    """Install each .md file in source_dir as a separate entity in target_dir (flat, recursive)."""
-    md_files = sorted(source_dir.rglob("*.md"))
-    if opts.dry_run:
-        for src in md_files:
-            print(f"  {src.name} -> {target_dir / src.name} [{'link' if opts.link_mode else 'copy'}, dry-run]")
-        return
-    target_dir.mkdir(parents=True, exist_ok=True)
-    for src in md_files:
-        dest = target_dir / src.name
-        if not opts.overwrite and dest.is_file() and not dest.is_symlink():
-            continue
-        if dest.exists() or dest.is_symlink():
-            dest.unlink()
-        if opts.link_mode:
-            dest.symlink_to(src.resolve())
-        else:
-            shutil.copy2(src, dest)
-        print(f"  {src.name} -> {dest}")
-
-
-# ---------------------------------------------------------------------------
 # Public deploy entry point
 # ---------------------------------------------------------------------------
 
@@ -146,15 +90,19 @@ def install_entry(
     repo_root: Path,
     opts: InstallOptions | None = None,
 ) -> None:
-    """Deploy one entry to its installed path.
+    """Deploy one entry to its installed path via the platform adapter.
 
-    opts: install options (link_mode, dry_run, overwrite). Defaults to copy mode.
-    Raises PatchConflictError if a patch fails to apply.
+    The adapter owns all platform-specific logic (target dirs, flat vs. nested).
+    This function only handles cross-cutting concerns: source resolution,
+    missing-source warnings, and patch application.
+
+    Raises PatchConflictError if a stored patch fails to apply.
     """
     if opts is None:
         opts = InstallOptions()
 
-    if entry.entity_type not in ADAPTER_PATHS.get(target.adapter, {}):
+    adapter = ADAPTERS.get(target.adapter)
+    if adapter is None or not adapter.supports(entry.entity_type):
         return
 
     source = _source_path(entry, repo_root)
@@ -162,27 +110,14 @@ def install_entry(
         print(f"  warning: source missing for {entry.name}, skipping", file=sys.stderr)
         return
 
-    target_dir = resolve_target_dir(target.adapter, entry.entity_type, target.scope, repo_root)
     is_dir = STRATEGIES[entry.source_type].is_dir_entry(entry)
+    installed = adapter.deploy_entry(entry, source, target.scope, repo_root, opts)
 
-    if is_dir and entry.entity_type == "agent":
-        _install_dir_exploded(source, target_dir, opts)
-        if not opts.dry_run and not opts.link_mode:
-            agent_files = {f.name: target_dir / f.name for f in source.rglob("*.md")}
-            _apply_dir_patches(entry, agent_files, source, repo_root)
-    else:
-        dest = target_dir / (entry.name if is_dir else f"{entry.name}.md")
-        deployed = _install_one(source, dest, is_dir=is_dir, opts=opts)
-        if deployed and not opts.dry_run and not opts.link_mode:
-            if is_dir:
-                skill_files = {
-                    str(f.relative_to(source)): dest / f.relative_to(source)
-                    for f in source.rglob("*")
-                    if f.is_file() and f.name != ".meta"
-                }
-                _apply_dir_patches(entry, skill_files, source, repo_root)
-            else:
-                _apply_single_file_patch(entry, dest, source, repo_root)
+    if installed and not opts.dry_run and not opts.link_mode:
+        if is_dir:
+            _apply_dir_patches(entry, installed, source, repo_root)
+        else:
+            _apply_single_file_patch(entry, installed[f"{entry.name}.md"], source, repo_root)
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +241,7 @@ def _deploy_all(
     """Deploy all entries to all install targets. Handles PatchConflictError → conflict state."""
     mode = " [dry-run]" if opts.dry_run else ""
     for target in manifest.install_targets:
-        if target.adapter not in ADAPTER_PATHS:
+        if target.adapter not in ADAPTERS:
             print(f"warning: unknown platform '{target.adapter}', skipping", file=sys.stderr)
             continue
         print(f"Installing for {target.adapter} ({target.scope}){mode}...")

@@ -5,14 +5,14 @@ import difflib
 import sys
 from pathlib import Path
 
-from ..core.conflict import read_conflict
-from ..core.lock import lock_key, read_lock
-from ..core.models import Entry, Manifest
-from ..core.parser import MANIFEST_NAME, find_entry_in, parse_manifest
-from ..deploy.paths import installed_dir_files, installed_path
-from ..exceptions import ManifestError
-from ..sources.strategies import STRATEGIES
-from ..sources.sync import vendor_dir_for
+from skillfile.core.conflict import read_conflict
+from skillfile.core.lock import lock_key, read_lock
+from skillfile.core.models import Entry, Manifest
+from skillfile.core.parser import MANIFEST_NAME, find_entry_in, parse_manifest
+from skillfile.deploy.paths import installed_dir_files, installed_path
+from skillfile.exceptions import ManifestError
+from skillfile.sources.strategies import STRATEGIES
+from skillfile.sources.sync import vendor_dir_for
 
 
 def cmd_diff(args: argparse.Namespace, repo_root: Path) -> None:

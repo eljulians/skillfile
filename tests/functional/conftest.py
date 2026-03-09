@@ -31,6 +31,7 @@ def github_token():
     if not _has_github_token():
         pytest.fail("No GitHub token available — set GITHUB_TOKEN or run `gh auth login`")
 
+
 # Minimal Skillfile for testing — uses real public repos confirmed in project's own Skillfile
 TEST_SKILLFILE = """\
 install  claude-code  local

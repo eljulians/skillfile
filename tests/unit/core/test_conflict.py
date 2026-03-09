@@ -4,7 +4,7 @@ import pytest
 
 from skillfile.core.conflict import ConflictState, clear_conflict, has_conflict, read_conflict, write_conflict
 
-CONFLICT_FILE = "Skillfile.conflict"
+CONFLICT_FILE = ".skillfile/conflict"
 
 
 def make_state(**kwargs) -> ConflictState:

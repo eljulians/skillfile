@@ -3,9 +3,9 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
-from ..core.models import Entry
+from skillfile.core.models import Entry
 
-PATCHES_DIR = "Skillfile.patches"
+PATCHES_DIR = ".skillfile/patches"
 
 
 class PatchConflictError(Exception):

@@ -1,9 +1,9 @@
 import argparse
 from pathlib import Path
 
-from ..core.parser import MANIFEST_NAME, parse_manifest
-from ..deploy.paths import KNOWN_ADAPTERS
-from ..exceptions import ManifestError
+from skillfile.core.parser import MANIFEST_NAME, parse_manifest
+from skillfile.deploy.paths import KNOWN_ADAPTERS
+from skillfile.exceptions import ManifestError
 
 
 def _prompt(prompt: str, options: list[str] | None = None) -> str:
@@ -59,6 +59,28 @@ def _rewrite_install_lines(manifest_path: Path, new_targets: list[tuple[str, str
     manifest_path.write_text("".join(new_lines))
 
 
+_GITIGNORE_ENTRIES = [
+    ".skillfile/cache/",
+    ".skillfile/conflict",
+]
+
+
+def _update_gitignore(repo_root: Path) -> None:
+    """Add missing skillfile entries to .gitignore (idempotent)."""
+    gitignore = repo_root / ".gitignore"
+    existing = gitignore.read_text().splitlines() if gitignore.exists() else []
+    missing = [e for e in _GITIGNORE_ENTRIES if e not in existing]
+    if not missing:
+        return
+    with gitignore.open("a") as f:
+        if existing and existing[-1] != "":
+            f.write("\n")
+        f.write("# skillfile\n")
+        for entry in missing:
+            f.write(entry + "\n")
+    print(f"\n.gitignore updated: {', '.join(missing)}")
+
+
 def cmd_init(args: argparse.Namespace, repo_root: Path) -> None:
     manifest_path = repo_root / MANIFEST_NAME
     if not manifest_path.exists():
@@ -80,6 +102,7 @@ def cmd_init(args: argparse.Namespace, repo_root: Path) -> None:
     new_targets = _collect_targets()
 
     _rewrite_install_lines(manifest_path, new_targets)
+    _update_gitignore(repo_root)
 
     print("\nInstall config written to Skillfile:")
     for adapter, scope in new_targets:

@@ -33,6 +33,15 @@ def make_target(adapter="claude-code", scope="local"):
     return InstallTarget(adapter=adapter, scope=scope)
 
 
+def make_skill_entry(name="my-skill", local_path="skills/my-skill.md"):
+    return Entry(
+        source_type="local",
+        entity_type="skill",
+        name=name,
+        local_path=local_path,
+    )
+
+
 # ---------------------------------------------------------------------------
 # resolve_target_dir
 # ---------------------------------------------------------------------------
@@ -131,7 +140,7 @@ def test_install_entry_overwrites_existing_symlink(tmp_path):
 
 
 def test_install_github_entry_symlink(tmp_path):
-    vdir = tmp_path / ".skillfile" / "agents" / "my-agent"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "my-agent"
     vdir.mkdir(parents=True)
     (vdir / "agent.md").write_text("# Agent")
 
@@ -146,7 +155,7 @@ def test_install_github_entry_symlink(tmp_path):
 
 
 def test_install_github_dir_entry_symlinks_directory(tmp_path):
-    vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
+    vdir = tmp_path / ".skillfile" / "cache" / "skills" / "python-pro"
     vdir.mkdir(parents=True)
     (vdir / "SKILL.md").write_text("# Python Pro")
     (vdir / "examples.md").write_text("# Examples")
@@ -169,7 +178,7 @@ def test_install_github_dir_entry_symlinks_directory(tmp_path):
 
 
 def test_install_github_dir_entry_copy_mode(tmp_path):
-    vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
+    vdir = tmp_path / ".skillfile" / "cache" / "skills" / "python-pro"
     vdir.mkdir(parents=True)
     (vdir / "SKILL.md").write_text("# Python Pro")
 
@@ -192,7 +201,7 @@ def test_install_github_dir_entry_copy_mode(tmp_path):
 
 
 def test_install_agent_dir_entry_explodes_to_individual_files(tmp_path):
-    vdir = tmp_path / ".skillfile" / "agents" / "core-dev"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "core-dev"
     vdir.mkdir(parents=True)
     (vdir / "backend-developer.md").write_text("# Backend")
     (vdir / "frontend-developer.md").write_text("# Frontend")
@@ -217,7 +226,7 @@ def test_install_agent_dir_entry_explodes_to_individual_files(tmp_path):
 
 
 def test_install_agent_dir_entry_copy_mode(tmp_path):
-    vdir = tmp_path / ".skillfile" / "agents" / "core-dev"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "core-dev"
     vdir.mkdir(parents=True)
     (vdir / "backend-developer.md").write_text("# Backend")
 
@@ -332,7 +341,7 @@ def test_cmd_install_update_auto_pins_modified_entry(tmp_path, capsys):
     write_lock(tmp_path, {"github/agent/my-agent": LockEntry(sha=sha, raw_url="https://example.com")})
 
     # Set up vendor cache (pristine upstream)
-    vdir = tmp_path / ".skillfile" / "agents" / "my-agent"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "my-agent"
     vdir.mkdir(parents=True)
     (vdir / "agent.md").write_text("# Original\n")
     (vdir / ".meta").write_text('{"sha": "' + sha + '"}')
@@ -371,7 +380,7 @@ def test_cmd_install_update_no_auto_pin_for_clean_entry(tmp_path):
     sha = "a" * 40
     write_lock(tmp_path, {"github/agent/my-agent": LockEntry(sha=sha, raw_url="https://example.com")})
 
-    vdir = tmp_path / ".skillfile" / "agents" / "my-agent"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "my-agent"
     vdir.mkdir(parents=True)
     (vdir / "agent.md").write_text("# Original\n")
     (vdir / ".meta").write_text('{"sha": "' + sha + '"}')
@@ -390,3 +399,117 @@ def test_cmd_install_update_no_auto_pin_for_clean_entry(tmp_path):
 
     e = Entry("github", "agent", "my-agent", owner_repo="owner/repo", path_in_repo="agents/agent.md", ref="main")
     assert not has_patch(e, tmp_path), "no patch should be written when installed matches cache"
+
+
+# ---------------------------------------------------------------------------
+# Multi-adapter: gemini-cli and codex
+# ---------------------------------------------------------------------------
+
+
+def test_install_local_skill_gemini_cli(tmp_path):
+    """gemini-cli adapter deploys skills to .gemini/skills/."""
+    source_file = tmp_path / "skills" / "my-skill.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# My Skill")
+
+    entry = make_skill_entry()
+    target = make_target(adapter="gemini-cli", scope="local")
+
+    install_entry(entry, target, tmp_path)
+
+    dest = tmp_path / ".gemini" / "skills" / "my-skill.md"
+    assert dest.exists()
+    assert dest.read_text() == "# My Skill"
+
+
+def test_install_local_skill_codex(tmp_path):
+    """codex adapter deploys skills to .codex/skills/."""
+    source_file = tmp_path / "skills" / "my-skill.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# My Skill")
+
+    entry = make_skill_entry()
+    target = make_target(adapter="codex", scope="local")
+
+    install_entry(entry, target, tmp_path)
+
+    dest = tmp_path / ".codex" / "skills" / "my-skill.md"
+    assert dest.exists()
+    assert dest.read_text() == "# My Skill"
+
+
+def test_codex_skips_agent_entries(tmp_path):
+    """Codex has no agent directory — agent entries should be silently skipped."""
+    entry = make_agent_entry()
+    target = make_target(adapter="codex", scope="local")
+
+    install_entry(entry, target, tmp_path)
+
+    assert not (tmp_path / ".codex").exists()
+
+
+def test_install_github_agent_gemini_cli(tmp_path):
+    """gemini-cli deploys agent dirs flat to .gemini/agents/."""
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "my-agent"
+    vdir.mkdir(parents=True)
+    (vdir / "agent.md").write_text("# Agent")
+
+    entry = make_agent_entry()
+    target = make_target(adapter="gemini-cli", scope="local")
+
+    install_entry(entry, target, tmp_path, InstallOptions())
+
+    dest = tmp_path / ".gemini" / "agents" / "my-agent.md"
+    assert dest.exists()
+    assert dest.read_text() == "# Agent"
+
+
+@pytest.mark.parametrize("adapter", ["claude-code", "gemini-cli", "codex"])
+def test_install_skill_multi_adapter(tmp_path, adapter):
+    """All three adapters can install a local skill without errors."""
+    source_file = tmp_path / "skills" / "my-skill.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# Multi Skill")
+
+    entry = make_skill_entry()
+    target = make_target(adapter=adapter, scope="local")
+
+    install_entry(entry, target, tmp_path)
+
+    expected_prefixes = {
+        "claude-code": ".claude",
+        "gemini-cli": ".gemini",
+        "codex": ".codex",
+    }
+    dest = tmp_path / expected_prefixes[adapter] / "skills" / "my-skill.md"
+    assert dest.exists()
+    assert dest.read_text() == "# Multi Skill"
+
+
+def test_cmd_install_deploys_to_multiple_adapters(tmp_path):
+    """When Skillfile has multiple install targets, all adapters receive the entries."""
+    sf = tmp_path / "Skillfile"
+    sf.write_text(
+        "install  claude-code  local\n"
+        "install  gemini-cli  local\n"
+        "install  codex  local\n"
+        "local  skill  foo  skills/foo.md\n"
+        "local  agent  bar  agents/bar.md\n"
+    )
+
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "foo.md").write_text("# Foo")
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "agents" / "bar.md").write_text("# Bar")
+
+    cmd_install(_make_args(), tmp_path)
+
+    # skill deployed to all three adapters
+    assert (tmp_path / ".claude" / "skills" / "foo.md").exists()
+    assert (tmp_path / ".gemini" / "skills" / "foo.md").exists()
+    assert (tmp_path / ".codex" / "skills" / "foo.md").exists()
+
+    # agent deployed to claude-code and gemini-cli but NOT codex
+    assert (tmp_path / ".claude" / "agents" / "bar.md").exists()
+    assert (tmp_path / ".gemini" / "agents" / "bar.md").exists()
+    assert not (tmp_path / ".codex" / "agents").exists()

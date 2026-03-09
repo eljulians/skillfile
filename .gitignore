@@ -213,6 +213,6 @@ tags
 .claude
 Skillfile
 Skillfile.lock
-Skillfile.conflict
-.skillfile/
+.skillfile/cache/
+.skillfile/conflict
 .complexipy_cache

@@ -13,7 +13,7 @@ def write_lock(tmp_path, locked: dict):
 
 
 def write_cache(tmp_path, entity_type, name, filename="agent.md"):
-    vdir = tmp_path / ".skillfile" / f"{entity_type}s" / name
+    vdir = tmp_path / ".skillfile" / "cache" / f"{entity_type}s" / name
     vdir.mkdir(parents=True)
     (vdir / filename).write_text("# content")
     return vdir
@@ -87,7 +87,7 @@ def test_remove_local_entry_no_cache_no_error(tmp_path):
     write_manifest(tmp_path, "local  skill  skills/foo.md\n")
     # No cache dir — should complete without error
     cmd_remove(_make_args("foo"), tmp_path)
-    assert not (tmp_path / ".skillfile").exists()
+    assert not (tmp_path / ".skillfile" / "cache").exists()
 
 
 # ---------------------------------------------------------------------------

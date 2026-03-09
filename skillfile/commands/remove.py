@@ -2,11 +2,11 @@ import argparse
 import shutil
 from pathlib import Path
 
-from ..core.lock import lock_key, read_lock, write_lock
-from ..core.parser import MANIFEST_NAME, find_entry_in, parse_manifest
-from ..exceptions import ManifestError
-from ..sources.strategies import STRATEGIES
-from ..sources.sync import vendor_dir_for
+from skillfile.core.lock import lock_key, read_lock, write_lock
+from skillfile.core.parser import MANIFEST_NAME, find_entry_in, parse_manifest
+from skillfile.exceptions import ManifestError
+from skillfile.sources.strategies import STRATEGIES
+from skillfile.sources.sync import vendor_dir_for
 
 
 def _name_from_parts(parts: list[str]) -> str | None:

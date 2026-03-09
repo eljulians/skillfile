@@ -1,9 +1,9 @@
 import argparse
 from pathlib import Path
 
-from ..core.parser import MANIFEST_NAME, parse_manifest
-from ..exceptions import ManifestError
-from .add import _format_line
+from skillfile.commands.add import _format_line
+from skillfile.core.parser import MANIFEST_NAME, parse_manifest
+from skillfile.exceptions import ManifestError
 
 # Auto-generated section headers — always written by sort, never hand-edited.
 _INSTALL_COMMENT = "# install  <platform>  <scope>"

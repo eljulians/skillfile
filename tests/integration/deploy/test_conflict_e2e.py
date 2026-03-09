@@ -140,7 +140,7 @@ def _setup_clean_state(tmp_path):
     lock = {"github/agent/test-agent": {"sha": SHA_OLD, "raw_url": "https://example.com"}}
     (tmp_path / "Skillfile.lock").write_text(json.dumps(lock))
 
-    vdir = tmp_path / ".skillfile" / "agents" / "test-agent"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "test-agent"
     vdir.mkdir(parents=True)
     (vdir / "agent.md").write_text(BASE)
     (vdir / ".meta").write_text(json.dumps({"sha": SHA_OLD}))
@@ -158,7 +158,7 @@ def _mock_sync_update(entry_name, new_content, old_sha, new_sha):
     def _sync(entry, ctx, locked):
         key = f"{entry.source_type}/{entry.entity_type}/{entry.name}"
         if entry.name == entry_name and ctx.update and not ctx.dry_run:
-            vdir = ctx.repo_root / ".skillfile" / f"{entry.entity_type}s" / entry.name
+            vdir = ctx.repo_root / ".skillfile" / "cache" / f"{entry.entity_type}s" / entry.name
             if vdir.exists():
                 # Simulate re-fetch: overwrite cache with new upstream content
                 from skillfile.sources.strategies import STRATEGIES
@@ -386,7 +386,7 @@ def test_auto_pin_does_not_overwrite_existing_patch_with_bad_cache(tmp_path, cap
     capsys.readouterr()
 
     # Corrupt the vendor cache (simulate what the user was doing in manual QA)
-    cache_file = tmp_path / ".skillfile" / "agents" / "test-agent" / "agent.md"
+    cache_file = tmp_path / ".skillfile" / "cache" / "agents" / "test-agent" / "agent.md"
     cache_file.write_text("CORRUPTED CACHE\n")
 
     # install --update with mock sync that ALSO updates to correct new upstream

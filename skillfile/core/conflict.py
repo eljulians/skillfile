@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-CONFLICT_FILE = "Skillfile.conflict"
+CONFLICT_FILE = ".skillfile/conflict"
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ def read_conflict(repo_root: Path) -> ConflictState | None:
 
 def write_conflict(repo_root: Path, state: ConflictState) -> None:
     p = repo_root / CONFLICT_FILE
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(asdict(state), indent=2) + "\n")
 
 

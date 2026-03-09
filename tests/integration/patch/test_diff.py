@@ -62,7 +62,7 @@ def setup_vendor_cache(
     tmp_path, name: str, content: str, entity_type: str = "agent", content_file: str = "test.md"
 ) -> None:
     """Write a single-file entry to the vendor cache."""
-    vdir = tmp_path / ".skillfile" / f"{entity_type}s" / name
+    vdir = tmp_path / ".skillfile" / "cache" / f"{entity_type}s" / name
     vdir.mkdir(parents=True, exist_ok=True)
     (vdir / content_file).write_text(content)
 

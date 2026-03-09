@@ -67,7 +67,7 @@ def test_installed_dir_files_agent_dir(tmp_path):
     entry = Entry("github", "agent", "my-agents", owner_repo="o/r", path_in_repo="agents")
     manifest = Manifest(entries=[entry], install_targets=[InstallTarget("claude-code", "local")])
     # Create vendor cache
-    vdir = tmp_path / ".skillfile" / "agents" / "my-agents"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "my-agents"
     vdir.mkdir(parents=True)
     (vdir / "a.md").write_text("# A\n")
     (vdir / "b.md").write_text("# B\n")
@@ -88,7 +88,7 @@ def test_source_path_local(tmp_path):
 
 def test_source_path_github_single(tmp_path):
     entry = Entry("github", "agent", "test", owner_repo="o/r", path_in_repo="agents/test.md")
-    vdir = tmp_path / ".skillfile" / "agents" / "test"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "test"
     vdir.mkdir(parents=True)
     (vdir / "test.md").write_text("# Test\n")
     result = _source_path(entry, tmp_path)

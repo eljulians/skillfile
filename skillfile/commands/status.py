@@ -1,21 +1,21 @@
 import argparse
 from pathlib import Path
 
-from ..core.lock import lock_key, read_lock
-from ..core.models import Manifest
-from ..core.parser import MANIFEST_NAME, parse_manifest
-from ..deploy.paths import installed_dir_files, installed_path
-from ..exceptions import ManifestError
-from ..patch.patch import (
+from skillfile.core.lock import lock_key, read_lock
+from skillfile.core.models import Manifest
+from skillfile.core.parser import MANIFEST_NAME, parse_manifest
+from skillfile.deploy.paths import installed_dir_files, installed_path
+from skillfile.exceptions import ManifestError
+from skillfile.patch.patch import (
     dir_patch_path,
     generate_patch,
     has_dir_patch,
     has_patch,
     read_patch,
 )
-from ..sources.resolver import resolve_github_sha
-from ..sources.strategies import STRATEGIES, meta_sha
-from ..sources.sync import vendor_dir_for
+from skillfile.sources.resolver import resolve_github_sha
+from skillfile.sources.strategies import STRATEGIES, meta_sha
+from skillfile.sources.sync import vendor_dir_for
 
 
 def _is_modified_local(entry, manifest: Manifest, repo_root: Path) -> bool:

@@ -16,12 +16,12 @@ def test_pin_then_unpin(repo, github_token):
     # Pin
     r = run_sf("pin", "code-refactorer", cwd=repo)
     assert r.returncode == 0
-    assert (repo / "Skillfile.patches" / "agents" / "code-refactorer.patch").exists()
+    assert (repo / ".skillfile" / "patches" / "agents" / "code-refactorer.patch").exists()
 
     # Unpin
     r = run_sf("unpin", "code-refactorer", cwd=repo)
     assert r.returncode == 0
-    assert not (repo / "Skillfile.patches" / "agents" / "code-refactorer.patch").exists()
+    assert not (repo / ".skillfile" / "patches" / "agents" / "code-refactorer.patch").exists()
 
     # Installed file should be back to original (unpin reinstalls)
     assert agent_file.read_text() == original

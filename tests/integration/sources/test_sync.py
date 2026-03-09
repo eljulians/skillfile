@@ -36,7 +36,7 @@ def test_local_entry_no_network_no_vendor(tmp_path):
 
     mock_resolve.assert_not_called()
     mock_fetch.assert_not_called()
-    assert not (tmp_path / ".skillfile").exists()
+    assert not (tmp_path / ".skillfile" / "cache").exists()
     assert locked == {}
 
 
@@ -53,7 +53,7 @@ def test_github_entry_fetches_and_writes(tmp_path):
     mock_resolve.assert_called_once_with("owner/repo", "main")
     mock_fetch.assert_called_once_with("owner/repo", "agents/test.md", sha)
 
-    vdir = tmp_path / ".skillfile" / "agents" / "test-agent"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "test-agent"
     assert (vdir / "test.md").read_bytes() == content
     meta = json.loads((vdir / ".meta").read_text())
     assert meta["sha"] == sha
@@ -66,7 +66,7 @@ def test_skip_when_locked_sha_matches_meta(tmp_path):
     entry = make_github_entry()
     sha = "87321636a1c666283d8f17398b45c2644395044b"
 
-    vdir = tmp_path / ".skillfile" / "agents" / "test-agent"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "test-agent"
     vdir.mkdir(parents=True)
     (vdir / ".meta").write_text(json.dumps({"sha": sha}))
     (vdir / "test.md").write_bytes(b"# existing content")
@@ -122,7 +122,7 @@ def test_github_dir_entry_fetches_all_files(tmp_path):
             with patch("skillfile.sources.strategies._get", side_effect=fake_get):
                 locked = sync_entry(entry, ctx, locked={})
 
-    vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
+    vdir = tmp_path / ".skillfile" / "cache" / "skills" / "python-pro"
     assert (vdir / "SKILL.md").read_bytes() == b"# SKILL content"
     assert (vdir / "examples.md").read_bytes() == b"# examples content"
     assert (vdir / "resources" / "playbook.md").read_bytes() == b"# playbook content"
@@ -133,7 +133,7 @@ def test_github_dir_entry_skip_when_up_to_date(tmp_path):
     entry = make_dir_entry()
     sha = "87321636a1c666283d8f17398b45c2644395044b"
 
-    vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
+    vdir = tmp_path / ".skillfile" / "cache" / "skills" / "python-pro"
     vdir.mkdir(parents=True)
     (vdir / ".meta").write_text(json.dumps({"sha": sha}))
     (vdir / "SKILL.md").write_bytes(b"# existing")
@@ -156,7 +156,7 @@ def test_update_flag_re_resolves_despite_lock(tmp_path):
     new_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     content = b"# Updated content"
 
-    vdir = tmp_path / ".skillfile" / "agents" / "test-agent"
+    vdir = tmp_path / ".skillfile" / "cache" / "agents" / "test-agent"
     vdir.mkdir(parents=True)
     (vdir / ".meta").write_text(json.dumps({"sha": old_sha}))
     (vdir / "test.md").write_bytes(b"# Old content")
@@ -192,7 +192,7 @@ def test_url_entry_fetch_and_write(tmp_path):
         sync_entry(entry, ctx, locked={})
 
     mock_get.assert_called_once_with("https://example.com/my-skill.md")
-    vdir = tmp_path / ".skillfile" / "skills" / "my-skill"
+    vdir = tmp_path / ".skillfile" / "cache" / "skills" / "my-skill"
     assert (vdir / "my-skill.md").read_bytes() == content
 
 

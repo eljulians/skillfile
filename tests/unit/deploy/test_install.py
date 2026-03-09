@@ -1,12 +1,11 @@
-"""Unit tests for deploy/install.py — patch application helpers."""
+"""Unit tests for deploy — patch application helpers and filesystem IO."""
 
 from skillfile.core.models import Entry, InstallOptions
+from skillfile.deploy.adapter import ADAPTERS, _place_file
 from skillfile.deploy.install import (
     _apply_dir_patches,
     _apply_patch_to_file,
     _apply_single_file_patch,
-    _install_dir_exploded,
-    _install_one,
 )
 from skillfile.patch.patch import generate_patch, write_dir_patch, write_patch
 
@@ -64,75 +63,67 @@ def test_apply_single_file_patch_removes_empty(tmp_path):
     # After applying, the patch is regenerated: diff(cache, installed) — if extra line present, patch stays
 
 
-def test_install_one_copy(tmp_path):
-    """_install_one copies a file."""
+def test_place_file_copy(tmp_path):
+    """_place_file copies a file."""
     src = tmp_path / "source.md"
     src.write_text("# Source\n")
     dest = tmp_path / "dest" / "target.md"
-    opts = InstallOptions()
-    result = _install_one(src, dest, is_dir=False, opts=opts)
-    assert result is True
+    assert _place_file(src, dest, is_dir=False, opts=InstallOptions()) is True
     assert dest.read_text() == "# Source\n"
 
 
-def test_install_one_link(tmp_path):
-    """_install_one creates a symlink."""
+def test_place_file_link(tmp_path):
+    """_place_file creates a symlink in link mode."""
     src = tmp_path / "source.md"
     src.write_text("# Source\n")
     dest = tmp_path / "dest" / "target.md"
-    opts = InstallOptions(link_mode=True)
-    result = _install_one(src, dest, is_dir=False, opts=opts)
-    assert result is True
+    assert _place_file(src, dest, is_dir=False, opts=InstallOptions(link_mode=True)) is True
     assert dest.is_symlink()
 
 
-def test_install_one_skip_existing(tmp_path):
-    """_install_one with overwrite=False skips existing regular files."""
+def test_place_file_skip_existing(tmp_path):
+    """_place_file with overwrite=False skips existing regular files."""
     src = tmp_path / "source.md"
     src.write_text("# New\n")
     dest = tmp_path / "dest" / "target.md"
     dest.parent.mkdir(parents=True)
     dest.write_text("# Existing\n")
-    opts = InstallOptions(overwrite=False)
-    result = _install_one(src, dest, is_dir=False, opts=opts)
-    assert result is False
+    assert _place_file(src, dest, is_dir=False, opts=InstallOptions(overwrite=False)) is False
     assert dest.read_text() == "# Existing\n"
 
 
-def test_install_one_dry_run(tmp_path, capsys):
-    """_install_one dry-run prints but doesn't write."""
+def test_place_file_dry_run(tmp_path, capsys):
+    """_place_file dry-run prints but doesn't write."""
     src = tmp_path / "source.md"
     src.write_text("# Source\n")
     dest = tmp_path / "dest" / "target.md"
-    opts = InstallOptions(dry_run=True)
-    result = _install_one(src, dest, is_dir=False, opts=opts)
-    assert result is True
+    assert _place_file(src, dest, is_dir=False, opts=InstallOptions(dry_run=True)) is True
     assert not dest.exists()
     assert "dry-run" in capsys.readouterr().out
 
 
-def test_install_dir_exploded(tmp_path, capsys):
-    """_install_dir_exploded copies each .md file into target_dir."""
+def test_deploy_flat(tmp_path):
+    """BaseFileSystemAdapter._deploy_flat copies each .md into target_dir."""
     src_dir = tmp_path / "source"
     src_dir.mkdir()
     (src_dir / "a.md").write_text("# A\n")
     (src_dir / "b.md").write_text("# B\n")
     target_dir = tmp_path / "target"
-    opts = InstallOptions()
-    _install_dir_exploded(src_dir, target_dir, opts)
+    result = ADAPTERS["claude-code"]._deploy_flat(src_dir, target_dir, InstallOptions())
     assert (target_dir / "a.md").read_text() == "# A\n"
     assert (target_dir / "b.md").read_text() == "# B\n"
+    assert result == {"a.md": target_dir / "a.md", "b.md": target_dir / "b.md"}
 
 
-def test_install_dir_exploded_dry_run(tmp_path, capsys):
-    """_install_dir_exploded dry-run prints but doesn't write."""
+def test_deploy_flat_dry_run(tmp_path, capsys):
+    """_deploy_flat dry-run prints but doesn't write."""
     src_dir = tmp_path / "source"
     src_dir.mkdir()
     (src_dir / "a.md").write_text("# A\n")
     target_dir = tmp_path / "target"
-    opts = InstallOptions(dry_run=True)
-    _install_dir_exploded(src_dir, target_dir, opts)
+    result = ADAPTERS["claude-code"]._deploy_flat(src_dir, target_dir, InstallOptions(dry_run=True))
     assert not target_dir.exists()
+    assert result == {}
     assert "dry-run" in capsys.readouterr().out
 
 

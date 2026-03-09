@@ -2,18 +2,18 @@ import argparse
 import sys
 from pathlib import Path
 
-from .commands.add import cmd_add
-from .commands.init import cmd_init
-from .commands.remove import cmd_remove
-from .commands.sort import cmd_sort
-from .commands.status import cmd_status
-from .commands.validate import cmd_validate
-from .deploy.install import cmd_install
-from .exceptions import SkillfileError
-from .patch.diff import cmd_diff
-from .patch.pin import cmd_pin, cmd_unpin
-from .patch.resolve import cmd_resolve
-from .sources.sync import cmd_sync
+from skillfile.commands.add import cmd_add
+from skillfile.commands.init import cmd_init
+from skillfile.commands.remove import cmd_remove
+from skillfile.commands.sort import cmd_sort
+from skillfile.commands.status import cmd_status
+from skillfile.commands.validate import cmd_validate
+from skillfile.deploy.install import cmd_install
+from skillfile.exceptions import SkillfileError
+from skillfile.patch.diff import cmd_diff
+from skillfile.patch.pin import cmd_pin, cmd_unpin
+from skillfile.patch.resolve import cmd_resolve
+from skillfile.sources.sync import cmd_sync
 
 ENTITY_TYPES = ["skill", "agent"]
 

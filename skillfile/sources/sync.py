@@ -2,13 +2,13 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from ..core.lock import lock_key, read_lock, write_lock
-from ..core.models import Entry, LockEntry, SyncContext
-from ..core.parser import MANIFEST_NAME, parse_manifest
-from ..exceptions import ManifestError
-from .strategies import STRATEGIES
+from skillfile.core.lock import lock_key, read_lock, write_lock
+from skillfile.core.models import Entry, LockEntry, SyncContext
+from skillfile.core.parser import MANIFEST_NAME, parse_manifest
+from skillfile.exceptions import ManifestError
+from skillfile.sources.strategies import STRATEGIES
 
-VENDOR_DIR = ".skillfile"
+VENDOR_DIR = ".skillfile/cache"
 
 # Cap for I/O-bound network threads. Python's default is min(32, os.cpu_count()+4).
 # We use a lower cap since each worker may spawn its own ThreadPool for dir-entry downloads.

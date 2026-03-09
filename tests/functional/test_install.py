@@ -15,8 +15,8 @@ def test_install_golden_path(repo, github_token):
     assert "requesting-code-review" in lock_text
 
     # Vendor cache populated
-    assert (repo / ".skillfile" / "agents" / "code-refactorer").is_dir()
-    assert (repo / ".skillfile" / "skills" / "requesting-code-review").is_dir()
+    assert (repo / ".skillfile" / "cache" / "agents" / "code-refactorer").is_dir()
+    assert (repo / ".skillfile" / "cache" / "skills" / "requesting-code-review").is_dir()
 
     # Deployed to local .claude/
     assert (repo / ".claude" / "agents" / "code-refactorer.md").exists()

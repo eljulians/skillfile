@@ -2,14 +2,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from ..core.lock import read_lock, write_lock
-from ..core.models import Entry, SyncContext
-from ..core.parser import MANIFEST_NAME, parse_manifest
-from ..deploy.install import install_entry
-from ..deploy.paths import ADAPTER_PATHS
-from ..exceptions import ManifestError, SkillfileError
-from ..sources.strategies import STRATEGIES
-from ..sources.sync import sync_entry
+from skillfile.core.lock import read_lock, write_lock
+from skillfile.core.models import Entry, SyncContext
+from skillfile.core.parser import MANIFEST_NAME, parse_manifest
+from skillfile.deploy.adapter import ADAPTERS
+from skillfile.deploy.install import install_entry
+from skillfile.exceptions import ManifestError, SkillfileError
+from skillfile.sources.strategies import STRATEGIES
+from skillfile.sources.sync import sync_entry
 
 
 def _format_line(entry: Entry) -> str:
@@ -57,7 +57,7 @@ def cmd_add(args: argparse.Namespace, repo_root: Path) -> None:
         locked = sync_entry(entry, ctx, locked)
         write_lock(repo_root, locked)
         for target in manifest.install_targets:
-            if target.adapter in ADAPTER_PATHS:
+            if target.adapter in ADAPTERS:
                 install_entry(entry, target, repo_root)
     except SkillfileError:
         manifest_path.write_text(original_manifest)

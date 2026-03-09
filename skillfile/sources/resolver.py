@@ -4,7 +4,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
-from ..exceptions import NetworkError
+from skillfile.exceptions import NetworkError
 
 _token_cache: str | None = None
 _token_checked = False

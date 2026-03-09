@@ -32,6 +32,7 @@ test-all = "pytest tests/ -q --cov"
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+exclude = [".skillfile/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
