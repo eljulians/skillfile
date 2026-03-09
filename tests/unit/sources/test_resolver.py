@@ -59,16 +59,18 @@ def test_github_token_gh_cli_not_found():
 
 
 def test_base_headers_includes_user_agent():
-    with patch("skillfile.sources.resolver._github_token", return_value=None):
+    with patch("skillfile.sources.resolver._github_token", return_value=None) as mock_token:
         headers = _base_headers()
-        assert "User-Agent" in headers
-        assert "Authorization" not in headers
+    mock_token.assert_called_once()
+    assert "User-Agent" in headers
+    assert "Authorization" not in headers
 
 
 def test_base_headers_includes_auth_when_token():
-    with patch("skillfile.sources.resolver._github_token", return_value="my-token"):
+    with patch("skillfile.sources.resolver._github_token", return_value="my-token") as mock_token:
         headers = _base_headers()
-        assert headers["Authorization"] == "Bearer my-token"
+    mock_token.assert_called_once()
+    assert headers["Authorization"] == "Bearer my-token"
 
 
 def test_get_raises_network_error_on_http_error():
@@ -99,8 +101,9 @@ def test_list_github_dir():
         {"type": "dir", "name": "sub", "path": "sub"},
         {"type": "file", "name": "b.md", "path": "b.md"},
     ]
-    with patch("skillfile.sources.resolver._list_dir_contents", return_value=items):
+    with patch("skillfile.sources.resolver._list_dir_contents", return_value=items) as mock_list:
         result = list_github_dir("owner/repo", ".", "main")
+    mock_list.assert_called_once_with("owner/repo", ".", "main")
     assert len(result) == 2
     assert all(r["type"] == "file" for r in result)
 
@@ -113,9 +116,9 @@ def test_list_github_dir_recursive():
         {"type": "blob", "path": "base/sub/b.md"},
         {"type": "blob", "path": "other/c.md"},  # outside prefix, should be excluded
     ]
-    with patch("skillfile.sources.resolver._fetch_tree", return_value=fake_tree):
+    with patch("skillfile.sources.resolver._fetch_tree", return_value=fake_tree) as mock_fetch:
         result = list_github_dir_recursive("owner/repo", "base", "abc123")
-
+    mock_fetch.assert_called_once_with("owner/repo", "abc123")
     assert len(result) == 2
     paths = {r["relative_path"] for r in result}
     assert "a.md" in paths

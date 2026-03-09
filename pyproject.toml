@@ -11,20 +11,23 @@ dependencies = []
 
 [project.scripts]
 skillfile = "skillfile.cli:main"
-test-unit = "skillfile._scripts:test_unit"
-test-integration = "skillfile._scripts:test_integration"
-test-functional = "skillfile._scripts:test_functional"
-test-all = "skillfile._scripts:test_all"
 
 [dependency-groups]
 dev = [
     "complexipy>=5.2.0",
     "ipdb>=0.13.13",
     "mypy>=1.9",
+    "poethepoet>=0.29",
     "pytest>=8.0",
     "pytest-cov>=7.0.0",
     "ruff>=0.4",
 ]
+
+[tool.poe.tasks]
+test-unit = "pytest tests/unit/ -q --cov"
+test-integration = "pytest tests/integration/ -q --cov"
+test-functional = "pytest tests/functional/ -v --cov"
+test-all = "pytest tests/ -q --cov"
 
 [tool.ruff]
 line-length = 120
@@ -43,6 +46,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["skillfile"]
+parallel = true
 omit = [
     "skillfile/__main__.py",
 ]

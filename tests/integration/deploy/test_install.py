@@ -20,15 +20,6 @@ def make_agent_entry(name="my-agent"):
     )
 
 
-def make_skill_entry(name="my-skill"):
-    return Entry(
-        source_type="skill",
-        entity_type="skill",
-        name=name,
-        local_path="skills/my-skill.md",
-    )
-
-
 def make_local_entry(name="my-skill", local_path="skills/my-skill.md"):
     return Entry(
         source_type="local",
@@ -47,24 +38,21 @@ def make_target(adapter="claude-code", scope="local"):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_target_dir_global_agent(tmp_path):
-    d = resolve_target_dir("claude-code", "agent", "global", tmp_path)
-    assert d == Path("~/.claude/agents").expanduser()
-
-
-def test_resolve_target_dir_local_agent(tmp_path):
-    d = resolve_target_dir("claude-code", "agent", "local", tmp_path)
-    assert d == tmp_path / ".claude" / "agents"
-
-
-def test_resolve_target_dir_global_skill(tmp_path):
-    d = resolve_target_dir("claude-code", "skill", "global", tmp_path)
-    assert d == Path("~/.claude/skills").expanduser()
-
-
-def test_resolve_target_dir_local_skill(tmp_path):
-    d = resolve_target_dir("claude-code", "skill", "local", tmp_path)
-    assert d == tmp_path / ".claude" / "skills"
+@pytest.mark.parametrize(
+    "entity_type,scope",
+    [
+        ("agent", "global"),
+        ("agent", "local"),
+        ("skill", "global"),
+        ("skill", "local"),
+    ],
+)
+def test_resolve_target_dir(tmp_path, entity_type, scope):
+    d = resolve_target_dir("claude-code", entity_type, scope, tmp_path)
+    if scope == "global":
+        assert d == Path(f"~/.claude/{entity_type}s").expanduser()
+    else:
+        assert d == tmp_path / ".claude" / f"{entity_type}s"
 
 
 # ---------------------------------------------------------------------------

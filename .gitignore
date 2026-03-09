@@ -215,4 +215,4 @@ Skillfile
 Skillfile.lock
 Skillfile.conflict
 .skillfile/
-
+.complexipy_cache

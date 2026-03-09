@@ -43,10 +43,20 @@ github  skill  requesting-code-review  obra/superpowers  skills/requesting-code-
 """
 
 
+_PROJECT_ROOT = Path(__file__).parents[2]
+# Coverage data files must land in the project root so pytest-cov can combine them.
+# Each subprocess writes .coverage.<host>.<pid>.<rand> there via --parallel-mode.
+_COVERAGE_FILE = str(_PROJECT_ROOT / ".coverage")
+
+
 def run_sf(*args: str, cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    """Run `skillfile <args>` as a subprocess, returning CompletedProcess."""
-    cmd = ["uv", "run", "skillfile", *args]
-    run_env = {**os.environ, **(env or {})}
+    """Run `skillfile <args>` as a subprocess, returning CompletedProcess.
+
+    Uses `coverage run --parallel-mode` so subprocess coverage is captured and
+    combined by pytest-cov at the end of the session.
+    """
+    cmd = ["uv", "run", "coverage", "run", "--parallel-mode", "--source=skillfile", "-m", "skillfile.cli", *args]
+    run_env = {**os.environ, "COVERAGE_FILE": _COVERAGE_FILE, **(env or {})}
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=run_env, timeout=120)
 
 
