@@ -2,7 +2,7 @@
 
 Each strategy encapsulates all behavior for one source type:
 parse (from manifest), from_args (from CLI add), format_parts (to manifest),
-content_file (vendor filename), is_dir_entry, and sync (fetch + cache).
+content_file (vendor filename), is_dir_entry, fetch_original, and sync (fetch + cache).
 
 Adding a new source type means adding one class and one entry in STRATEGIES.
 No other module needs to change.
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .models import Entry, LockEntry
-from .resolver import _get, fetch_github_file, list_github_dir, resolve_github_sha
+from .resolver import _get, fetch_github_file, list_github_dir_recursive, resolve_github_sha
 
 DEFAULT_REF = "main"
 
@@ -28,7 +28,7 @@ def _infer_name(path_or_url: str) -> str:
     return stem if stem and stem != "." else "content"
 
 
-def _meta_sha(vdir: Path) -> str | None:
+def meta_sha(vdir: Path) -> str | None:
     """Return the SHA recorded in .meta, or None if missing/unreadable."""
     meta_path = vdir / ".meta"
     if not meta_path.exists():
@@ -60,6 +60,14 @@ class SourceStrategy(Protocol):
 
     def is_dir_entry(self, entry: Entry) -> bool:
         """True when the entry represents a directory of files rather than a single file."""
+        ...
+
+    def fetch_original(self, entry: Entry, sha: str) -> str:
+        """Re-fetch the upstream file at the given SHA and return its text content."""
+        ...
+
+    def fetch_dir_files(self, entry: Entry, sha: str) -> dict[str, str]:
+        """Re-fetch all files for a dir entry at the given SHA. Returns {filename: content}."""
         ...
 
     def sync(
@@ -124,6 +132,13 @@ class GithubStrategy:
     def is_dir_entry(self, entry: Entry) -> bool:
         return entry.path_in_repo != "." and not entry.path_in_repo.endswith(".md")
 
+    def fetch_original(self, entry: Entry, sha: str) -> str:
+        return fetch_github_file(entry.owner_repo, entry.path_in_repo, sha).decode()
+
+    def fetch_dir_files(self, entry: Entry, sha: str) -> dict[str, str]:
+        files = list_github_dir_recursive(entry.owner_repo, entry.path_in_repo, sha)
+        return {f["relative_path"]: _get(f["download_url"]).decode() for f in files}
+
     def sync(
         self,
         entry: Entry,
@@ -135,7 +150,7 @@ class GithubStrategy:
         update: bool,
     ) -> dict[str, LockEntry]:
         locked_sha = None if update else (locked[key].sha if key in locked else None)
-        meta = _meta_sha(vdir)
+        meta = meta_sha(vdir)
 
         if self.is_dir_entry(entry):
             content_exists = (
@@ -167,10 +182,11 @@ class GithubStrategy:
         vdir.mkdir(parents=True, exist_ok=True)
 
         if self.is_dir_entry(entry):
-            files = list_github_dir(entry.owner_repo, entry.path_in_repo, sha)
+            files = list_github_dir_recursive(entry.owner_repo, entry.path_in_repo, sha)
             for file_info in files:
-                file_content = _get(file_info["download_url"])
-                (vdir / file_info["name"]).write_bytes(file_content)
+                dest = vdir / file_info["relative_path"]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(_get(file_info["download_url"]))
             raw_url = f"https://api.github.com/repos/{entry.owner_repo}/contents/{entry.path_in_repo}?ref={sha}"
             print(f"-> {vdir}/ ({len(files)} files)")
         else:
@@ -226,6 +242,12 @@ class LocalStrategy:
     def is_dir_entry(self, entry: Entry) -> bool:
         return False
 
+    def fetch_original(self, entry: Entry, sha: str) -> str:
+        raise NotImplementedError("local entries have no upstream to fetch")
+
+    def fetch_dir_files(self, entry: Entry, sha: str) -> dict[str, str]:
+        raise NotImplementedError("local entries have no upstream to fetch")
+
     def sync(
         self,
         entry: Entry,
@@ -271,6 +293,13 @@ class UrlStrategy:
 
     def is_dir_entry(self, entry: Entry) -> bool:
         return False
+
+    def fetch_original(self, entry: Entry, sha: str) -> str:
+        # URL entries have no SHA versioning — re-fetch current content.
+        return _get(entry.url).decode()
+
+    def fetch_dir_files(self, entry: Entry, sha: str) -> dict[str, str]:
+        raise NotImplementedError("url entries cannot be directory entries")
 
     def sync(
         self,

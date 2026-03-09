@@ -213,5 +213,6 @@ tags
 .claude
 Skillfile
 Skillfile.lock
+Skillfile.conflict
 .skillfile/
 

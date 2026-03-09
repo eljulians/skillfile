@@ -56,7 +56,7 @@ def cmd_add(args: argparse.Namespace, repo_root: Path) -> None:
         write_lock(repo_root, locked)
         for target in manifest.install_targets:
             if target.adapter in ADAPTER_PATHS:
-                install_entry(entry, target, repo_root, copy_mode=False, dry_run=False)
+                install_entry(entry, target, repo_root, dry_run=False)
     except SkillfileError:
         manifest_path.write_text(original_manifest)
         if original_lock is None:

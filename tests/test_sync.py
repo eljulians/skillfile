@@ -100,23 +100,27 @@ def test_github_dir_entry_fetches_all_files(tmp_path):
     entry = make_dir_entry()
     sha = "87321636a1c666283d8f17398b45c2644395044b"
     dir_listing = [
-        {"name": "SKILL.md", "type": "file", "download_url": "https://raw.example.com/SKILL.md"},
-        {"name": "examples.md", "type": "file", "download_url": "https://raw.example.com/examples.md"},
+        {"relative_path": "SKILL.md", "download_url": "https://raw.example.com/SKILL.md"},
+        {"relative_path": "examples.md", "download_url": "https://raw.example.com/examples.md"},
+        {"relative_path": "resources/playbook.md", "download_url": "https://raw.example.com/resources/playbook.md"},
     ]
 
     def fake_get(url):
         if "SKILL.md" in url:
             return b"# SKILL content"
+        if "playbook" in url:
+            return b"# playbook content"
         return b"# examples content"
 
     with patch("skillfile.strategies.resolve_github_sha", return_value=sha):
-        with patch("skillfile.strategies.list_github_dir", return_value=dir_listing):
+        with patch("skillfile.strategies.list_github_dir_recursive", return_value=dir_listing):
             with patch("skillfile.strategies._get", side_effect=fake_get):
                 locked = sync_entry(entry, tmp_path, dry_run=False, locked={}, update=False)
 
     vdir = tmp_path / ".skillfile" / "skills" / "python-pro"
     assert (vdir / "SKILL.md").read_bytes() == b"# SKILL content"
     assert (vdir / "examples.md").read_bytes() == b"# examples content"
+    assert (vdir / "resources" / "playbook.md").read_bytes() == b"# playbook content"
     assert locked["github/skill/python-pro"].sha == sha
 
 
@@ -132,7 +136,7 @@ def test_github_dir_entry_skip_when_up_to_date(tmp_path):
     locked = {"github/skill/python-pro": LockEntry(sha=sha, raw_url="https://example.com")}
 
     with patch("skillfile.strategies.resolve_github_sha") as mock_resolve:
-        with patch("skillfile.strategies.list_github_dir") as mock_list:
+        with patch("skillfile.strategies.list_github_dir_recursive") as mock_list:
             result = sync_entry(entry, tmp_path, dry_run=False, locked=locked, update=False)
 
     mock_resolve.assert_not_called()

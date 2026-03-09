@@ -1,10 +1,20 @@
 import sys
 from pathlib import Path
 
-from .models import InstallTarget, Manifest
+from .models import Entry, InstallTarget, Manifest
 from .strategies import STRATEGIES
 
 MANIFEST_NAME = "Skillfile"
+
+
+def find_entry(name: str, manifest_path: Path) -> Entry:
+    from .exceptions import ManifestError
+
+    manifest = parse_manifest(manifest_path)
+    matching = [e for e in manifest.entries if e.name == name]
+    if not matching:
+        raise ManifestError(f"no entry named '{name}' in {MANIFEST_NAME}")
+    return matching[0]
 
 
 def parse_manifest(manifest_path: Path) -> Manifest:
