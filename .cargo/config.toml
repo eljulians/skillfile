@@ -1,0 +1,3 @@
+[alias]
+cov = "llvm-cov --workspace"
+cov-html = "llvm-cov --workspace --html"
