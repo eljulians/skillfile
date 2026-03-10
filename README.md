@@ -1,7 +1,7 @@
 [![CI](https://github.com/eljulians/skillfile/actions/workflows/ci.yml/badge.svg)](https://github.com/eljulians/skillfile/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/skillfile)](https://crates.io/crates/skillfile)
 [![Latest Release](https://img.shields.io/github/v/release/eljulians/skillfile)](https://github.com/eljulians/skillfile/releases/latest)
-[![MSRV](https://img.shields.io/badge/MSRV-1.75-blue)](https://github.com/eljulians/skillfile)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://github.com/eljulians/skillfile)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 # skillfile
@@ -189,13 +189,20 @@ agents/                      # your own local agent definitions (committed)
 ## Contributing
 
 ```bash
-# Run all tests
+# Unit tests (all crates, in src/)
+cargo test --workspace --lib
+
+# CLI integration tests (no network)
+cargo test --test cli
+
+# Functional tests (hits GitHub API, needs token)
+# Set GITHUB_TOKEN or GH_TOKEN, or run `gh auth login` first
+cargo test --test functional
+
+# All of the above
 cargo test --workspace
 
 # Lint
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-
-# Run functional tests (requires GITHUB_TOKEN)
-cargo test --test functional -- --ignored
 ```
