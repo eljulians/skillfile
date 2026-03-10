@@ -1,93 +1,201 @@
+[![CI](https://github.com/eljulians/skillfile/actions/workflows/ci.yml/badge.svg)](https://github.com/eljulians/skillfile/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/skillfile)](https://crates.io/crates/skillfile)
+[![Latest Release](https://img.shields.io/github/v/release/eljulians/skillfile)](https://github.com/eljulians/skillfile/releases/latest)
+[![MSRV](https://img.shields.io/badge/MSRV-1.75-blue)](https://github.com/eljulians/skillfile)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 # skillfile
 
 Declarative manager for AI skills and agents - the Brewfile for your AI tooling.
 
-## What it is
+Community skills and agents are popping up everywhere ([agentskill.sh](https://agentskill.sh/), [skills.sh](https://skills.sh/), GitHub repos, raw URLs). Installing them usually means `npx` one-liners, copy-pasting markdown, or running tool-specific plugins. Nothing tracks what you installed, there's no lock file, no way to update, and if you tweak a skill you lose your changes the next time you reinstall.
 
-AI frameworks like Claude Code, Gemini CLI, and Codex consume markdown files that define skills and agents. There is no standard way to manage these across tools or machines. You end up copying files by hand, losing track of upstream versions, and having no reproducibility across machines.
+`skillfile` gives you a single config file (`Skillfile`) that declares everything. Run `skillfile install` and it fetches your skills and agents, locks them to exact commit SHAs, and deploys them where Claude Code / Gemini CLI / Codex expect them. Edit an installed skill? `skillfile pin` captures your changes as a patch so they survive upstream updates — you stay in sync with the source without losing your customizations.
 
-`skillfile` fixes this. You declare what you want in a `Skillfile`, run `skillfile install`, and your skills and agents are fetched, pinned to an exact commit SHA, and placed where your platform expects them.
+Not a framework. Does not run agents. Just manages the markdown files that frameworks consume.
 
-It is not a framework. It does not run agents. It only manages the markdown files that frameworks consume.
+## Install
 
-## Status
-
-**v0.8.0** — sync, lock, install, pin/patch, and three platform adapters all work.
-
-## Workflow
+### From crates.io
 
 ```
-skillfile init       # once: configure which platforms to install for
-skillfile install    # fetch any missing entries, deploy to platform directories
+cargo install skillfile
 ```
 
-That's it. On a fresh clone, `skillfile install` reads `Skillfile.lock`, fetches the exact pinned content, and deploys.
+### Pre-built binaries
 
-## Usage
+Download from [GitHub Releases](https://github.com/eljulians/skillfile/releases).
 
-```
-skillfile install               # fetch + deploy
-skillfile install --dry-run     # show what would change
-skillfile install --update      # re-resolve all refs and update the lock
-skillfile install --link        # symlink files instead of copying
-
-skillfile sync                  # fetch only, don't deploy
-skillfile status                # show locked/unlocked/pinned state of all entries
-
-skillfile add github skill browser agentskills/browser .
-skillfile remove browser
-skillfile validate
-
-skillfile pin <name>            # capture local edits, survive future upstream updates
-skillfile unpin <name>          # discard edits, revert to pure upstream
-skillfile diff <name>           # show what changed upstream (after a conflict)
-skillfile resolve <name>        # three-way merge upstream changes with your edits
-```
-
-## Skillfile format
+### From source
 
 ```
-# install lines first — written by `skillfile init`
+git clone https://github.com/eljulians/skillfile.git
+cd skillfile
+cargo install --path crates/cli
+```
+
+## Quick Start
+
+```bash
+# 1. Create a Skillfile in your project
+touch Skillfile
+
+# 2. Configure which platforms to deploy for
+skillfile init
+
+# 3. Add entries
+skillfile add github skill obra/superpowers skills/requesting-code-review
+skillfile add github agent iannuttall/claude-agents agents/code-refactorer.md
+
+# 4. Fetch + deploy
+skillfile install
+```
+
+On a fresh clone, `skillfile install` reads `Skillfile.lock` and fetches the exact pinned content -- fully reproducible.
+
+## Skillfile Format
+
+```
+# Platform targets (written by `skillfile init`)
 install  claude-code  global
+install  gemini-cli   local
 
-# <source>  <type>  [name]  [source fields...]
-# name defaults to filename stem, ref defaults to main
-
-# GitHub
+# GitHub entries: github  <type>  [name]  <owner/repo>  <path>  [ref]
 github  agent  VoltAgent/awesome-claude-code-subagents  categories/01-core-development/backend-developer.md
+github  skill  obra/superpowers  skills/requesting-code-review
 
-# Local
+# Local entries: local  <type>  [name]  <path>
 local  skill  skills/git/commit.md
 
-# Direct URL
-url  skill  https://example.com/skill.md
+# URL entries: url  <type>  [name]  <url>
+url  skill  https://example.com/browser-skill.md
 ```
 
-Line-oriented, space-delimited, human-editable. No YAML, no TOML.
+Line-oriented, space-delimited, human-editable. No YAML, no TOML. Names are inferred from filename stems when omitted. See [SPEC.md](SPEC.md) for the full format specification.
 
-**Name inference:** When `name` is omitted, it's inferred from the filename stem. For `github` entries, a field containing `/` is treated as `owner/repo` (not a name). Names must match `[a-zA-Z0-9._-]` — they become directory names and filenames. Quoted fields (`"path with spaces"`) are supported for paths.
+| Field | Description |
+|---|---|
+| `type` | Source type: `local`, `github`, `url` |
+| `entity-type` | `skill` or `agent` |
+| `name` | Logical name (inferred from filename if omitted). Must match `[a-zA-Z0-9._-]`. |
+| `owner/repo` | (github) GitHub repository identifier |
+| `path` | Path to the `.md` file (local: relative to repo root, github: within the repo) |
+| `ref` | (github) Branch, tag, or commit SHA. Defaults to `main`. |
+| `url` | (url) Direct URL to raw markdown file |
 
-## Directory layout
+## Commands
+
+### Setup
+
+| Command | Description | Key flags |
+|---|---|---|
+| `init` | Configure install targets interactively | |
+| `add <source> <type> ...` | Add entry to the Skillfile | `--name` |
+| `remove <name>` | Remove entry, lock record, and cache | |
+
+### Workflow
+
+| Command | Description | Key flags |
+|---|---|---|
+| `install` | Fetch + deploy to platform directories | `--dry-run`, `--update` |
+| `sync` | Fetch only (no deploy) | `--dry-run`, `--entry NAME`, `--update` |
+| `status` | Show entry states (locked/unlocked/pinned) | `--check-upstream` |
+
+### Validation
+
+| Command | Description | Key flags |
+|---|---|---|
+| `validate` | Check for syntax errors, duplicates, orphans | |
+| `sort` | Sort entries into a standard order | `--dry-run` |
+
+### Customization
+
+| Command | Description | Key flags |
+|---|---|---|
+| `pin <name>` | Capture local edits as a patch | `--dry-run` |
+| `unpin <name>` | Discard patch, restore upstream | |
+| `diff <name>` | Show local or upstream delta | |
+| `resolve [name]` | Three-way merge after a conflict | `--abort` |
+
+## Pinning & Patching
+
+Edit an installed skill, then `pin` it to survive upstream updates:
+
+```bash
+# 1. Edit the deployed file directly
+vim ~/.claude/skills/browser/SKILL.md
+
+# 2. Capture your changes as a patch
+skillfile pin browser
+
+# 3. Update to latest upstream -- your patch is reapplied automatically
+skillfile install --update
+
+# 4. If upstream conflicts with your patch, resolve it
+skillfile resolve browser     # opens $MERGETOOL or $EDITOR
+skillfile resolve --abort     # or discard the conflict
+```
+
+Patches are stored in `.skillfile/patches/` and committed to version control.
+
+## Supported Platforms
+
+| Platform | Skills directory | Agents directory | Scopes |
+|---|---|---|---|
+| `claude-code` | `.claude/skills/` / `~/.claude/skills/` | `.claude/agents/` / `~/.claude/agents/` | local, global |
+| `gemini-cli` | `.gemini/skills/` / `~/.gemini/skills/` | `.gemini/agents/` / `~/.gemini/agents/` | local, global |
+| `codex` | `.codex/skills/` / `~/.codex/skills/` | -- | local, global |
+
+Multiple platforms can be configured simultaneously. Each `install` line in the Skillfile adds a deployment target.
+
+## Directory Layout
 
 ```
-Skillfile                    ← manifest (committed)
-Skillfile.lock               ← pinned SHAs (committed)
+Skillfile                    # manifest (committed)
+Skillfile.lock               # pinned SHAs (committed)
 .skillfile/
-  cache/                     ← fetched upstream files (gitignored)
-    agents/
-      backend-developer/
-        backend-developer.md
+  cache/                     # fetched upstream files (gitignored)
+    skills/
+      browser/
+        SKILL.md
         .meta
-  patches/                   ← your customisations of upstream files (committed)
     agents/
-      backend-developer.patch
-  conflict                   ← pending conflict state (gitignored)
-skills/                      ← your own local skill definitions (committed)
-agents/                      ← your own local agent definitions (committed)
+      code-refactorer/
+        code-refactorer.md
+        .meta
+  patches/                   # your customisations (committed)
+    skills/
+      browser.patch
+  conflict                   # pending conflict state (gitignored)
+skills/                      # your own local skill definitions (committed)
+agents/                      # your own local agent definitions (committed)
 ```
 
-`skillfile init` writes the correct `.gitignore` entries automatically — `.skillfile/cache/` and `.skillfile/conflict` are ignored; `.skillfile/patches/` is tracked.
+## Security Model
 
-## Requirements
+- **Lock file is the primary security primitive.** Pinned SHAs prevent supply chain drift.
+- **`install --dry-run`** enables pre-deployment review of what will be fetched and placed.
+- **Patches are explicit** -- all modifications are visible in `.skillfile/patches/`.
+- **File manager, not executor.** Skillfile never runs the content it manages. Threat model is analogous to `git clone`.
 
-Python 3.10+, stdlib only. No dependencies.
+## Environment Variables
+
+| Variable | Description |
+|---|---|
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub API token for SHA resolution and private repos |
+| `MERGETOOL` | Merge tool for `skillfile resolve` |
+| `EDITOR` | Fallback editor for `skillfile resolve` |
+
+## Contributing
+
+```bash
+# Run all tests
+cargo test --workspace
+
+# Lint
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+
+# Run functional tests (requires GITHUB_TOKEN)
+cargo test --test functional -- --ignored
+```

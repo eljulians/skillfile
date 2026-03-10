@@ -7,11 +7,34 @@ use std::process;
 use clap::{Parser, Subcommand};
 use skillfile_core::error::SkillfileError;
 
+/// Parse and validate entity type (must be "skill" or "agent").
+fn parse_entity_type(s: &str) -> Result<String, String> {
+    match s {
+        "skill" | "agent" => Ok(s.to_string()),
+        _ => Err(format!("invalid type '{s}': expected 'skill' or 'agent'")),
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "skillfile",
     about = "Tool-agnostic AI skill & agent manager",
-    version
+    long_about = "\
+Tool-agnostic AI skill & agent manager — the Brewfile for your AI tooling.
+
+Declare skills and agents in a Skillfile, lock them to exact SHAs, and deploy
+to Claude Code, Gemini CLI, or Codex with a single command.
+
+Quick start:
+  skillfile init                          # configure platforms
+  skillfile add github skill owner/repo path/to/SKILL.md
+  skillfile install                       # fetch + deploy",
+    version,
+    after_long_help = "\
+ENVIRONMENT VARIABLES:
+  GITHUB_TOKEN, GH_TOKEN   GitHub API token for SHA resolution and private repos
+  MERGETOOL                 Merge tool for `skillfile resolve` (default: $EDITOR)
+  EDITOR                    Fallback editor for `skillfile resolve`"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -20,7 +43,85 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Fetch community entries into .skillfile/ (without deploying)
+    // -- Setup (display_order 10-19) ------------------------------------------
+    /// Configure install targets interactively
+    #[command(display_order = 10)]
+    #[command(long_about = "\
+Configure which platforms and scopes to install for.
+
+Writes `install` lines to your Skillfile (e.g. `install claude-code global`).
+Run this once when setting up a new project.
+
+Examples:
+  skillfile init")]
+    Init,
+
+    /// Add an entry to the Skillfile
+    #[command(display_order = 11)]
+    #[command(long_about = "\
+Add a skill or agent entry to the Skillfile. The entry is appended to the file
+and automatically synced and installed if install targets are configured.
+
+If the sync or install fails, the Skillfile and lock are rolled back.
+
+Examples:
+  skillfile add github skill owner/repo skills/SKILL.md
+  skillfile add github agent owner/repo agents/reviewer.md v2.0 --name reviewer
+  skillfile add local skill skills/git/commit.md
+  skillfile add url agent https://example.com/agent.md --name my-agent")]
+    Add {
+        #[command(subcommand)]
+        source: AddSource,
+    },
+
+    /// Remove an entry from the Skillfile
+    #[command(display_order = 12)]
+    #[command(long_about = "\
+Remove a named entry from the Skillfile, its lock record, and its cached files.
+
+Examples:
+  skillfile remove browser
+  skillfile remove code-refactorer")]
+    Remove {
+        /// Entry name to remove
+        name: String,
+    },
+
+    // -- Workflow (display_order 20-29) ---------------------------------------
+    /// Fetch entries and deploy to platform directories
+    #[command(display_order = 20)]
+    #[command(long_about = "\
+Fetch all entries into .skillfile/cache/ and deploy them to the directories
+expected by each configured platform.
+
+On a fresh clone, this reads Skillfile.lock and fetches the exact pinned
+content. Patches from .skillfile/patches/ are applied after deployment.
+
+Examples:
+  skillfile install
+  skillfile install --dry-run
+  skillfile install --update      # re-resolve refs, update the lock")]
+    Install {
+        /// Show planned actions without fetching or installing
+        #[arg(long)]
+        dry_run: bool,
+        /// Re-resolve all refs and update the lock
+        #[arg(long)]
+        update: bool,
+    },
+
+    /// Fetch entries into .skillfile/cache/ without deploying
+    #[command(display_order = 21)]
+    #[command(long_about = "\
+Fetch community entries into .skillfile/cache/ and update Skillfile.lock,
+but do not deploy to platform directories. Useful for reviewing changes
+before deploying.
+
+Examples:
+  skillfile sync
+  skillfile sync --dry-run
+  skillfile sync --entry browser
+  skillfile sync --update")]
     Sync {
         /// Show planned actions without fetching
         #[arg(long)]
@@ -34,48 +135,59 @@ enum Command {
     },
 
     /// Show state of all entries
+    #[command(display_order = 22)]
+    #[command(long_about = "\
+Show the state of every entry: locked, unlocked, pinned, or missing.
+
+With --check-upstream, resolves the current upstream SHA for each entry
+and shows whether an update is available.
+
+Examples:
+  skillfile status
+  skillfile status --check-upstream")]
     Status {
         /// Check current upstream SHA (makes API calls)
         #[arg(long)]
         check_upstream: bool,
     },
 
-    /// Configure install targets interactively
-    Init,
-
-    /// Fetch entries and deploy to platform directories
-    Install {
-        /// Show planned actions without fetching or installing
-        #[arg(long)]
-        dry_run: bool,
-        /// Re-resolve all refs and update the lock
-        #[arg(long)]
-        update: bool,
-    },
-
-    /// Add an entry to the Skillfile
-    Add {
-        #[command(subcommand)]
-        source: AddSource,
-    },
-
-    /// Remove an entry from the Skillfile
-    Remove {
-        /// Entry name to remove
-        name: String,
-    },
-
+    // -- Validation (display_order 30-39) -------------------------------------
     /// Check the Skillfile for errors
+    #[command(display_order = 30)]
+    #[command(long_about = "\
+Parse the Skillfile and report any errors: syntax issues, unknown platforms,
+duplicate entry names, orphaned lock entries, and duplicate install targets.
+
+Examples:
+  skillfile validate")]
     Validate,
 
-    /// Sort and canonicalize the Skillfile in-place
+    /// Sort entries in the Skillfile into a standard order
+    #[command(display_order = 31)]
+    #[command(long_about = "\
+Sort and canonicalize the Skillfile in-place. Entries are ordered by source
+type, then entity type, then name. Install lines come first.
+
+Examples:
+  skillfile sort
+  skillfile sort --dry-run")]
     Sort {
         /// Print sorted output without writing
         #[arg(long)]
         dry_run: bool,
     },
 
-    /// Capture your edits to an installed entry so they survive upstream updates
+    // -- Customization (display_order 40-49) ----------------------------------
+    /// Capture local edits so they survive upstream updates
+    #[command(display_order = 40)]
+    #[command(long_about = "\
+Diff your installed copy against the cached upstream version and save the
+result as a patch in .skillfile/patches/. Future `install` commands apply
+your patch after fetching upstream content.
+
+Examples:
+  skillfile pin browser
+  skillfile pin browser --dry-run")]
     Pin {
         /// Entry name to pin
         name: String,
@@ -84,19 +196,44 @@ enum Command {
         dry_run: bool,
     },
 
-    /// Discard pinned customisations and restore pure upstream on next install
+    /// Discard pinned customisations and restore upstream
+    #[command(display_order = 41)]
+    #[command(long_about = "\
+Remove the patch for an entry from .skillfile/patches/. The next `install`
+will deploy the pure upstream version.
+
+Examples:
+  skillfile unpin browser")]
     Unpin {
         /// Entry name to unpin
         name: String,
     },
 
-    /// Show local changes (or upstream delta after a conflict)
+    /// Show local changes or upstream delta after a conflict
+    #[command(display_order = 42)]
+    #[command(long_about = "\
+Show the diff between your installed copy and the cached upstream version.
+During a conflict, shows the upstream delta that triggered it.
+
+Examples:
+  skillfile diff browser")]
     Diff {
         /// Entry name
         name: String,
     },
 
     /// Merge upstream changes with your customisations after a conflict
+    #[command(display_order = 43)]
+    #[command(long_about = "\
+When `install --update` detects that upstream changed and you have a patch,
+it writes a conflict. Use `resolve` to open a three-way merge in your
+configured merge tool ($MERGETOOL or $EDITOR).
+
+Use --abort to discard the conflict state without merging.
+
+Examples:
+  skillfile resolve browser
+  skillfile resolve --abort")]
     Resolve {
         /// Entry name to resolve
         name: Option<String>,
@@ -110,10 +247,10 @@ enum Command {
 enum AddSource {
     /// Add a GitHub-hosted entry
     Github {
-        /// skill or agent
-        #[arg(value_name = "TYPE")]
+        /// Entity type: skill or agent
+        #[arg(value_name = "TYPE", value_parser = parse_entity_type)]
         entity_type: String,
-        /// GitHub repository (e.g. VoltAgent/repo)
+        /// GitHub repository (e.g. owner/repo)
         #[arg(value_name = "OWNER/REPO")]
         owner_repo: String,
         /// Path to the .md file within the repo
@@ -128,8 +265,8 @@ enum AddSource {
     },
     /// Add a local file entry
     Local {
-        /// skill or agent
-        #[arg(value_name = "TYPE")]
+        /// Entity type: skill or agent
+        #[arg(value_name = "TYPE", value_parser = parse_entity_type)]
         entity_type: String,
         /// Path to the .md file relative to repo root
         #[arg(value_name = "PATH")]
@@ -140,8 +277,8 @@ enum AddSource {
     },
     /// Add a URL entry
     Url {
-        /// skill or agent
-        #[arg(value_name = "TYPE")]
+        /// Entity type: skill or agent
+        #[arg(value_name = "TYPE", value_parser = parse_entity_type)]
         entity_type: String,
         /// Direct URL to the .md file
         #[arg(value_name = "URL")]
