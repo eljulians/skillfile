@@ -5,7 +5,7 @@ use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{short_sha, Entry, Manifest, SourceFields};
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
-use skillfile_core::patch::walkdir;
+use skillfile_core::patch::{has_dir_patch, has_patch, walkdir};
 use skillfile_deploy::paths::{installed_dir_files, installed_path};
 use skillfile_sources::strategy::{content_file, is_dir_entry, meta_sha};
 use skillfile_sources::sync::vendor_dir_for;
@@ -39,7 +39,10 @@ fn is_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -> bo
         let cache_text = std::fs::read_to_string(&cache_file).map_err(|_| ())?;
         let installed_text = std::fs::read_to_string(&dest).map_err(|_| ())?;
 
-        // Phase 5: pin-aware comparison goes here
+        // If pinned, the installed file is expected to differ from cache
+        if has_patch(entry, repo_root) {
+            return Ok(false);
+        }
         Ok(installed_text != cache_text)
     })();
 
@@ -53,13 +56,18 @@ fn is_dir_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -
             return Ok(false);
         }
 
+        // If pinned, the installed files are expected to differ from cache
+        if has_dir_patch(entry, repo_root) {
+            return Ok(false);
+        }
+
         let vdir = vendor_dir_for(entry, repo_root);
         if !vdir.is_dir() {
             return Ok(false);
         }
 
         for cache_file in walkdir(&vdir) {
-            if cache_file.file_name().map_or(true, |n| n == ".meta") {
+            if cache_file.file_name().is_none_or(|n| n == ".meta") {
                 continue;
             }
             let filename = cache_file
@@ -75,7 +83,6 @@ fn is_dir_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -
             let cache_text = std::fs::read_to_string(&cache_file).map_err(|_| ())?;
             let installed_text = std::fs::read_to_string(inst_path).map_err(|_| ())?;
 
-            // Phase 5: pin-aware comparison goes here
             if installed_text != cache_text {
                 return Ok(true);
             }
@@ -130,7 +137,9 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
         let meta = meta_sha(&vdir);
 
         let mut annotations = Vec::new();
-        // Phase 5: [pinned] annotation goes here
+        if has_patch(entry, repo_root) || has_dir_patch(entry, repo_root) {
+            annotations.push("[pinned]");
+        }
         if is_modified_local(entry, &manifest, repo_root) {
             annotations.push("[modified]");
         }
@@ -481,6 +490,56 @@ mod tests {
         assert!(
             !is_modified_local(entry, &manifest, dir.path()),
             "local entries must always report modified=false"
+        );
+    }
+
+    #[test]
+    fn pinned_entry_not_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "install  claude-code  local\ngithub  agent  my-agent  owner/repo  agents/agent.md  main\n",
+        );
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), "agent", "my-agent", SHA);
+        write_vendor_content(dir.path(), "agent", "my-agent", "agent.md", ORIGINAL);
+        let installed = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
+
+        // Write a patch file — entry is pinned
+        let patches_dir = dir.path().join(".skillfile/patches/agents");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        std::fs::write(patches_dir.join("my-agent.patch"), "patch content").unwrap();
+
+        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
+        let manifest = result.manifest;
+        let entry = &manifest.entries[0];
+        assert!(
+            !is_modified_local(entry, &manifest, dir.path()),
+            "pinned entries must not report as modified"
+        );
+    }
+
+    #[test]
+    fn dir_entry_pinned_not_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_dir_entry(dir.path(), Some(MODIFIED), ORIGINAL);
+
+        // Write a dir patch — entry is pinned
+        let patches_dir = dir.path().join(".skillfile/patches/skills/my-dir");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        std::fs::write(patches_dir.join("tool.md.patch"), "patch content").unwrap();
+
+        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
+        let manifest = result.manifest;
+        let entry = &manifest.entries[0];
+        assert!(
+            !is_modified_local(entry, &manifest, dir.path()),
+            "pinned dir entries must not report as modified"
         );
     }
 }

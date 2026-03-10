@@ -51,16 +51,6 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
-      - name: Strip binary
-        run: |
-          BINARY=target/${{ matrix.target }}/release/skillfile
-          if command -v strip &> /dev/null; then
-            # Don't strip cross-compiled binaries with host strip
-            if [ "${{ matrix.cross }}" != "true" ]; then
-              strip "$BINARY"
-            fi
-          fi
-
       - name: Package artifact
         run: |
           mkdir -p dist

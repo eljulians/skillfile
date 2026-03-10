@@ -107,13 +107,13 @@ jobs:
         run: cargo test --test functional
 
   msrv:
-    name: MSRV (1.94)
+    name: MSRV (1.82)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust 1.94
-        uses: dtolnay/rust-toolchain@1.94
+      - name: Install Rust 1.82
+        uses: dtolnay/rust-toolchain@1.82
 
       - name: Check compilation
         run: cargo check --workspace

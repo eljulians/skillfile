@@ -24,6 +24,8 @@ pub fn patch_path(entry: &Entry, repo_root: &Path) -> PathBuf {
 }
 
 /// Check whether a single-file patch exists for this entry.
+///
+/// Returns `true` if `.skillfile/patches/<type>s/<name>.patch` exists.
 #[must_use]
 pub fn has_patch(entry: &Entry, repo_root: &Path) -> bool {
     patch_path(entry, repo_root).exists()
@@ -146,6 +148,18 @@ pub fn remove_all_dir_patches(entry: &Entry, repo_root: &Path) -> Result<(), Ski
 /// Generate a unified diff of original → modified. Empty string if identical.
 /// All output lines are guaranteed to end with '\n'.
 /// Format: `--- a/{label}` / `+++ b/{label}`, 3 lines of context.
+///
+/// ```
+/// use skillfile_core::patch::generate_patch;
+///
+/// // Identical content produces no patch
+/// assert_eq!(generate_patch("hello\n", "hello\n", "test.md"), "");
+///
+/// // Different content produces a unified diff
+/// let patch = generate_patch("old\n", "new\n", "test.md");
+/// assert!(patch.contains("--- a/test.md"));
+/// assert!(patch.contains("+++ b/test.md"));
+/// ```
 pub fn generate_patch(original: &str, modified: &str, label: &str) -> String {
     if original == modified {
         return String::new();
@@ -291,8 +305,18 @@ fn find_hunk_position(
 
 /// Apply a unified diff to original text, returning modified content.
 /// Pure implementation — no subprocess, no `patch` binary required.
-/// Only handles patches produced by `generate_patch()` (unified diff format).
+/// Only handles patches produced by [`generate_patch()`] (unified diff format).
 /// Returns an error if the patch does not apply cleanly.
+///
+/// ```
+/// use skillfile_core::patch::{generate_patch, apply_patch_pure};
+///
+/// let original = "line1\nline2\nline3\n";
+/// let modified = "line1\nchanged\nline3\n";
+/// let patch = generate_patch(original, modified, "test.md");
+/// let result = apply_patch_pure(original, &patch).unwrap();
+/// assert_eq!(result, modified);
+/// ```
 pub fn apply_patch_pure(original: &str, patch_text: &str) -> Result<String, SkillfileError> {
     if patch_text.is_empty() {
         return Ok(original.to_string());

@@ -171,7 +171,7 @@ impl PlatformAdapter for FileSystemAdapter {
         if is_dir {
             let mut result = HashMap::new();
             for file in walkdir(source) {
-                if file.file_name().map_or(true, |n| n == ".meta") {
+                if file.file_name().is_none_or(|n| n == ".meta") {
                     continue;
                 }
                 if let Ok(rel) = file.strip_prefix(source) {
@@ -224,7 +224,7 @@ impl PlatformAdapter for FileSystemAdapter {
             for file in walkdir(&vdir) {
                 if file
                     .extension()
-                    .map_or(true, |ext| ext.to_string_lossy() != "md")
+                    .is_none_or(|ext| ext.to_string_lossy() != "md")
                 {
                     continue;
                 }

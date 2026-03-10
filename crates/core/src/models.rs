@@ -20,6 +20,13 @@ impl Scope {
     pub const ALL: &[Scope] = &[Scope::Global, Scope::Local];
 
     /// Parse a scope string. Returns `None` for unrecognised values.
+    ///
+    /// ```
+    /// use skillfile_core::models::Scope;
+    /// assert_eq!(Scope::parse("global"), Some(Scope::Global));
+    /// assert_eq!(Scope::parse("local"), Some(Scope::Local));
+    /// assert_eq!(Scope::parse("invalid"), None);
+    /// ```
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
@@ -61,6 +68,13 @@ impl EntityType {
     pub const ALL: &[EntityType] = &[EntityType::Agent, EntityType::Skill];
 
     /// Parse an entity type string. Returns `None` for unrecognised values.
+    ///
+    /// ```
+    /// use skillfile_core::models::EntityType;
+    /// assert_eq!(EntityType::parse("skill"), Some(EntityType::Skill));
+    /// assert_eq!(EntityType::parse("agent"), Some(EntityType::Agent));
+    /// assert_eq!(EntityType::parse("rule"), None);
+    /// ```
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
@@ -100,6 +114,11 @@ impl fmt::Display for EntityType {
 // ---------------------------------------------------------------------------
 
 /// Return the first 12 characters of a SHA (or the full string if shorter).
+///
+/// ```
+/// assert_eq!(skillfile_core::models::short_sha("abcdef1234567890"), "abcdef123456");
+/// assert_eq!(skillfile_core::models::short_sha("short"), "short");
+/// ```
 #[must_use]
 pub fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(12)]

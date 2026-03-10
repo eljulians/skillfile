@@ -15,6 +15,14 @@ pub struct ParseResult {
 }
 
 /// Infer an entry name from a path or URL (filename stem).
+///
+/// ```
+/// use skillfile_core::parser::infer_name;
+/// assert_eq!(infer_name("skills/requesting-code-review"), "requesting-code-review");
+/// assert_eq!(infer_name("agents/code-refactorer.md"), "code-refactorer");
+/// assert_eq!(infer_name("https://example.com/browser-skill.md"), "browser-skill");
+/// assert_eq!(infer_name("."), "content");
+/// ```
 #[must_use]
 pub fn infer_name(path_or_url: &str) -> String {
     let p = std::path::Path::new(path_or_url);

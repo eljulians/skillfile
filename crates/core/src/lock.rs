@@ -7,6 +7,22 @@ use crate::models::{Entry, LockEntry};
 pub const LOCK_NAME: &str = "Skillfile.lock";
 
 /// Generate the lock file key for an entry: `"{source_type}/{entity_type}/{name}"`.
+///
+/// ```
+/// use skillfile_core::models::*;
+/// use skillfile_core::lock::lock_key;
+///
+/// let entry = Entry {
+///     entity_type: EntityType::Agent,
+///     name: "code-refactorer".into(),
+///     source: SourceFields::Github {
+///         owner_repo: "owner/repo".into(),
+///         path_in_repo: "agents/code-refactorer.md".into(),
+///         ref_: "main".into(),
+///     },
+/// };
+/// assert_eq!(lock_key(&entry), "github/agent/code-refactorer");
+/// ```
 #[must_use]
 pub fn lock_key(entry: &Entry) -> String {
     format!(

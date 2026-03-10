@@ -7,41 +7,52 @@ use skillfile_deploy::adapter::known_adapters;
 
 const GITIGNORE_ENTRIES: &[&str] = &[".skillfile/cache/", ".skillfile/conflict"];
 
-fn prompt(reader: &mut dyn BufRead, writer: &mut dyn Write, msg: &str) -> String {
-    write!(writer, "{msg}").unwrap();
-    writer.flush().unwrap();
+fn prompt(
+    reader: &mut dyn BufRead,
+    writer: &mut dyn Write,
+    msg: &str,
+) -> Result<String, SkillfileError> {
+    write!(writer, "{msg}")?;
+    writer.flush()?;
     let mut line = String::new();
-    reader.read_line(&mut line).unwrap();
-    line.trim().to_string()
+    reader.read_line(&mut line)?;
+    Ok(line.trim().to_string())
 }
 
-fn prompt_yn(reader: &mut dyn BufRead, writer: &mut dyn Write, msg: &str) -> bool {
-    let answer = prompt(reader, writer, &format!("{msg} [y/N] "));
-    answer.eq_ignore_ascii_case("y")
+fn prompt_yn(
+    reader: &mut dyn BufRead,
+    writer: &mut dyn Write,
+    msg: &str,
+) -> Result<bool, SkillfileError> {
+    let answer = prompt(reader, writer, &format!("{msg} [y/N] "))?;
+    Ok(answer.eq_ignore_ascii_case("y"))
 }
 
-fn collect_targets(reader: &mut dyn BufRead, writer: &mut dyn Write) -> Vec<(String, String)> {
+fn collect_targets(
+    reader: &mut dyn BufRead,
+    writer: &mut dyn Write,
+) -> Result<Vec<(String, String)>, SkillfileError> {
     let adapter_list = known_adapters().join(", ");
     let adapters_set: std::collections::HashSet<String> =
         known_adapters().iter().map(|s| s.to_string()).collect();
     let mut targets = Vec::new();
 
     loop {
-        writeln!(writer, "\nKnown platforms: {adapter_list}").unwrap();
+        writeln!(writer, "\nKnown platforms: {adapter_list}")?;
         let adapter = loop {
-            let a = prompt(reader, writer, "Platform: ");
+            let a = prompt(reader, writer, "Platform: ")?;
             if adapters_set.contains(&a) {
                 break a;
             }
-            writeln!(writer, "  Please enter one of: {adapter_list}").unwrap();
+            writeln!(writer, "  Please enter one of: {adapter_list}")?;
         };
 
         let scope = loop {
-            let s = prompt(reader, writer, "Scope [global/local/both]: ");
+            let s = prompt(reader, writer, "Scope [global/local/both]: ")?;
             if ["global", "local", "both"].contains(&s.as_str()) {
                 break s;
             }
-            writeln!(writer, "  Please enter one of: global, local, both").unwrap();
+            writeln!(writer, "  Please enter one of: global, local, both")?;
         };
 
         if scope == "both" {
@@ -51,12 +62,12 @@ fn collect_targets(reader: &mut dyn BufRead, writer: &mut dyn Write) -> Vec<(Str
             targets.push((adapter, scope));
         }
 
-        if !prompt_yn(reader, writer, "Add another platform?") {
+        if !prompt_yn(reader, writer, "Add another platform?")? {
             break;
         }
     }
 
-    targets
+    Ok(targets)
 }
 
 fn rewrite_install_lines(
@@ -141,36 +152,34 @@ pub fn cmd_init_with_io(
 ) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
-        return Err(SkillfileError::Manifest(format!(
-            "{MANIFEST_NAME} not found in {}. Create one and run `skillfile init`.",
-            repo_root.display()
-        )));
+        std::fs::write(&manifest_path, "")?;
+        writeln!(writer, "Created {MANIFEST_NAME}.")?;
     }
 
     let result = parse_manifest(&manifest_path)?;
     let existing = &result.manifest.install_targets;
 
     if !existing.is_empty() {
-        writeln!(writer, "Existing install config found:").unwrap();
+        writeln!(writer, "Existing install config found:")?;
         for t in existing {
-            writeln!(writer, "  install  {}  {}", t.adapter, t.scope).unwrap();
+            writeln!(writer, "  install  {}  {}", t.adapter, t.scope)?;
         }
-        writeln!(writer, "This will be replaced.").unwrap();
-        if !prompt_yn(reader, writer, "Continue?") {
-            writeln!(writer, "Aborted.").unwrap();
+        writeln!(writer, "This will be replaced.")?;
+        if !prompt_yn(reader, writer, "Continue?")? {
+            writeln!(writer, "Aborted.")?;
             return Ok(());
         }
     }
 
-    writeln!(writer, "\nConfigure install targets.").unwrap();
-    let new_targets = collect_targets(reader, writer);
+    writeln!(writer, "\nConfigure install targets.")?;
+    let new_targets = collect_targets(reader, writer)?;
 
     rewrite_install_lines(&manifest_path, &new_targets)?;
     update_gitignore(repo_root)?;
 
-    writeln!(writer, "\nInstall config written to Skillfile:").unwrap();
+    writeln!(writer, "\nInstall config written to Skillfile:")?;
     for (adapter, scope) in &new_targets {
-        writeln!(writer, "  install  {adapter}  {scope}").unwrap();
+        writeln!(writer, "  install  {adapter}  {scope}")?;
     }
 
     Ok(())
@@ -192,13 +201,15 @@ mod tests {
     }
 
     #[test]
-    fn no_manifest() {
+    fn creates_manifest_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let mut reader = io::Cursor::new(b"".to_vec());
-        let mut output = Vec::new();
-        let result = cmd_init_with_io(dir.path(), &mut reader, &mut output);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(!dir.path().join(MANIFEST_NAME).exists());
+
+        run_init(dir.path(), "claude-code\nglobal\nn\n");
+
+        assert!(dir.path().join(MANIFEST_NAME).exists());
+        let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        assert!(text.contains("install  claude-code  global"));
     }
 
     #[test]

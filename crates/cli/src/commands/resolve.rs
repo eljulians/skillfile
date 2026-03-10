@@ -44,9 +44,9 @@ fn three_way_merge(
             "merge-file",
             "-p",
             "--diff3",
-            yours_f.to_str().unwrap(),
-            base_f.to_str().unwrap(),
-            theirs_f.to_str().unwrap(),
+            &yours_f.to_string_lossy(),
+            &base_f.to_string_lossy(),
+            &theirs_f.to_string_lossy(),
         ])
         .output()
         .map_err(|e| {

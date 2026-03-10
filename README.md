@@ -1,8 +1,9 @@
 [![CI](https://github.com/eljulians/skillfile/actions/workflows/ci.yml/badge.svg)](https://github.com/eljulians/skillfile/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/skillfile)](https://crates.io/crates/skillfile)
 [![Latest Release](https://img.shields.io/github/v/release/eljulians/skillfile)](https://github.com/eljulians/skillfile/releases/latest)
-[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://github.com/eljulians/skillfile)
+[![MSRV](https://img.shields.io/badge/MSRV-1.82-blue)](https://github.com/eljulians/skillfile)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#requirements)
 
 # skillfile
 
@@ -171,12 +172,13 @@ skills/                      # your own local skill definitions (committed)
 agents/                      # your own local agent definitions (committed)
 ```
 
-## Security Model
+## Security
 
-- **Lock file is the primary security primitive.** Pinned SHAs prevent supply chain drift.
-- **`install --dry-run`** enables pre-deployment review of what will be fetched and placed.
-- **Patches are explicit** -- all modifications are visible in `.skillfile/patches/`.
-- **File manager, not executor.** Skillfile never runs the content it manages. Threat model is analogous to `git clone`.
+Skillfile is a file manager. It downloads content from sources you specify and places it where your AI tools expect it. It does not analyze, verify, or sandbox the content it manages.
+
+The lock file pins entries to exact commit SHAs, giving you reproducibility -- the same SHA always produces the same bytes. `install --dry-run` lets you review what will be fetched. Patches make all local modifications visible in version control. But none of this tells you whether the content is safe to use.
+
+Review what you install. The risk profile is the same as `git clone`.
 
 ## Environment Variables
 
