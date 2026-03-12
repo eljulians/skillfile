@@ -644,6 +644,7 @@ fn sort_by_popularity(items: &mut [SearchResult]) {
 
 /// Minimal URL encoding for query parameters.
 fn urlencoded(s: &str) -> String {
+    let s = s.trim();
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -1136,6 +1137,8 @@ mod tests {
         assert_eq!(urlencoded("a&b"), "a%26b");
         assert_eq!(urlencoded("q=1"), "q%3D1");
         assert_eq!(urlencoded("hello"), "hello");
+        assert_eq!(urlencoded("docker\n"), "docker");
+        assert_eq!(urlencoded("  docker  "), "docker");
         // Multi-byte characters pass through (non-ASCII is not percent-encoded).
         assert_eq!(urlencoded("代码审查"), "代码审查");
     }
