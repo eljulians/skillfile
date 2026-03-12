@@ -5,5 +5,7 @@ pub mod init;
 pub mod pin;
 pub mod remove;
 pub mod resolve;
+pub mod search;
+pub mod search_tui;
 pub mod status;
 pub mod validate;
