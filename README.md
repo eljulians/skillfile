@@ -5,7 +5,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/eljulians/skillfile)](https://github.com/eljulians/skillfile/releases/latest)
 [![MSRV](https://img.shields.io/badge/MSRV-1.82-blue)](https://github.com/eljulians/skillfile)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)](#requirements)
+[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)]()
 
 Declarative manager for AI skills and agents - the Brewfile for your AI tooling.
 
@@ -37,6 +37,8 @@ cd skillfile
 cargo install --path crates/cli
 ```
 
+Run `skillfile --help` for the full command list.
+
 ## Quick Start
 
 ```bash
@@ -49,6 +51,16 @@ skillfile add github agent iannuttall/claude-agents agents/code-refactorer.md
 ```
 
 On a fresh clone, `skillfile install` reads `Skillfile.lock` and fetches the exact pinned content -- fully reproducible.
+
+> **Note:** skillfile uses the GitHub API to resolve commits. Without a token you'll hit the 60 requests/hour rate limit fast. Set `GITHUB_TOKEN`, `GH_TOKEN`, or run `gh auth login` before using it. See [Environment Variables](#environment-variables) for details.
+
+## Key Features
+
+- [**Declarative manifest**](#skillfile-format) — one config file declares all your skills, agents, and platform targets
+- [**Reproducible installs**](#lock-file) — every entry pinned to an exact commit SHA via `Skillfile.lock`
+- [**Cross-platform deploy**](#supported-platforms) — one manifest, seven AI platforms
+- [**Pinning & patching**](#pinning--patching) — customize installed skills without losing upstream updates
+- [**Search & discovery**](#search--discovery) — find skills across multiple registries from the CLI
 
 ## Skillfile Format
 
@@ -80,39 +92,11 @@ Line-oriented, space-delimited, human-editable. No YAML, no TOML. Names are infe
 | `ref` | (github) Branch, tag, or commit SHA. Defaults to `main`. |
 | `url` | (url) Direct URL to raw markdown file |
 
-## Commands
+## Lock File
 
-### Setup
+`skillfile install` resolves every GitHub entry to an exact commit SHA and writes it to `Skillfile.lock`. Commit this file — on a fresh clone, `skillfile install` fetches the exact same bytes.
 
-| Command | Description | Key flags |
-|---|---|---|
-| `init` | Configure install targets interactively | |
-| `add <source> <type> ...` | Add entry to the Skillfile | `--name` |
-| `remove <name>` | Remove entry, lock record, and cache | |
-
-### Workflow
-
-| Command | Description | Key flags |
-|---|---|---|
-| `install` | Fetch + deploy to platform directories | `--dry-run`, `--update` |
-| `sync` | Fetch only (no deploy) | `--dry-run`, `--entry NAME`, `--update` |
-| `status` | Show entry states (locked/unlocked/pinned) | `--check-upstream` |
-
-### Validation
-
-| Command | Description | Key flags |
-|---|---|---|
-| `validate` | Check for syntax errors, duplicates, orphans | |
-| `format` | Format and sort entries into a standard order | `--dry-run` |
-
-### Customization
-
-| Command | Description | Key flags |
-|---|---|---|
-| `pin <name>` | Capture local edits as a patch | `--dry-run` |
-| `unpin <name>` | Discard patch, restore upstream | |
-| `diff <name>` | Show local or upstream delta | |
-| `resolve [name]` | Three-way merge after a conflict | `--abort` |
+`skillfile install --update` re-resolves to the latest SHA upstream. Your lock file diffs cleanly in code review, so you always see what changed.
 
 ## Pinning & Patching
 
@@ -135,6 +119,27 @@ skillfile resolve --abort     # or discard the conflict
 
 Patches are stored in `.skillfile/patches/` and committed to version control.
 
+## Search & Discovery
+
+Find skills and agents across multiple registries without leaving the terminal:
+
+```bash
+# Interactive TUI (default in a terminal)
+skillfile search "code review"
+
+# Plain text output
+skillfile search docker --no-interactive
+
+# Filter by registry or minimum security score
+skillfile search testing --registry agentskill.sh
+skillfile search docker --min-score 80
+
+# JSON output for scripting
+skillfile search testing --json | jq '.items[].name'
+```
+
+Searches [agentskill.sh](https://agentskill.sh/), [skills.sh](https://skills.sh/), and [skillhub.club](https://skillhub.club/) in parallel. Results are sorted by popularity and deduplicated.
+
 ## Supported Platforms
 
 | Platform | Skills directory | Agents directory | Scopes |
@@ -142,6 +147,10 @@ Patches are stored in `.skillfile/patches/` and committed to version control.
 | `claude-code` | `.claude/skills/` / `~/.claude/skills/` | `.claude/agents/` / `~/.claude/agents/` | local, global |
 | `gemini-cli` | `.gemini/skills/` / `~/.gemini/skills/` | `.gemini/agents/` / `~/.gemini/agents/` | local, global |
 | `codex` | `.codex/skills/` / `~/.codex/skills/` | -- | local, global |
+| `cursor` | `.cursor/skills/` / `~/.cursor/skills/` | `.cursor/agents/` / `~/.cursor/agents/` | local, global |
+| `windsurf` | `.windsurf/skills/` / `~/.codeium/windsurf/skills/` | -- | local, global |
+| `opencode` | `.opencode/skills/` / `~/.config/opencode/skills/` | `.opencode/agents/` / `~/.config/opencode/agents/` | local, global |
+| `copilot` | `.github/skills/` / `~/.copilot/skills/` | `.github/agents/` / `~/.copilot/agents/` | local, global |
 
 Multiple platforms can be configured simultaneously. Each `install` line in the Skillfile adds a deployment target.
 
@@ -180,7 +189,7 @@ Review what you install. The risk profile is the same as `git clone`.
 
 | Variable | Description |
 |---|---|
-| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub API token for SHA resolution and private repos |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub API token for SHA resolution and private repos. **Strongly recommended** -- unauthenticated requests hit GitHub's API rate limit (60 req/hour) very quickly. Set a token or run `gh auth login` to get 5,000 req/hour. |
 | `MERGETOOL` | Merge tool for `skillfile resolve` |
 | `EDITOR` | Fallback editor for `skillfile resolve` |
 

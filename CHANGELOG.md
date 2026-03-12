@@ -4,6 +4,38 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.1.0
+
+### Added
+
+- **Search & discovery** - find skills and agents across [agentskill.sh](https://agentskill.sh/), [skills.sh](https://skills.sh/), and [skillhub.club](https://skillhub.club/) from the CLI. Results are sorted by popularity and deduplicated across registries.
+  - Interactive TUI with split-pane preview (default in a terminal)
+  - Plain text and JSON output modes (`--no-interactive`, `--json`)
+  - Filter by registry (`--registry`) or minimum security score (`--min-score`)
+  - Select a result to add it directly to your Skillfile
+
+- **4 new platform adapters** - deploy to 7 AI platforms from a single manifest:
+  - Cursor (`.cursor/skills/`, `.cursor/agents/`)
+  - Windsurf (`.windsurf/skills/`)
+  - OpenCode (`.opencode/skills/`, `.opencode/agents/`)
+  - GitHub Copilot (`.github/skills/`, `.github/agents/`)
+
+- **Update notifications** - checks GitHub Releases in the background and shows a notice when a newer version is available. Cached for 24 hours, opt out with `SKILLFILE_NO_UPDATE_NOTIFIER=1`.
+
+### Changed
+
+- **README restructured** - replaced command reference tables with a Key Features section linking to dedicated docs. Added GitHub token callout in Quick Start, new Lock File and Search & Discovery sections, all 7 platforms in the Supported Platforms table.
+- **Search results default to 20** (was 10) for better coverage across registries.
+- **Per-registry result limiting removed** - search now fetches up to 100 results from each registry before applying the global limit, so results from smaller registries aren't drowned out.
+
+### Fixed
+
+- **Update notification now reliably displays** - switched from non-blocking `try_recv` to a 2-second timeout so the background check has time to complete before the process exits.
+- **Removed sentinel cache write** that prevented update notices from appearing on subsequent runs within 24 hours.
+- **Fixed test against wrong repo** - `list_repo_skill_entries_real_another_repo` was testing against a Jupyter notebook repo with no `.md` skill files.
+
+---
+
 ## v1.0.1 — 2026-03-11
 
 ### Fixed

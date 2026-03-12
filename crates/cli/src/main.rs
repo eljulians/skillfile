@@ -1,5 +1,6 @@
-mod commands;
-mod patch;
+mod update_check;
+
+use skillfile::commands;
 
 use std::path::PathBuf;
 use std::process;
@@ -20,10 +21,13 @@ fn parse_entity_type(s: &str) -> Result<String, String> {
     name = "skillfile",
     about = "Tool-agnostic AI skill & agent manager",
     long_about = "\
-Tool-agnostic AI skill & agent manager — the Brewfile for your AI tooling.
+Tool-agnostic AI skill & agent manager - the Brewfile for your AI tooling.
 
 Declare skills and agents in a Skillfile, lock them to exact SHAs, and deploy
-to Claude Code, Gemini CLI, or Codex with a single command.
+to any supported platform with a single command.
+
+Supported platforms: claude-code, codex, copilot, cursor, gemini-cli,
+opencode, windsurf.
 
 Quick start:
   skillfile init                          # configure platforms
@@ -154,6 +158,55 @@ Examples:
         /// Check current upstream SHA (makes API calls)
         #[arg(long)]
         check_upstream: bool,
+    },
+
+    // -- Discovery (display_order 25-29) ----------------------------------------
+    /// Search community registries and add skills interactively
+    #[command(display_order = 25)]
+    #[command(long_about = "\
+Search community registries for skills and agents.
+
+By default, queries agentskill.sh (110K+ skills, public) and skills.sh.
+Use --registry to target a single registry. skillhub.club is included
+automatically when SKILLHUB_API_KEY is set.
+
+In interactive mode (the default when a terminal is attached), results
+are shown in a navigable TUI with a preview pane. Selecting a result
+walks you through adding it to your Skillfile via `skillfile add`.
+
+Non-interactive output (--json, --no-interactive, or piped stdout)
+prints a plain-text table or JSON without prompts.
+
+Results are sorted by popularity (stars). The preview pane shows
+description, owner, stars, security score, and source repo when
+available. Security audit details are fetched on demand for
+registries that support them.")]
+    #[command(after_help = "\
+Examples:
+  skillfile search \"code review\"          Search across all registries
+  skillfile search docker --limit 5        Limit to 5 results
+  skillfile search linting --min-score 80  Only high-trust results
+  skillfile search testing --json          Machine-readable output
+  skillfile search docker --registry agentskill.sh
+  skillfile search docker --no-interactive Plain text, no TUI")]
+    Search {
+        /// Search query
+        query: String,
+        /// Maximum number of results
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Minimum security score (0-100)
+        #[arg(long, value_name = "SCORE")]
+        min_score: Option<u8>,
+        /// Output results as JSON instead of the interactive TUI
+        #[arg(long)]
+        json: bool,
+        /// Search only this registry
+        #[arg(long, value_name = "NAME", value_parser = clap::builder::PossibleValuesParser::new(skillfile_sources::registry::REGISTRY_NAMES))]
+        registry: Option<String>,
+        /// Print plain-text table instead of the interactive TUI
+        #[arg(long)]
+        no_interactive: bool,
     },
 
     // -- Validation (display_order 30-39) -------------------------------------
@@ -348,6 +401,24 @@ fn run() -> Result<(), SkillfileError> {
         Command::Remove { name } => {
             commands::remove::cmd_remove(&name, &repo_root)?;
         }
+        Command::Search {
+            query,
+            limit,
+            min_score,
+            json,
+            registry,
+            no_interactive,
+        } => {
+            commands::search::cmd_search(&commands::search::SearchConfig {
+                query: &query,
+                limit,
+                min_score,
+                json,
+                registry: registry.as_deref(),
+                no_interactive,
+                repo_root: &repo_root,
+            })?;
+        }
         Command::Validate => {
             commands::validate::cmd_validate(&repo_root)?;
         }
@@ -372,11 +443,33 @@ fn run() -> Result<(), SkillfileError> {
 }
 
 fn main() {
-    if let Err(e) = run() {
-        let msg = e.to_string();
-        if !msg.is_empty() {
-            eprintln!("error: {msg}");
+    // Spawn background update check (non-blocking)
+    let update_rx = if update_check::should_check() {
+        Some(update_check::spawn_check())
+    } else {
+        None
+    };
+
+    let exit_code = match run() {
+        Ok(()) => 0,
+        Err(e) => {
+            let msg = e.to_string();
+            if !msg.is_empty() {
+                eprintln!("error: {msg}");
+            }
+            1
         }
-        process::exit(1);
+    };
+
+    // Print update notice if the background check found a newer version.
+    // Give the background thread a short window to finish if it hasn't yet.
+    if let Some(rx) = update_rx {
+        if let Ok(Some(notice)) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            eprintln!("\n{notice}");
+        }
+    }
+
+    if exit_code != 0 {
+        process::exit(exit_code);
     }
 }

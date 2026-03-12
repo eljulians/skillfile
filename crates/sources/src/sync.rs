@@ -606,6 +606,12 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| SkillfileError::Network(format!("unexpected get_json: {url}")))
         }
+
+        fn post_json(&self, url: &str, _body: &str) -> Result<Vec<u8>, SkillfileError> {
+            Err(SkillfileError::Network(format!(
+                "unexpected post_json: {url}"
+            )))
+        }
     }
 
     // -----------------------------------------------------------------------

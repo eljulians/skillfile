@@ -122,7 +122,13 @@ impl PlatformAdapter for FileSystemAdapter {
     }
 
     fn target_dir(&self, entity_type: &str, scope: Scope, repo_root: &Path) -> PathBuf {
-        let config = &self.entities[entity_type];
+        let config = self.entities.get(entity_type).unwrap_or_else(|| {
+            panic!(
+                "BUG: target_dir called for unsupported entity type '{entity_type}' on adapter '{}'. \
+                 Call supports() first.",
+                self.name
+            )
+        });
         let raw = match scope {
             Scope::Global => &config.global_path,
             Scope::Local => &config.local_path,
@@ -381,6 +387,10 @@ impl AdapterRegistry {
             Box::new(claude_code_adapter()),
             Box::new(gemini_cli_adapter()),
             Box::new(codex_adapter()),
+            Box::new(cursor_adapter()),
+            Box::new(windsurf_adapter()),
+            Box::new(opencode_adapter()),
+            Box::new(copilot_adapter()),
         ])
     }
 
@@ -476,6 +486,112 @@ fn codex_adapter() -> FileSystemAdapter {
     )
 }
 
+/// Cursor adapter.
+///
+/// Cursor reads skills from `.cursor/skills/<name>/SKILL.md` (nested) and
+/// agents from `.cursor/agents/<name>.md` (flat). Same pattern as Claude Code.
+fn cursor_adapter() -> FileSystemAdapter {
+    FileSystemAdapter::new(
+        "cursor",
+        HashMap::from([
+            (
+                "agent".to_string(),
+                EntityConfig {
+                    global_path: "~/.cursor/agents".into(),
+                    local_path: ".cursor/agents".into(),
+                    dir_mode: DirInstallMode::Flat,
+                },
+            ),
+            (
+                "skill".to_string(),
+                EntityConfig {
+                    global_path: "~/.cursor/skills".into(),
+                    local_path: ".cursor/skills".into(),
+                    dir_mode: DirInstallMode::Nested,
+                },
+            ),
+        ]),
+    )
+}
+
+/// Windsurf adapter.
+///
+/// Windsurf reads skills from `.windsurf/skills/<name>/SKILL.md` (nested).
+/// It does not support agent markdown files in a dedicated directory — agents
+/// are defined via `AGENTS.md` files scattered in the project tree instead.
+fn windsurf_adapter() -> FileSystemAdapter {
+    FileSystemAdapter::new(
+        "windsurf",
+        HashMap::from([(
+            "skill".to_string(),
+            EntityConfig {
+                global_path: "~/.codeium/windsurf/skills".into(),
+                local_path: ".windsurf/skills".into(),
+                dir_mode: DirInstallMode::Nested,
+            },
+        )]),
+    )
+}
+
+/// OpenCode adapter.
+///
+/// OpenCode reads skills from `.opencode/skills/<name>/SKILL.md` (nested) and
+/// agents from `.opencode/agents/<name>.md` (flat). Global paths follow XDG:
+/// `~/.config/opencode/`.
+fn opencode_adapter() -> FileSystemAdapter {
+    FileSystemAdapter::new(
+        "opencode",
+        HashMap::from([
+            (
+                "agent".to_string(),
+                EntityConfig {
+                    global_path: "~/.config/opencode/agents".into(),
+                    local_path: ".opencode/agents".into(),
+                    dir_mode: DirInstallMode::Flat,
+                },
+            ),
+            (
+                "skill".to_string(),
+                EntityConfig {
+                    global_path: "~/.config/opencode/skills".into(),
+                    local_path: ".opencode/skills".into(),
+                    dir_mode: DirInstallMode::Nested,
+                },
+            ),
+        ]),
+    )
+}
+
+/// GitHub Copilot adapter.
+///
+/// Copilot reads skills from `.github/skills/<name>/SKILL.md` (nested) and
+/// agents from `.github/agents/<name>.md` (flat). Note: Copilot natively
+/// expects `.agent.md` extension for agent files, but skillfile deploys
+/// standard `.md` files which Copilot also reads.
+fn copilot_adapter() -> FileSystemAdapter {
+    FileSystemAdapter::new(
+        "copilot",
+        HashMap::from([
+            (
+                "agent".to_string(),
+                EntityConfig {
+                    global_path: "~/.copilot/agents".into(),
+                    local_path: ".github/agents".into(),
+                    dir_mode: DirInstallMode::Flat,
+                },
+            ),
+            (
+                "skill".to_string(),
+                EntityConfig {
+                    global_path: "~/.copilot/skills".into(),
+                    local_path: ".github/skills".into(),
+                    dir_mode: DirInstallMode::Nested,
+                },
+            ),
+        ]),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Global registry accessor (backward-compatible convenience)
 // ---------------------------------------------------------------------------
@@ -509,6 +625,10 @@ mod tests {
         assert!(reg.contains("claude-code"));
         assert!(reg.contains("gemini-cli"));
         assert!(reg.contains("codex"));
+        assert!(reg.contains("cursor"));
+        assert!(reg.contains("windsurf"));
+        assert!(reg.contains("opencode"));
+        assert!(reg.contains("copilot"));
     }
 
     #[test]
@@ -517,7 +637,11 @@ mod tests {
         assert!(names.contains(&"claude-code"));
         assert!(names.contains(&"gemini-cli"));
         assert!(names.contains(&"codex"));
-        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"cursor"));
+        assert!(names.contains(&"windsurf"));
+        assert!(names.contains(&"opencode"));
+        assert!(names.contains(&"copilot"));
+        assert_eq!(names.len(), 7);
     }
 
     #[test]
@@ -620,6 +744,173 @@ mod tests {
         let result = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
         assert!(result.is_absolute());
         assert!(result.to_string_lossy().ends_with(".codex/skills"));
+    }
+
+    // -- supports() for new adapters --
+
+    #[test]
+    fn cursor_supports_agent_and_skill() {
+        let a = adapters().get("cursor").unwrap();
+        assert!(a.supports("agent"));
+        assert!(a.supports("skill"));
+        assert!(!a.supports("hook"));
+    }
+
+    #[test]
+    fn windsurf_supports_skill_not_agent() {
+        let a = adapters().get("windsurf").unwrap();
+        assert!(a.supports("skill"));
+        assert!(!a.supports("agent"));
+    }
+
+    #[test]
+    fn opencode_supports_agent_and_skill() {
+        let a = adapters().get("opencode").unwrap();
+        assert!(a.supports("agent"));
+        assert!(a.supports("skill"));
+        assert!(!a.supports("hook"));
+    }
+
+    #[test]
+    fn copilot_supports_agent_and_skill() {
+        let a = adapters().get("copilot").unwrap();
+        assert!(a.supports("agent"));
+        assert!(a.supports("skill"));
+        assert!(!a.supports("rule"));
+    }
+
+    // -- target_dir() for new adapters --
+
+    #[test]
+    fn local_target_dir_cursor() {
+        let tmp = PathBuf::from("/tmp/test");
+        let a = adapters().get("cursor").unwrap();
+        assert_eq!(
+            a.target_dir("agent", Scope::Local, &tmp),
+            tmp.join(".cursor/agents")
+        );
+        assert_eq!(
+            a.target_dir("skill", Scope::Local, &tmp),
+            tmp.join(".cursor/skills")
+        );
+    }
+
+    #[test]
+    fn local_target_dir_windsurf() {
+        let tmp = PathBuf::from("/tmp/test");
+        let a = adapters().get("windsurf").unwrap();
+        assert_eq!(
+            a.target_dir("skill", Scope::Local, &tmp),
+            tmp.join(".windsurf/skills")
+        );
+    }
+
+    #[test]
+    fn local_target_dir_opencode() {
+        let tmp = PathBuf::from("/tmp/test");
+        let a = adapters().get("opencode").unwrap();
+        assert_eq!(
+            a.target_dir("agent", Scope::Local, &tmp),
+            tmp.join(".opencode/agents")
+        );
+        assert_eq!(
+            a.target_dir("skill", Scope::Local, &tmp),
+            tmp.join(".opencode/skills")
+        );
+    }
+
+    #[test]
+    fn local_target_dir_copilot() {
+        let tmp = PathBuf::from("/tmp/test");
+        let a = adapters().get("copilot").unwrap();
+        assert_eq!(
+            a.target_dir("agent", Scope::Local, &tmp),
+            tmp.join(".github/agents")
+        );
+        assert_eq!(
+            a.target_dir("skill", Scope::Local, &tmp),
+            tmp.join(".github/skills")
+        );
+    }
+
+    #[test]
+    fn global_target_dir_cursor() {
+        let a = adapters().get("cursor").unwrap();
+        let skill = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        assert!(skill.is_absolute());
+        assert!(skill.to_string_lossy().ends_with(".cursor/skills"));
+        let agent = a.target_dir("agent", Scope::Global, Path::new("/tmp"));
+        assert!(agent.is_absolute());
+        assert!(agent.to_string_lossy().ends_with(".cursor/agents"));
+    }
+
+    #[test]
+    fn global_target_dir_windsurf() {
+        let a = adapters().get("windsurf").unwrap();
+        let result = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        assert!(result.is_absolute());
+        assert!(
+            result.to_string_lossy().ends_with("windsurf/skills"),
+            "unexpected: {result:?}"
+        );
+    }
+
+    #[test]
+    fn global_target_dir_opencode() {
+        let a = adapters().get("opencode").unwrap();
+        let skill = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        assert!(skill.is_absolute());
+        assert!(
+            skill.to_string_lossy().ends_with("opencode/skills"),
+            "unexpected: {skill:?}"
+        );
+        let agent = a.target_dir("agent", Scope::Global, Path::new("/tmp"));
+        assert!(agent.is_absolute());
+        assert!(
+            agent.to_string_lossy().ends_with("opencode/agents"),
+            "unexpected: {agent:?}"
+        );
+    }
+
+    #[test]
+    fn global_target_dir_copilot() {
+        let a = adapters().get("copilot").unwrap();
+        let skill = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        assert!(skill.is_absolute());
+        assert!(skill.to_string_lossy().ends_with(".copilot/skills"));
+        let agent = a.target_dir("agent", Scope::Global, Path::new("/tmp"));
+        assert!(agent.is_absolute());
+        assert!(agent.to_string_lossy().ends_with(".copilot/agents"));
+    }
+
+    // -- dir_mode for new adapters --
+
+    #[test]
+    fn cursor_dir_modes() {
+        let a = adapters().get("cursor").unwrap();
+        assert_eq!(a.dir_mode("agent"), Some(DirInstallMode::Flat));
+        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+    }
+
+    #[test]
+    fn windsurf_dir_mode() {
+        let a = adapters().get("windsurf").unwrap();
+        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode("agent"), None);
+    }
+
+    #[test]
+    fn opencode_dir_modes() {
+        let a = adapters().get("opencode").unwrap();
+        assert_eq!(a.dir_mode("agent"), Some(DirInstallMode::Flat));
+        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+    }
+
+    #[test]
+    fn copilot_dir_modes() {
+        let a = adapters().get("copilot").unwrap();
+        assert_eq!(a.dir_mode("agent"), Some(DirInstallMode::Flat));
+        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
     }
 
     // -- dir_mode --

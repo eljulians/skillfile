@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.82"
 license = "Apache-2.0"
@@ -35,8 +35,18 @@ anyhow = "1"
 # Filesystem
 dirs = "6"
 
+# Version comparison
+semver = "1"
+
 # Diff/patch
 similar = "2"
+
+# Interactive prompts
+inquire = "0.9"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
 
 # Testing
 tempfile = "3"

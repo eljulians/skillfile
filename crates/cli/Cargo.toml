@@ -8,7 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Tool-agnostic AI skill & agent manager — the Brewfile for your AI tooling"
+description = "Tool-agnostic AI skill & agent manager - the Brewfile for your AI tooling"
 readme = "../../README.md"
 
 [[bin]]
@@ -21,8 +21,15 @@ skillfile-sources = { workspace = true }
 skillfile-deploy = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+semver = { workspace = true }
+ureq = { workspace = true }
+dirs = { workspace = true }
 similar = { workspace = true }
+inquire = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]

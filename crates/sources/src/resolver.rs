@@ -137,6 +137,123 @@ pub fn fetch_github_file(
     http_get(client, &url)
 }
 
+// ---------------------------------------------------------------------------
+// list_repo_skill_entries — discover skill entry paths in a repo
+// ---------------------------------------------------------------------------
+
+/// Filenames (lowercase) to exclude when listing candidate skill files.
+const REPO_META_FILES: &[&str] = &[
+    "readme.md",
+    "changelog.md",
+    "license.md",
+    "contributing.md",
+    "code_of_conduct.md",
+    "security.md",
+];
+
+fn is_repo_meta_file(path: &str) -> bool {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    REPO_META_FILES
+        .iter()
+        .any(|m| m.eq_ignore_ascii_case(filename))
+        || path.to_ascii_lowercase().starts_with(".github/")
+}
+
+/// Convert raw `.md` file paths into deduplicated Skillfile entry paths.
+///
+/// Follows the Skillfile convention:
+/// - `SKILL.md` at repo root → `.`
+/// - `dir/SKILL.md` (or multiple `.md` files in a dir) → `dir` (directory entry)
+/// - `path/to/file.md` (only `.md` file in its dir) → `path/to/file.md` (single file)
+fn collapse_to_entries(md_files: &[String]) -> Vec<String> {
+    use std::collections::BTreeMap;
+
+    // Group files by their parent directory.
+    let mut dirs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for path in md_files {
+        if let Some(pos) = path.rfind('/') {
+            let dir = &path[..pos];
+            dirs.entry(dir).or_default().push(path);
+        } else {
+            // Root-level file.
+            dirs.entry("").or_default().push(path);
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (dir, files) in &dirs {
+        if dir.is_empty() {
+            // Root level: a root SKILL.md becomes "."; other files stay as-is.
+            for f in files {
+                if f.eq_ignore_ascii_case("SKILL.md") {
+                    entries.push(".".to_string());
+                } else {
+                    entries.push(f.to_string());
+                }
+            }
+        } else if files.len() > 1 {
+            // Multiple .md files in one dir → directory entry.
+            entries.push(dir.to_string());
+        } else if files.len() == 1 {
+            // Check if the single file is a SKILL.md → treat as dir entry.
+            let filename = files[0].rsplit('/').next().unwrap_or(files[0]);
+            if filename.eq_ignore_ascii_case("SKILL.md") {
+                entries.push(dir.to_string());
+            } else {
+                entries.push(files[0].to_string());
+            }
+        }
+    }
+    entries
+}
+
+/// Discover skill entry paths in a GitHub repo.
+///
+/// Returns Skillfile-ready paths: `.` for root SKILL.md, directory paths for
+/// multi-file skills, and individual `.md` paths for single-file skills.
+/// Excludes repo metadata (README, CHANGELOG, etc.).
+///
+/// Tries the Tree API with "main", falls back to "master". Returns an empty
+/// vec on any failure (graceful degradation for interactive flows).
+pub fn list_repo_skill_entries(client: &dyn HttpClient, owner_repo: &str) -> Vec<String> {
+    list_md_files_with_ref(client, owner_repo, "main")
+        .or_else(|| list_md_files_with_ref(client, owner_repo, "master"))
+        .map(|files| collapse_to_entries(&files))
+        .unwrap_or_default()
+}
+
+/// Try to list `.md` files for a specific ref. Returns `None` on failure.
+fn list_md_files_with_ref(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    ref_: &str,
+) -> Option<Vec<String>> {
+    let url = format!("https://api.github.com/repos/{owner_repo}/git/trees/{ref_}?recursive=1");
+    let text = client.get_json(&url).ok()??;
+    let data: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let empty = Vec::new();
+    let tree = data["tree"].as_array().unwrap_or(&empty);
+
+    let files: Vec<String> = tree
+        .iter()
+        .filter_map(|item| {
+            if item["type"].as_str() != Some("blob") {
+                return None;
+            }
+            let path = item["path"].as_str()?;
+            if !path.to_ascii_lowercase().ends_with(".md") {
+                return None;
+            }
+            if is_repo_meta_file(path) {
+                return None;
+            }
+            Some(path.to_string())
+        })
+        .collect();
+
+    Some(files)
+}
+
 /// A file entry from a GitHub directory listing.
 #[derive(Debug, Clone)]
 pub struct DirEntry {
@@ -322,6 +439,12 @@ mod tests {
                     "MockClient: no json stub for {url}"
                 ))),
             }
+        }
+
+        fn post_json(&self, url: &str, _body: &str) -> Result<Vec<u8>, SkillfileError> {
+            Err(SkillfileError::Network(format!(
+                "MockClient: no post_json stub for {url}"
+            )))
         }
     }
 
@@ -901,5 +1024,372 @@ mod tests {
         ];
         let err = fetch_files_parallel(&client, &files).unwrap_err();
         assert!(err.to_string().contains("HTTP 500"));
+    }
+
+    // -----------------------------------------------------------------------
+    // is_repo_meta_file
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // is_repo_meta_file — comprehensive edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_repo_meta_file_readme_variants() {
+        assert!(is_repo_meta_file("README.md"));
+        assert!(is_repo_meta_file("readme.md"));
+        assert!(is_repo_meta_file("Readme.md"));
+        assert!(is_repo_meta_file("ReadMe.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_nested_readme() {
+        // README.md in a subdirectory is still metadata.
+        assert!(is_repo_meta_file("docs/README.md"));
+        assert!(is_repo_meta_file("deep/nested/path/README.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_all_meta_files() {
+        assert!(is_repo_meta_file("CHANGELOG.md"));
+        assert!(is_repo_meta_file("LICENSE.md"));
+        assert!(is_repo_meta_file("CONTRIBUTING.md"));
+        assert!(is_repo_meta_file("CODE_OF_CONDUCT.md"));
+        assert!(is_repo_meta_file("SECURITY.md"));
+        // Mixed case
+        assert!(is_repo_meta_file("changelog.md"));
+        assert!(is_repo_meta_file("License.md"));
+        assert!(is_repo_meta_file("Contributing.md"));
+        assert!(is_repo_meta_file("Code_Of_Conduct.md"));
+        assert!(is_repo_meta_file("security.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_dotgithub_paths() {
+        assert!(is_repo_meta_file(".github/ISSUE_TEMPLATE.md"));
+        assert!(is_repo_meta_file(".github/pull_request_template.md"));
+        assert!(is_repo_meta_file(".github/FUNDING.md"));
+        // Case-insensitive .github prefix
+        assert!(is_repo_meta_file(".GitHub/something.md"));
+        assert!(is_repo_meta_file(".GITHUB/FOO.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_regular_skill_files() {
+        assert!(!is_repo_meta_file("SKILL.md"));
+        assert!(!is_repo_meta_file("skills/git.md"));
+        assert!(!is_repo_meta_file("agents/code-reviewer.md"));
+        assert!(!is_repo_meta_file("docs/tutorial.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_similar_but_not_matching() {
+        // Filenames that look like metadata but aren't exact matches.
+        assert!(!is_repo_meta_file("README.md.bak"));
+        assert!(!is_repo_meta_file("MY-README.md"));
+        assert!(!is_repo_meta_file("README-old.md"));
+        assert!(!is_repo_meta_file("READMEX.md"));
+        assert!(!is_repo_meta_file("XREADME.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_empty_string() {
+        assert!(!is_repo_meta_file(""));
+    }
+
+    #[test]
+    fn is_repo_meta_file_just_md_extension() {
+        // A file named just ".md" is not metadata.
+        assert!(!is_repo_meta_file(".md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_github_prefix_not_nested() {
+        // ".github" as a standalone file (unlikely but should handle).
+        // It starts with ".github/" only if there's a slash.
+        assert!(!is_repo_meta_file(".github"));
+    }
+
+    // -----------------------------------------------------------------------
+    // collapse_to_entries — pure logic tests
+    // -----------------------------------------------------------------------
+
+    fn strs(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn collapse_root_skill_md_becomes_dot() {
+        let files = strs(&["SKILL.md"]);
+        assert_eq!(collapse_to_entries(&files), vec!["."]);
+    }
+
+    #[test]
+    fn collapse_root_skill_md_case_insensitive() {
+        let files = strs(&["skill.md"]);
+        assert_eq!(collapse_to_entries(&files), vec!["."]);
+    }
+
+    #[test]
+    fn collapse_root_non_skill_stays_as_file() {
+        let files = strs(&["my-agent.md"]);
+        assert_eq!(collapse_to_entries(&files), vec!["my-agent.md"]);
+    }
+
+    #[test]
+    fn collapse_dir_with_skill_md_becomes_dir_entry() {
+        let files = strs(&["skills/docker/SKILL.md"]);
+        assert_eq!(collapse_to_entries(&files), vec!["skills/docker"]);
+    }
+
+    #[test]
+    fn collapse_dir_with_multiple_files_becomes_dir_entry() {
+        let files = strs(&[
+            "skills/k8s/SKILL.md",
+            "skills/k8s/references/helm.md",
+            "skills/k8s/references/config.md",
+        ]);
+        let entries = collapse_to_entries(&files);
+        // "skills/k8s" has SKILL.md → dir entry.
+        // "skills/k8s/references" has 2 files → dir entry.
+        assert!(entries.contains(&"skills/k8s".to_string()));
+        assert!(entries.contains(&"skills/k8s/references".to_string()));
+    }
+
+    #[test]
+    fn collapse_single_file_in_dir_not_skill_stays_as_file() {
+        let files = strs(&["agents/code-reviewer.md"]);
+        assert_eq!(collapse_to_entries(&files), vec!["agents/code-reviewer.md"]);
+    }
+
+    #[test]
+    fn collapse_mixed_root_and_nested() {
+        let files = strs(&[
+            "SKILL.md",
+            "skills/git.md",
+            "skills/docker/SKILL.md",
+            "skills/docker/compose.md",
+        ]);
+        let entries = collapse_to_entries(&files);
+        assert!(entries.contains(&".".to_string()));
+        assert!(entries.contains(&"skills/git.md".to_string()));
+        assert!(entries.contains(&"skills/docker".to_string()));
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn collapse_multiple_root_files() {
+        let files = strs(&["SKILL.md", "other.md"]);
+        let entries = collapse_to_entries(&files);
+        assert!(entries.contains(&".".to_string()));
+        assert!(entries.contains(&"other.md".to_string()));
+    }
+
+    #[test]
+    fn collapse_empty_returns_empty() {
+        assert!(collapse_to_entries(&[]).is_empty());
+    }
+
+    #[test]
+    fn collapse_multi_skill_repo() {
+        // Typical multi-skill repo like jeffallan/claude-skills.
+        let files = strs(&[
+            "skills/kubernetes-specialist/SKILL.md",
+            "skills/kubernetes-specialist/references/helm.md",
+            "skills/kubernetes-specialist/references/config.md",
+            "skills/docker-helper/SKILL.md",
+            "skills/python-pro/SKILL.md",
+            "skills/python-pro/examples.md",
+        ]);
+        let entries = collapse_to_entries(&files);
+        assert!(entries.contains(&"skills/kubernetes-specialist".to_string()));
+        assert!(entries.contains(&"skills/kubernetes-specialist/references".to_string()));
+        assert!(entries.contains(&"skills/docker-helper".to_string()));
+        assert!(entries.contains(&"skills/python-pro".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // list_repo_skill_entries — end-to-end with mocked HTTP
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn skill_entries_filters_and_collapses() {
+        let mut client = MockClient::new();
+        let url = tree_url("org/repo", "main");
+        let json = tree_json(&[
+            ("SKILL.md", "blob"),
+            ("skills/git.md", "blob"),
+            ("README.md", "blob"),
+            (".github/ISSUE_TEMPLATE.md", "blob"),
+            ("src/main.rs", "blob"),
+            ("agents", "tree"),
+        ]);
+        client.add_json(&url, &json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert!(entries.contains(&".".to_string()));
+        assert!(entries.contains(&"skills/git.md".to_string()));
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn skill_entries_falls_back_to_master() {
+        let mut client = MockClient::new();
+        client.add_json_none(&tree_url("org/repo", "main"));
+        let json = tree_json(&[("agent.md", "blob")]);
+        client.add_json(&tree_url("org/repo", "master"), &json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert_eq!(entries, vec!["agent.md"]);
+    }
+
+    #[test]
+    fn skill_entries_main_succeeds_does_not_try_master() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("SKILL.md", "blob")]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert_eq!(entries, vec!["."]);
+    }
+
+    #[test]
+    fn skill_entries_returns_empty_on_total_failure() {
+        let mut client = MockClient::new();
+        client.add_json_none(&tree_url("org/repo", "main"));
+        client.add_json_none(&tree_url("org/repo", "master"));
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn skill_entries_returns_empty_on_network_error() {
+        let mut client = MockClient::new();
+        client.add_json_err(&tree_url("org/repo", "main"), "connection refused");
+        client.add_json_err(&tree_url("org/repo", "master"), "connection refused");
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn skill_entries_no_md_files_returns_empty() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("src/main.rs", "blob"), ("Cargo.toml", "blob")]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn skill_entries_only_metadata_returns_empty() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[
+            ("README.md", "blob"),
+            ("CHANGELOG.md", "blob"),
+            (".github/ISSUE_TEMPLATE.md", "blob"),
+        ]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn skill_entries_dir_skill_collapses() {
+        // Multi-file skill in a directory should become a single dir entry.
+        let mut client = MockClient::new();
+        let json = tree_json(&[
+            ("skills/k8s/SKILL.md", "blob"),
+            ("skills/k8s/references/helm.md", "blob"),
+            ("skills/k8s/references/config.md", "blob"),
+        ]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert!(entries.contains(&"skills/k8s".to_string()));
+        assert!(entries.contains(&"skills/k8s/references".to_string()));
+    }
+
+    #[test]
+    fn skill_entries_malformed_json_returns_empty() {
+        let mut client = MockClient::new();
+        client.add_json(&tree_url("org/repo", "main"), "not valid json {{{");
+        client.add_json_none(&tree_url("org/repo", "master"));
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn skill_entries_missing_tree_key_returns_empty() {
+        let mut client = MockClient::new();
+        client.add_json(
+            &tree_url("org/repo", "main"),
+            r#"{"sha": "abc123", "url": "..."}"#,
+        );
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn skill_entries_empty_tree_array() {
+        let mut client = MockClient::new();
+        client.add_json(&tree_url("org/repo", "main"), r#"{"tree": []}"#);
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn skill_entries_tree_entries_missing_fields() {
+        let mut client = MockClient::new();
+        let json = r#"{"tree": [
+            {"path": "good.md", "type": "blob"},
+            {"type": "blob"},
+            {"path": "also-good.md"},
+            {"path": "fine.md", "type": "blob"}
+        ]}"#;
+        client.add_json(&tree_url("org/repo", "main"), json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert!(entries.contains(&"good.md".to_string()));
+        assert!(entries.contains(&"fine.md".to_string()));
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn skill_entries_mixed_single_and_dir() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[
+            ("skills/git.md", "blob"),
+            ("skills/docker/SKILL.md", "blob"),
+            ("agents/reviewer.md", "blob"),
+        ]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert!(entries.contains(&"skills/git.md".to_string()));
+        assert!(entries.contains(&"skills/docker".to_string()));
+        assert!(entries.contains(&"agents/reviewer.md".to_string()));
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn skill_entries_single_skill_at_root() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[
+            ("SKILL.md", "blob"),
+            ("README.md", "blob"),
+            ("LICENSE", "blob"),
+        ]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert_eq!(entries, vec!["."]);
+    }
+
+    #[test]
+    fn skill_entries_main_error_master_error_both_graceful() {
+        let mut client = MockClient::new();
+        client.add_json_err(&tree_url("org/repo", "main"), "timeout");
+        client.add_json(&tree_url("org/repo", "master"), "{{broken}}");
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn skill_entries_main_empty_does_not_fallback() {
+        let mut client = MockClient::new();
+        client.add_json(&tree_url("org/repo", "main"), r#"{"tree": []}"#);
+        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
     }
 }
