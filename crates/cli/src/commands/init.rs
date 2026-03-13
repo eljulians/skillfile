@@ -212,9 +212,9 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
         .collect();
     cliclack::note("Install config written to Skillfile", summary.join("\n"))?;
 
-    cliclack::outro(format!(
+    cliclack::outro(
         "You're all set! Next up:\n  \u{2795} `skillfile add` to add a skill or agent\n  \u{1f50d} `skillfile search` to discover community skills"
-    ))?;
+    )?;
 
     Ok(())
 }
