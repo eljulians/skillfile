@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "tests"]
 resolver = "2"
 
 [workspace.package]
@@ -54,6 +54,7 @@ crossterm = "0.28"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+retry = "2"
 
 [workspace.lints.clippy]
 cognitive_complexity = "warn"

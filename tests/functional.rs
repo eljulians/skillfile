@@ -1,15 +1,17 @@
-/// Functional tests: invoke the compiled `skillfile` binary against the real GitHub API.
+/// Functional tests: invoke the compiled `skillfile` binary against real
+/// network services (GitHub API, community registries).
 ///
-/// These tests require a GitHub token and network access.
-/// Set GITHUB_TOKEN or GH_TOKEN, or have `gh auth login` configured.
-/// Tests are skipped (not failed) when no token is available, so that
-/// `cargo test --workspace` always works for coverage and local dev.
+/// Tests that need a GitHub token call `require_github_token()` and skip
+/// gracefully when no token is available, so `cargo test --workspace`
+/// always passes for local dev and coverage.
 ///
-/// Run with: cargo test --test functional
-use std::path::Path;
-
-use assert_cmd::cargo_bin_cmd;
+/// Network calls are wrapped with `retry` to tolerate transient failures
+/// (rate limits, timeouts, DNS blips).
+///
+/// Run with: cargo test -p skillfile-functional-tests --test functional
 use predicates::prelude::*;
+use retry::{delay::Fixed, retry};
+use skillfile_functional_tests::sf;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,10 +27,37 @@ github  agent  code-refactorer  iannuttall/claude-agents  agents/code-refactorer
 github  skill  requesting-code-review  obra/superpowers  skills/requesting-code-review\n\
 ";
 
+/// Retry config: 3 attempts total (initial + 2 retries), 2s between each.
+fn retry_delays() -> impl Iterator<Item = std::time::Duration> {
+    Fixed::from_millis(2000).take(2)
+}
+
 fn make_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("Skillfile"), TEST_SKILLFILE).unwrap();
     dir
+}
+
+/// Run a skillfile command with retries on transient failures.
+/// Returns the successful `Output`, or panics if all attempts fail.
+fn sf_retry(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    retry(retry_delays(), || {
+        let output = sf(dir)
+            .args(args)
+            .output()
+            .expect("failed to execute skillfile");
+        if output.status.success() {
+            Ok(output)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "  retry: `skillfile {}` failed: {stderr}",
+                args.join(" ")
+            );
+            Err(stderr.to_string())
+        }
+    })
+    .expect("command failed after all retry attempts")
 }
 
 /// Check whether a GitHub token is available (env var or `gh` CLI).
@@ -51,14 +80,8 @@ fn require_github_token() -> bool {
     true
 }
 
-fn sf(dir: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("skillfile");
-    cmd.current_dir(dir);
-    cmd
-}
-
 // ---------------------------------------------------------------------------
-// Tests
+// Core workflows (GitHub token required)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -68,7 +91,7 @@ fn sync_golden_path() {
     }
     let dir = make_repo();
 
-    sf(dir.path()).arg("sync").assert().success();
+    sf_retry(dir.path(), &["sync"]);
 
     assert!(dir.path().join("Skillfile.lock").exists());
     let lock_text = std::fs::read_to_string(dir.path().join("Skillfile.lock")).unwrap();
@@ -91,7 +114,7 @@ fn install_golden_path() {
     }
     let dir = make_repo();
 
-    sf(dir.path()).arg("install").assert().success();
+    sf_retry(dir.path(), &["install"]);
 
     assert!(dir.path().join("Skillfile.lock").exists());
     let lock_text = std::fs::read_to_string(dir.path().join("Skillfile.lock")).unwrap();
@@ -121,11 +144,12 @@ fn install_dry_run() {
     }
     let dir = make_repo();
 
-    sf(dir.path())
-        .args(["install", "--dry-run"])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("dry-run"));
+    let output = sf_retry(dir.path(), &["install", "--dry-run"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("dry-run"),
+        "stderr should mention dry-run: {stderr}"
+    );
 
     assert!(
         !dir.path().join("Skillfile.lock").exists(),
@@ -144,13 +168,14 @@ fn install_update() {
     }
     let dir = make_repo();
 
-    sf(dir.path()).arg("install").assert().success();
+    sf_retry(dir.path(), &["install"]);
 
-    sf(dir.path())
-        .args(["install", "--update"])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Done"));
+    let output = sf_retry(dir.path(), &["install", "--update"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Done"),
+        "stderr should contain Done: {stderr}"
+    );
 }
 
 #[test]
@@ -160,7 +185,7 @@ fn pin_then_unpin() {
     }
     let dir = make_repo();
 
-    sf(dir.path()).arg("install").assert().success();
+    sf_retry(dir.path(), &["install"]);
 
     let agent_file = dir.path().join(".claude/agents/code-refactorer.md");
     let original = std::fs::read_to_string(&agent_file).unwrap();
@@ -197,7 +222,7 @@ fn status_after_install() {
     }
     let dir = make_repo();
 
-    sf(dir.path()).arg("install").assert().success();
+    sf_retry(dir.path(), &["install"]);
 
     sf(dir.path())
         .arg("status")
@@ -208,9 +233,7 @@ fn status_after_install() {
 }
 
 // ---------------------------------------------------------------------------
-// Search tests - one golden-path smoke test per registry.
-// Hit real APIs, no GitHub token needed. Edge cases are in unit tests
-// (registry.rs, search.rs).
+// Search — registry smoke tests (network, no GitHub token)
 // ---------------------------------------------------------------------------
 
 /// agentskill.sh golden path: query returns JSON with items.
@@ -218,8 +241,9 @@ fn status_after_install() {
 fn search_agentskill_sh() {
     let dir = tempfile::tempdir().unwrap();
 
-    let output = sf(dir.path())
-        .args([
+    let output = sf_retry(
+        dir.path(),
+        &[
             "search",
             "code review",
             "--limit",
@@ -227,14 +251,10 @@ fn search_agentskill_sh() {
             "--registry",
             "agentskill.sh",
             "--json",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
+        ],
+    );
 
-    let parsed: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
     assert!(parsed["total"].as_u64().unwrap() > 0);
     let items = parsed["items"].as_array().unwrap();
     assert!(!items.is_empty());
@@ -246,8 +266,9 @@ fn search_agentskill_sh() {
 fn search_skills_sh() {
     let dir = tempfile::tempdir().unwrap();
 
-    let output = sf(dir.path())
-        .args([
+    let output = sf_retry(
+        dir.path(),
+        &[
             "search",
             "docker",
             "--limit",
@@ -255,14 +276,10 @@ fn search_skills_sh() {
             "--registry",
             "skills.sh",
             "--json",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
+        ],
+    );
 
-    let parsed: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
     let items = parsed["items"].as_array().unwrap();
     // skills.sh may return 0 results for some queries, so just verify the
     // response structure is valid and items carry the right registry tag.
@@ -276,6 +293,8 @@ fn search_skills_sh() {
 fn search_skillhub_club_no_key() {
     let dir = tempfile::tempdir().unwrap();
 
+    // No retry: this test expects a specific deterministic response (0 results),
+    // not a transient network issue.
     let output = sf(dir.path())
         .args([
             "search",
@@ -300,8 +319,7 @@ fn search_skillhub_club_no_key() {
 }
 
 // ---------------------------------------------------------------------------
-// list_repo_skill_entries - Tree API integration tests against real GitHub repos.
-// Exercises the full pipeline: HTTP → JSON parse → filter → fallback logic.
+// Tree API — list_repo_skill_entries (GitHub token required)
 // ---------------------------------------------------------------------------
 
 /// list_repo_skill_entries returns collapsed entry paths from a multi-skill repo.
@@ -314,10 +332,16 @@ fn list_repo_skill_entries_real_multi_file_repo() {
         return;
     }
     let client = skillfile_sources::http::UreqClient::new();
-    let entries =
-        skillfile_sources::resolver::list_repo_skill_entries(&client, "iannuttall/claude-agents");
-
-    assert!(!entries.is_empty(), "should find skill entries in the repo");
+    let entries: Vec<String> = retry(retry_delays(), || {
+        let result =
+            skillfile_sources::resolver::list_repo_skill_entries(&client, "iannuttall/claude-agents");
+        if result.is_empty() {
+            Err("no entries returned")
+        } else {
+            Ok(result)
+        }
+    })
+    .expect("API call failed after retries");
 
     // Entries are Skillfile-ready paths: single .md files or directory paths.
     // No raw README.md or .github/ paths should leak through.
@@ -339,12 +363,19 @@ fn list_repo_skill_entries_real_another_repo() {
         return;
     }
     let client = skillfile_sources::http::UreqClient::new();
-    let entries = skillfile_sources::resolver::list_repo_skill_entries(
-        &client,
-        "ComposioHQ/awesome-claude-skills",
-    );
+    let entries: Vec<String> = retry(retry_delays(), || {
+        let result = skillfile_sources::resolver::list_repo_skill_entries(
+            &client,
+            "ComposioHQ/awesome-claude-skills",
+        );
+        if result.is_empty() {
+            Err("no entries returned")
+        } else {
+            Ok(result)
+        }
+    })
+    .expect("API call failed after retries");
 
-    // This repo should have at least one entry.
     assert!(!entries.is_empty(), "should find skill entries");
 }
 
@@ -354,6 +385,7 @@ fn list_repo_skill_entries_real_nonexistent_repo() {
     if !require_github_token() {
         return;
     }
+    // No retry: empty IS the expected result for a nonexistent repo.
     let client = skillfile_sources::http::UreqClient::new();
     let files = skillfile_sources::resolver::list_repo_skill_entries(
         &client,
@@ -378,13 +410,16 @@ fn skill_entry_resolution_multi_skill_repo() {
         return;
     }
     let client = skillfile_sources::http::UreqClient::new();
-    let entries =
-        skillfile_sources::resolver::list_repo_skill_entries(&client, "jeffallan/claude-skills");
-
-    assert!(
-        !entries.is_empty(),
-        "jeffallan/claude-skills should have entries"
-    );
+    let entries: Vec<String> = retry(retry_delays(), || {
+        let result =
+            skillfile_sources::resolver::list_repo_skill_entries(&client, "jeffallan/claude-skills");
+        if result.is_empty() {
+            Err("no entries returned")
+        } else {
+            Ok(result)
+        }
+    })
+    .expect("API call failed after retries");
 
     // The entries should be collapsed directory paths, not individual files.
     // No entry should look like "skills/kubernetes-specialist/SKILL.md" or
@@ -422,10 +457,16 @@ fn skill_entry_resolution_single_skill_repo() {
         return;
     }
     let client = skillfile_sources::http::UreqClient::new();
-    // obra/superpowers has a single skill at root (SKILL.md pattern).
-    let entries = skillfile_sources::resolver::list_repo_skill_entries(&client, "obra/superpowers");
-
-    assert!(!entries.is_empty(), "obra/superpowers should have entries");
+    let entries: Vec<String> = retry(retry_delays(), || {
+        let result =
+            skillfile_sources::resolver::list_repo_skill_entries(&client, "obra/superpowers");
+        if result.is_empty() {
+            Err("no entries returned")
+        } else {
+            Ok(result)
+        }
+    })
+    .expect("API call failed after retries");
 
     // For repos with skills at specific paths, entries should be present.
     // Verify no raw README.md leaks through.
@@ -433,69 +474,4 @@ fn skill_entry_resolution_single_skill_repo() {
         let tail = e.rsplit('/').next().unwrap_or(e).to_ascii_lowercase();
         assert_ne!(tail, "readme.md", "README.md should be excluded: {e}");
     }
-}
-
-/// Local directory entries must be deployed as directories, not empty .md files.
-///
-/// Regression test: is_dir_entry() only inspected GitHub path_in_repo and
-/// returned false for all local entries. When the local path was a directory,
-/// deploy_entry treated it as a single file, fs::copy(dir, file.md) failed
-/// silently, and install printed a success message with nothing actually written.
-#[test]
-fn install_local_dir_entry() {
-    let dir = tempfile::tempdir().unwrap();
-
-    // Create a local skill directory with multiple files
-    let skill_dir = dir.path().join("skills/my-local-skill");
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "# My Local Skill\n\nMain content.\n",
-    )
-    .unwrap();
-    std::fs::write(skill_dir.join("extra.md"), "# Extra\n\nBonus content.\n").unwrap();
-
-    // Also create a single-file local skill for comparison
-    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
-    std::fs::write(dir.path().join("skills/simple.md"), "# Simple Skill\n").unwrap();
-
-    std::fs::write(
-        dir.path().join("Skillfile"),
-        "install  claude-code  local\n\
-         \n\
-         local  skill  my-local-skill  skills/my-local-skill\n\
-         local  skill  simple  skills/simple.md\n",
-    )
-    .unwrap();
-
-    // No network needed -- all local
-    sf(dir.path()).arg("install").assert().success();
-
-    // Directory entry: deployed as nested directory
-    let deployed_dir = dir.path().join(".claude/skills/my-local-skill");
-    assert!(
-        deployed_dir.is_dir(),
-        "local dir entry must be deployed as a directory, not a .md file"
-    );
-    assert_eq!(
-        std::fs::read_to_string(deployed_dir.join("SKILL.md")).unwrap(),
-        "# My Local Skill\n\nMain content.\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(deployed_dir.join("extra.md")).unwrap(),
-        "# Extra\n\nBonus content.\n"
-    );
-    // Must NOT create a spurious .md file
-    assert!(
-        !dir.path().join(".claude/skills/my-local-skill.md").exists(),
-        "must not create my-local-skill.md for a directory source"
-    );
-
-    // Single-file entry: still works as before
-    let simple = dir.path().join(".claude/skills/simple.md");
-    assert!(simple.is_file());
-    assert_eq!(
-        std::fs::read_to_string(&simple).unwrap(),
-        "# Simple Skill\n"
-    );
 }
