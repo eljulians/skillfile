@@ -15,5 +15,8 @@ skillfile-core = { workspace = true }
 skillfile-sources = { workspace = true }
 dirs = { workspace = true }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 tempfile = { workspace = true }

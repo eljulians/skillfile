@@ -1,14 +1,17 @@
 /// Integration tests for `skillfile init` command.
 ///
 /// Run with: cargo test --test init
-use skillfile::commands::init::cmd_init;
+use assert_cmd::cargo_bin_cmd;
+use predicates::prelude::*;
 
 #[test]
 fn init_fails_without_tty() {
-    // In test context, stdin is not a TTY, so cmd_init should fail.
+    // assert_cmd pipes stdin, so is_terminal() returns false.
     let dir = tempfile::tempdir().unwrap();
-    let result = cmd_init(dir.path());
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("interactive terminal"), "got: {msg}");
+    let mut cmd = cargo_bin_cmd!("skillfile");
+    cmd.current_dir(dir.path());
+    cmd.arg("init");
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("interactive terminal"));
 }

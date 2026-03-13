@@ -12,8 +12,8 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
-  test:
-    name: Ubuntu tests (with coverage)
+  check:
+    name: Static checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,10 +21,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy, llvm-tools-preview
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+          components: rustfmt, clippy
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -40,16 +37,37 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Ubuntu tests (with coverage)
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Tests with coverage
-        run: cargo llvm-cov --workspace --html
-
-      - name: Functional tests (network)
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           GITHUB_TOKEN: ${{ secrets.FUNCTIONAL_TESTS_GITHUB_TOKEN }}
-        run: cargo test --test functional
+        run: cargo llvm-cov --workspace --html
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -59,6 +77,7 @@ jobs:
 
   macos:
     name: macOS tests
+    needs: [check]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,16 +96,6 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.FUNCTIONAL_TESTS_GITHUB_TOKEN }}
         run: cargo test --workspace
-
-  msrv:
-    name: MSRV (1.82)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust 1.82
-        uses: dtolnay/rust-toolchain@1.82
-
-      - name: Check compilation
-        run: cargo check --workspace

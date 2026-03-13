@@ -55,6 +55,15 @@ tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
 
+[workspace.lints.clippy]
+cognitive_complexity = "warn"
+too_many_lines = "warn"
+excessive_nesting = "warn"
+too_many_arguments = "warn"
+type_complexity = "warn"
+many_single_char_names = "warn"
+fn_params_excessive_bools = "warn"
+
 [profile.release]
 lto = true
 strip = true
