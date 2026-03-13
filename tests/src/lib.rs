@@ -2,14 +2,31 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 
-/// Locate the `skillfile` binary in the workspace target directory.
+/// Locate the `skillfile` binary.
 ///
-/// `cargo-llvm-cov` (and potentially other tools) override the target
-/// directory via `CARGO_TARGET_DIR`. The deprecated `Command::cargo_bin()`
-/// and the `cargo_bin_cmd!` macro (which requires same-package) both fail
-/// in that scenario. This function checks `CARGO_TARGET_DIR` first, then
-/// falls back to the workspace-root `target/` directory.
+/// Strategy:
+/// 1. Derive the target directory from this test binary's own path.
+///    Cargo places test binaries in `<target>/<profile>/deps/`, so the
+///    skillfile binary should be at `<target>/<profile>/skillfile`.
+///    This is the correct path for `cargo test` and `cargo test --target-dir`.
+///
+/// 2. If the binary doesn't exist there (e.g. `cargo llvm-cov` only builds
+///    test targets via `--tests`, not the binary executable), fall back to
+///    `CARGO_TARGET_DIR` or the workspace-root `target/` directory. CI must
+///    pre-build the binary (`cargo build -p skillfile`) so this fallback
+///    finds a fresh binary, not a stale cached one.
 fn skillfile_bin() -> PathBuf {
+    // Try same target dir as the running test binary.
+    if let Ok(test_exe) = std::env::current_exe() {
+        if let Some(profile_dir) = test_exe.parent().and_then(|p| p.parent()) {
+            let candidate = profile_dir.join("skillfile");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    // Fallback: CARGO_TARGET_DIR or workspace target/.
     let profile = if cfg!(debug_assertions) {
         "debug"
     } else {

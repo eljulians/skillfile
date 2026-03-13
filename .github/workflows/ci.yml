@@ -64,6 +64,18 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      # Functional tests (tests/cli.rs) spawn `target/debug/skillfile` as a
+      # child process. `cargo test` does NOT produce this executable - it only
+      # builds test harnesses (target/debug/deps/skillfile-<hash>). Without
+      # this step, the tests find a stale executable left in the CI cache.
+      # The cache is keyed on Cargo.lock (not source hash), so the old binary
+      # survives across commits that don't change dependencies.
+      # `-p skillfile` builds the CLI crate and all its deps (core, sources,
+      # deploy) into the final executable. The only crate it skips is the
+      # test runner itself, which `cargo test` builds in the next step.
+      - name: Build binary for functional tests
+        run: cargo build -p skillfile
+
       - name: Tests with coverage
         env:
           GITHUB_TOKEN: ${{ secrets.FUNCTIONAL_TESTS_GITHUB_TOKEN }}
@@ -95,6 +107,12 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
+
+      # See the Ubuntu job comment for the full explanation: `cargo test`
+      # doesn't produce the skillfile executable, and the CI cache can
+      # serve a stale one compiled from a previous commit's source code.
+      - name: Build binary for functional tests
+        run: cargo build -p skillfile
 
       - name: Tests
         env:
