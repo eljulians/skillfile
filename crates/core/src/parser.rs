@@ -225,6 +225,64 @@ fn parse_url_entry(
     }
 }
 
+/// Process an `install` line, pushing a target or a warning.
+fn parse_install_line(
+    parts: &[String],
+    lineno: usize,
+    install_targets: &mut Vec<InstallTarget>,
+    warnings: &mut Vec<String>,
+) {
+    if parts.len() < 3 {
+        warnings.push(format!(
+            "warning: line {lineno}: install line needs: adapter scope"
+        ));
+        return;
+    }
+    let scope_str = &parts[2];
+    match Scope::parse(scope_str) {
+        Some(scope) => {
+            install_targets.push(InstallTarget {
+                adapter: parts[1].clone(),
+                scope,
+            });
+        }
+        None => {
+            let valid: Vec<&str> = Scope::ALL.iter().map(|s| s.as_str()).collect();
+            warnings.push(format!(
+                "warning: line {lineno}: invalid scope '{scope_str}', \
+                 must be one of: {}",
+                valid.join(", ")
+            ));
+        }
+    }
+}
+
+/// Validate an entry name and insert it into the accumulator, warning on problems.
+fn validate_and_push_entry(
+    entry: Entry,
+    lineno: usize,
+    seen_names: &mut HashSet<String>,
+    entries: &mut Vec<Entry>,
+    warnings: &mut Vec<String>,
+) {
+    if !is_valid_name(&entry.name) {
+        warnings.push(format!(
+            "warning: line {lineno}: invalid name '{}' \
+             — names must match [a-zA-Z0-9._-], skipping",
+            entry.name
+        ));
+    } else if seen_names.contains(&entry.name) {
+        warnings.push(format!(
+            "warning: line {lineno}: duplicate entry name '{}'",
+            entry.name
+        ));
+        entries.push(entry);
+    } else {
+        seen_names.insert(entry.name.clone());
+        entries.push(entry);
+    }
+}
+
 /// Parse a Skillfile manifest from the given path.
 pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileError> {
     let raw_bytes = std::fs::read(manifest_path)?;
@@ -259,72 +317,38 @@ pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileErro
 
         match source_type.as_str() {
             "install" => {
-                if parts.len() < 3 {
-                    warnings.push(format!(
-                        "warning: line {lineno}: install line needs: adapter scope"
-                    ));
-                } else {
-                    let scope_str = &parts[2];
-                    match Scope::parse(scope_str) {
-                        Some(scope) => {
-                            install_targets.push(InstallTarget {
-                                adapter: parts[1].clone(),
-                                scope,
-                            });
-                        }
-                        None => {
-                            let valid: Vec<&str> = Scope::ALL.iter().map(|s| s.as_str()).collect();
-                            warnings.push(format!(
-                                "warning: line {lineno}: invalid scope '{scope_str}', \
-                                 must be one of: {}",
-                                valid.join(", ")
-                            ));
-                        }
-                    }
-                }
+                parse_install_line(&parts, lineno, &mut install_targets, &mut warnings);
             }
             st if KNOWN_SOURCES.contains(&st) => {
                 if parts.len() < 3 {
                     warnings.push(format!("warning: line {lineno}: too few fields, skipping"));
-                } else {
-                    // Parse entity type
-                    let entity_type = match EntityType::parse(&parts[1]) {
-                        Some(et) => et,
-                        None => {
-                            warnings.push(format!(
-                                "warning: line {lineno}: unknown entity type '{}', skipping",
-                                parts[1]
-                            ));
-                            continue;
-                        }
-                    };
-
-                    let (entry_opt, mut entry_warnings) = match st {
-                        "github" => parse_github_entry(&parts, entity_type, lineno),
-                        "local" => parse_local_entry(&parts, entity_type, lineno),
-                        "url" => parse_url_entry(&parts, entity_type, lineno),
-                        _ => unreachable!(),
-                    };
-                    warnings.append(&mut entry_warnings);
-
-                    if let Some(entry) = entry_opt {
-                        if !is_valid_name(&entry.name) {
-                            warnings.push(format!(
-                                "warning: line {lineno}: invalid name '{}' \
-                                 — names must match [a-zA-Z0-9._-], skipping",
-                                entry.name
-                            ));
-                        } else if seen_names.contains(&entry.name) {
-                            warnings.push(format!(
-                                "warning: line {lineno}: duplicate entry name '{}'",
-                                entry.name
-                            ));
-                            entries.push(entry);
-                        } else {
-                            seen_names.insert(entry.name.clone());
-                            entries.push(entry);
-                        }
+                    continue;
+                }
+                let entity_type = match EntityType::parse(&parts[1]) {
+                    Some(et) => et,
+                    None => {
+                        warnings.push(format!(
+                            "warning: line {lineno}: unknown entity type '{}', skipping",
+                            parts[1]
+                        ));
+                        continue;
                     }
+                };
+                let (entry_opt, mut entry_warnings) = match st {
+                    "github" => parse_github_entry(&parts, entity_type, lineno),
+                    "local" => parse_local_entry(&parts, entity_type, lineno),
+                    "url" => parse_url_entry(&parts, entity_type, lineno),
+                    _ => unreachable!(),
+                };
+                warnings.append(&mut entry_warnings);
+                if let Some(entry) = entry_opt {
+                    validate_and_push_entry(
+                        entry,
+                        lineno,
+                        &mut seen_names,
+                        &mut entries,
+                        &mut warnings,
+                    );
                 }
             }
             _ => {

@@ -237,11 +237,12 @@ impl PlatformAdapter for FileSystemAdapter {
                 {
                     continue;
                 }
-                if let Ok(rel) = file.strip_prefix(&vdir) {
-                    let dest = target_dir.join(file.file_name().unwrap_or_default());
-                    if dest.exists() {
-                        result.insert(rel.to_string_lossy().to_string(), dest);
-                    }
+                let Ok(rel) = file.strip_prefix(&vdir) else {
+                    continue;
+                };
+                let dest = target_dir.join(file.file_name().unwrap_or_default());
+                if dest.exists() {
+                    result.insert(rel.to_string_lossy().to_string(), dest);
                 }
             }
             result

@@ -347,6 +347,35 @@ enum AddSource {
     },
 }
 
+fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), SkillfileError> {
+    let entry = match source {
+        AddSource::Github {
+            entity_type,
+            owner_repo,
+            path,
+            ref_,
+            name,
+        } => commands::add::entry_from_github(
+            &entity_type,
+            &owner_repo,
+            &path,
+            ref_.as_deref(),
+            name.as_deref(),
+        ),
+        AddSource::Local {
+            entity_type,
+            path,
+            name,
+        } => commands::add::entry_from_local(&entity_type, &path, name.as_deref()),
+        AddSource::Url {
+            entity_type,
+            url,
+            name,
+        } => commands::add::entry_from_url(&entity_type, &url, name.as_deref()),
+    };
+    commands::add::cmd_add(entry, repo_root)
+}
+
 fn run() -> Result<(), SkillfileError> {
     let cli = Cli::parse();
     let quiet = cli.quiet || std::env::var("SKILLFILE_QUIET").is_ok_and(|v| !v.is_empty());
@@ -371,32 +400,7 @@ fn run() -> Result<(), SkillfileError> {
             skillfile_deploy::install::cmd_install(&repo_root, dry_run, update)?;
         }
         Command::Add { source } => {
-            let entry = match source {
-                AddSource::Github {
-                    entity_type,
-                    owner_repo,
-                    path,
-                    ref_,
-                    name,
-                } => commands::add::entry_from_github(
-                    &entity_type,
-                    &owner_repo,
-                    &path,
-                    ref_.as_deref(),
-                    name.as_deref(),
-                ),
-                AddSource::Local {
-                    entity_type,
-                    path,
-                    name,
-                } => commands::add::entry_from_local(&entity_type, &path, name.as_deref()),
-                AddSource::Url {
-                    entity_type,
-                    url,
-                    name,
-                } => commands::add::entry_from_url(&entity_type, &url, name.as_deref()),
-            };
-            commands::add::cmd_add(entry, &repo_root)?;
+            handle_add(source, &repo_root)?;
         }
         Command::Remove { name } => {
             commands::remove::cmd_remove(&name, &repo_root)?;

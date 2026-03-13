@@ -1,43 +1,9 @@
-use std::process::Command;
-use std::sync::OnceLock;
-
 use skillfile_core::error::SkillfileError;
 
 use crate::http::HttpClient;
 
-static TOKEN_CACHE: OnceLock<Option<String>> = OnceLock::new();
-
-/// Discover a GitHub token from environment or `gh` CLI. Cached after first call.
-#[must_use]
-pub fn github_token() -> Option<&'static str> {
-    TOKEN_CACHE
-        .get_or_init(|| {
-            // Check environment variables first
-            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-                if !token.is_empty() {
-                    return Some(token);
-                }
-            }
-            if let Ok(token) = std::env::var("GH_TOKEN") {
-                if !token.is_empty() {
-                    return Some(token);
-                }
-            }
-            // Fall back to `gh auth token`
-            match Command::new("gh").args(["auth", "token"]).output() {
-                Ok(output) if output.status.success() => {
-                    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if token.is_empty() {
-                        None
-                    } else {
-                        Some(token)
-                    }
-                }
-                _ => None,
-            }
-        })
-        .as_deref()
-}
+// Re-export so existing callers (`use crate::resolver::github_token`) keep working.
+pub use crate::http::github_token;
 
 /// Perform an HTTP GET and return the response body as bytes.
 pub fn http_get(client: &dyn HttpClient, url: &str) -> Result<Vec<u8>, SkillfileError> {

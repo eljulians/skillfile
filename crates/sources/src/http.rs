@@ -1,4 +1,43 @@
+use std::process::Command;
+use std::sync::OnceLock;
+
 use skillfile_core::error::SkillfileError;
+
+// ---------------------------------------------------------------------------
+// GitHub token discovery (cached for process lifetime)
+// ---------------------------------------------------------------------------
+
+static TOKEN_CACHE: OnceLock<Option<String>> = OnceLock::new();
+
+/// Discover a GitHub token from environment or `gh` CLI. Cached after first call.
+#[must_use]
+pub fn github_token() -> Option<&'static str> {
+    TOKEN_CACHE
+        .get_or_init(|| {
+            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+                if !token.is_empty() {
+                    return Some(token);
+                }
+            }
+            if let Ok(token) = std::env::var("GH_TOKEN") {
+                if !token.is_empty() {
+                    return Some(token);
+                }
+            }
+            match Command::new("gh").args(["auth", "token"]).output() {
+                Ok(output) if output.status.success() => {
+                    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if token.is_empty() {
+                        None
+                    } else {
+                        Some(token)
+                    }
+                }
+                _ => None,
+            }
+        })
+        .as_deref()
+}
 
 // ---------------------------------------------------------------------------
 // HttpClient trait — abstraction over HTTP GET for testability
@@ -77,7 +116,7 @@ impl UreqClient {
     /// Build a GET request with standard headers.
     fn build_get(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
         let mut req = self.agent.get(url).header("User-Agent", "skillfile/1.0");
-        if let Some(token) = super::resolver::github_token() {
+        if let Some(token) = github_token() {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         req
@@ -86,7 +125,7 @@ impl UreqClient {
     /// Build a POST request with standard headers.
     fn build_post(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         let mut req = self.agent.post(url).header("User-Agent", "skillfile/1.0");
-        if let Some(token) = super::resolver::github_token() {
+        if let Some(token) = github_token() {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         req

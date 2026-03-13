@@ -356,6 +356,71 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     frame.render_widget(para, area);
 }
 
+/// Render the security audit section for the preview.
+fn build_audit_lines<'a>(registry: RegistryId, audit_state: Option<&AuditState>) -> Vec<Line<'a>> {
+    if !registry.has_security_audits() {
+        return Vec::new();
+    }
+    let label_style = Style::default().fg(Color::DarkGray);
+    match audit_state {
+        Some(AuditState::Loaded(audits)) if !audits.is_empty() => {
+            let mut spans = vec![Span::styled("Audits:         ", label_style)];
+            for (i, audit) in audits.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(" | ", label_style));
+                }
+                let (icon, color) = if audit.passed {
+                    ("\u{2713} ", Color::Green)
+                } else {
+                    ("\u{2717} ", Color::Red)
+                };
+                spans.push(Span::styled(
+                    format!("{icon}{}", audit.provider),
+                    Style::default().fg(color),
+                ));
+            }
+            vec![Line::from(spans)]
+        }
+        Some(AuditState::Loading) => {
+            vec![Line::from(vec![
+                Span::styled("Audits:         ", label_style),
+                Span::styled("loading...", Style::default().fg(Color::DarkGray)),
+            ])]
+        }
+        Some(AuditState::Failed) => {
+            vec![Line::from(vec![
+                Span::styled("Audits:         ", label_style),
+                Span::styled("fetch failed", Style::default().fg(Color::Red)),
+            ])]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Render the description section for the preview.
+fn build_description_lines<'a>(description: Option<&'a str>) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line<'a>> = vec![Line::from("")];
+    if let Some(desc) = description {
+        lines.push(Line::from(Span::styled(
+            "Description:",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        // Show the full, untruncated description.
+        for line in desc.lines() {
+            lines.push(Line::from(line.to_string()));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "No description available.",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines
+}
+
 /// Build the preview text for a single search result.
 fn build_preview_lines<'a>(
     item: &'a SearchResult,
@@ -428,63 +493,10 @@ fn build_preview_lines<'a>(
     ]));
 
     // Security audit results
-    if item.registry.has_security_audits() {
-        let label_style = Style::default().fg(Color::DarkGray);
-        match audit_state {
-            Some(AuditState::Loaded(audits)) if !audits.is_empty() => {
-                let mut spans = vec![Span::styled("Audits:         ", label_style)];
-                for (i, audit) in audits.iter().enumerate() {
-                    if i > 0 {
-                        spans.push(Span::styled(" | ", label_style));
-                    }
-                    let (icon, color) = if audit.passed {
-                        ("\u{2713} ", Color::Green)
-                    } else {
-                        ("\u{2717} ", Color::Red)
-                    };
-                    spans.push(Span::styled(
-                        format!("{icon}{}", audit.provider),
-                        Style::default().fg(color),
-                    ));
-                }
-                lines.push(Line::from(spans));
-            }
-            Some(AuditState::Loading) => {
-                lines.push(Line::from(vec![
-                    Span::styled("Audits:         ", label_style),
-                    Span::styled("loading...", Style::default().fg(Color::DarkGray)),
-                ]));
-            }
-            Some(AuditState::Failed) => {
-                lines.push(Line::from(vec![
-                    Span::styled("Audits:         ", label_style),
-                    Span::styled("fetch failed", Style::default().fg(Color::Red)),
-                ]));
-            }
-            _ => {}
-        }
-    }
+    lines.extend(build_audit_lines(item.registry, audit_state));
 
     // Description
-    lines.push(Line::from(""));
-    if let Some(desc) = &item.description {
-        lines.push(Line::from(Span::styled(
-            "Description:",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
-        // Show the full, untruncated description.
-        for line in desc.lines() {
-            lines.push(Line::from(line.to_string()));
-        }
-    } else {
-        lines.push(Line::from(Span::styled(
-            "No description available.",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
+    lines.extend(build_description_lines(item.description.as_deref()));
 
     lines
 }

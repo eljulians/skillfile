@@ -15,6 +15,9 @@ use crate::patch::{
     remove_all_dir_patches, remove_patch, write_dir_patch, write_patch,
 };
 
+/// Map of filename to file content used during dir-entry merge operations.
+type FileMap = std::collections::HashMap<String, String>;
+
 fn three_way_merge(
     base: &str,
     theirs: &str,
@@ -177,6 +180,95 @@ fn resolve_single_file(
     Ok(())
 }
 
+/// Merge each file using three-way merge. Returns the merged results and whether
+/// any file had conflicts requiring manual resolution. Returns `Ok(None)` when
+/// conflict markers remain after editor interaction (signals early exit to caller).
+fn merge_all_files(
+    all_filenames: &[String],
+    base_files: &FileMap,
+    theirs_files: &FileMap,
+    entry: &skillfile_core::models::Entry,
+    installed: &std::collections::HashMap<String, std::path::PathBuf>,
+    repo_root: &Path,
+) -> Result<Option<(FileMap, bool)>, SkillfileError> {
+    let mut merged_results = FileMap::new();
+    let mut any_conflict = false;
+
+    for filename in all_filenames {
+        let base = base_files.get(filename).map(|s| s.as_str()).unwrap_or("");
+        let theirs = theirs_files.get(filename).map(|s| s.as_str()).unwrap_or("");
+
+        // Reconstruct "yours" from stored patch + base
+        let p = dir_patch_path(entry, filename, repo_root);
+        let yours = if p.exists() {
+            let patch_text = std::fs::read_to_string(&p)?;
+            apply_patch_pure(base, &patch_text)?
+        } else {
+            match installed.get(filename) {
+                Some(inst_path) if inst_path.exists() => std::fs::read_to_string(inst_path)?,
+                _ => base.to_string(),
+            }
+        };
+
+        let (mut merged, has_conflicts) = three_way_merge(base, theirs, &yours, filename)?;
+
+        if has_conflicts {
+            any_conflict = true;
+            eprintln!("\n  Conflicts in '{filename}'. Opening in editor...");
+            merged = open_in_editor(&merged, filename)?;
+            if merged.contains("<<<<<<<") {
+                eprintln!(
+                    "error: conflict markers still present in '{filename}' — resolve and try again"
+                );
+                return Ok(None);
+            }
+        } else {
+            progress!("  {filename}: clean merge");
+        }
+
+        merged_results.insert(filename.clone(), merged);
+    }
+
+    Ok(Some((merged_results, any_conflict)))
+}
+
+/// Write merged results to installed paths and update patch files.
+fn write_merged_results(
+    merged_results: &FileMap,
+    theirs_files: &FileMap,
+    entry: &skillfile_core::models::Entry,
+    installed: &std::collections::HashMap<String, std::path::PathBuf>,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
+    remove_all_dir_patches(entry, repo_root)?;
+    let mut pinned: Vec<String> = Vec::new();
+    for (filename, merged_text) in merged_results {
+        let theirs = theirs_files.get(filename).map(|s| s.as_str()).unwrap_or("");
+        if let Some(inst_path) = installed.get(filename) {
+            std::fs::write(inst_path, merged_text)?;
+        }
+        let patch_text = generate_patch(theirs, merged_text, filename);
+        if !patch_text.is_empty() {
+            write_dir_patch(entry, filename, &patch_text, repo_root)?;
+            pinned.push(filename.clone());
+        }
+    }
+
+    if !pinned.is_empty() {
+        progress!(
+            "  updated .skillfile/patches/ for '{}' ({})",
+            entry.name,
+            pinned.join(", ")
+        );
+    } else {
+        progress!(
+            "  merged result matches upstream — no pin needed for '{}'",
+            entry.name
+        );
+    }
+    Ok(())
+}
+
 fn resolve_dir_entry(
     entry: &skillfile_core::models::Entry,
     conflict: &ConflictState,
@@ -216,76 +308,23 @@ fn resolve_dir_entry(
         .collect();
     all_filenames.sort();
 
-    let mut merged_results: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut any_conflict = false;
-
-    for filename in &all_filenames {
-        let base = base_files.get(filename).map(|s| s.as_str()).unwrap_or("");
-        let theirs = theirs_files.get(filename).map(|s| s.as_str()).unwrap_or("");
-
-        // Reconstruct "yours" from stored patch + base
-        let p = dir_patch_path(entry, filename, repo_root);
-        let yours = if p.exists() {
-            let patch_text = std::fs::read_to_string(&p)?;
-            apply_patch_pure(base, &patch_text)?
-        } else {
-            match installed.get(filename) {
-                Some(inst_path) if inst_path.exists() => std::fs::read_to_string(inst_path)?,
-                _ => base.to_string(),
-            }
-        };
-
-        let (mut merged, has_conflicts) = three_way_merge(base, theirs, &yours, filename)?;
-
-        if has_conflicts {
-            any_conflict = true;
-            eprintln!("\n  Conflicts in '{filename}'. Opening in editor...");
-            merged = open_in_editor(&merged, filename)?;
-            if merged.contains("<<<<<<<") {
-                eprintln!(
-                    "error: conflict markers still present in '{filename}' — resolve and try again"
-                );
-                return Ok(());
-            }
-        } else {
-            progress!("  {filename}: clean merge");
-        }
-
-        merged_results.insert(filename.clone(), merged);
-    }
+    let Some((merged_results, any_conflict)) = merge_all_files(
+        &all_filenames,
+        &base_files,
+        &theirs_files,
+        entry,
+        &installed,
+        repo_root,
+    )?
+    else {
+        return Ok(());
+    };
 
     if !any_conflict {
         progress!("  all files merged cleanly in '{}'", entry.name);
     }
 
-    // Write merged results and update patches
-    remove_all_dir_patches(entry, repo_root)?;
-    let mut pinned: Vec<String> = Vec::new();
-    for (filename, merged_text) in &merged_results {
-        let theirs = theirs_files.get(filename).map(|s| s.as_str()).unwrap_or("");
-        if let Some(inst_path) = installed.get(filename) {
-            std::fs::write(inst_path, merged_text)?;
-        }
-        let patch_text = generate_patch(theirs, merged_text, filename);
-        if !patch_text.is_empty() {
-            write_dir_patch(entry, filename, &patch_text, repo_root)?;
-            pinned.push(filename.clone());
-        }
-    }
-
-    if !pinned.is_empty() {
-        progress!(
-            "  updated .skillfile/patches/ for '{}' ({})",
-            entry.name,
-            pinned.join(", ")
-        );
-    } else {
-        progress!(
-            "  merged result matches upstream — no pin needed for '{}'",
-            entry.name
-        );
-    }
+    write_merged_results(&merged_results, &theirs_files, entry, &installed, repo_root)?;
 
     clear_conflict(repo_root)?;
     println!(

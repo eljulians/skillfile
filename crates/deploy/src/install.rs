@@ -187,12 +187,53 @@ fn auto_pin_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
     }
 }
 
+/// Check a single cache file against its installed counterpart and generate/update
+/// the patch if the user has modified the installed copy. Returns the filename if
+/// a new patch was written.
+fn try_auto_pin_file(
+    cache_file: &Path,
+    vdir: &Path,
+    entry: &Entry,
+    installed: &HashMap<String, PathBuf>,
+    repo_root: &Path,
+) -> Option<String> {
+    if cache_file.file_name().is_some_and(|n| n == ".meta") {
+        return None;
+    }
+    let filename = cache_file.strip_prefix(vdir).ok()?.to_str()?.to_string();
+    let inst_path = match installed.get(&filename) {
+        Some(p) if p.exists() => p,
+        _ => return None,
+    };
+
+    let cache_text = std::fs::read_to_string(cache_file).ok()?;
+    let installed_text = std::fs::read_to_string(inst_path).ok()?;
+
+    // Check if stored dir patch still matches
+    let p = dir_patch_path(entry, &filename, repo_root);
+    if p.exists() {
+        if let Ok(pt) = std::fs::read_to_string(&p) {
+            match apply_patch_pure(&cache_text, &pt) {
+                Ok(expected) if installed_text == expected => return None,
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+    }
+
+    let patch_text = generate_patch(&cache_text, &installed_text, &filename);
+    if !patch_text.is_empty() && write_dir_patch(entry, &filename, &patch_text, repo_root).is_ok() {
+        Some(filename)
+    } else {
+        None
+    }
+}
+
 /// Auto-pin each modified file in a directory entry's installed copy.
 fn auto_pin_dir_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path, vdir: &Path) {
     if !vdir.is_dir() {
         return;
     }
-
     let installed = match installed_dir_files(entry, manifest, repo_root) {
         Ok(m) => m,
         Err(_) => return,
@@ -201,48 +242,10 @@ fn auto_pin_dir_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path, vdir
         return;
     }
 
-    let mut pinned: Vec<String> = Vec::new();
-    for cache_file in walkdir(vdir) {
-        if cache_file.file_name().is_some_and(|n| n == ".meta") {
-            continue;
-        }
-        let filename = match cache_file.strip_prefix(vdir).ok().and_then(|p| p.to_str()) {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-        let inst_path = match installed.get(&filename) {
-            Some(p) if p.exists() => p,
-            _ => continue,
-        };
-
-        let cache_text = match std::fs::read_to_string(&cache_file) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let installed_text = match std::fs::read_to_string(inst_path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        // Check if stored dir patch still matches
-        let p = dir_patch_path(entry, &filename, repo_root);
-        if p.exists() {
-            if let Ok(pt) = std::fs::read_to_string(&p) {
-                match apply_patch_pure(&cache_text, &pt) {
-                    Ok(expected) if installed_text == expected => continue, // no new edits
-                    Ok(_) => {}         // fall through to re-pin
-                    Err(_) => continue, // cache inconsistent — preserve
-                }
-            }
-        }
-
-        let patch_text = generate_patch(&cache_text, &installed_text, &filename);
-        if !patch_text.is_empty()
-            && write_dir_patch(entry, &filename, &patch_text, repo_root).is_ok()
-        {
-            pinned.push(filename);
-        }
-    }
+    let pinned: Vec<String> = walkdir(vdir)
+        .into_iter()
+        .filter_map(|f| try_auto_pin_file(&f, vdir, entry, &installed, repo_root))
+        .collect();
 
     if !pinned.is_empty() {
         progress!(
