@@ -45,10 +45,11 @@ fn no_args_exits_nonzero() {
 
 #[test]
 fn init_fails_without_tty() {
-    // assert_cmd pipes stdin, so is_terminal() returns false.
     let dir = tempfile::tempdir().unwrap();
     sf(dir.path())
         .arg("init")
+        .write_stdin("")  // force piped stdin so is_terminal() returns false
+        .timeout(std::time::Duration::from_secs(5))
         .assert()
         .failure()
         .stderr(predicate::str::contains("interactive terminal"));
