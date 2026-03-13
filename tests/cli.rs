@@ -48,7 +48,7 @@ fn init_fails_without_tty() {
     let dir = tempfile::tempdir().unwrap();
     sf(dir.path())
         .arg("init")
-        .write_stdin("") // force piped stdin so is_terminal() returns false
+        .env("CI", "true")
         .timeout(std::time::Duration::from_secs(5))
         .assert()
         .failure()
@@ -154,15 +154,27 @@ fn first_run_shows_platform_hint() {
     let dir = tempfile::tempdir().unwrap();
     write_local_manifest(dir.path());
 
-    // No .skillfile/cache yet → should show configured platforms and init hint.
-    sf(dir.path())
+    // Sanity check: cache must not exist yet.
+    assert!(
+        !dir.path().join(".skillfile/cache").exists(),
+        "cache dir should not exist in fresh tempdir"
+    );
+
+    let output = sf(dir.path())
         .arg("install")
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "Configured platforms: claude-code (local)",
-        ))
-        .stderr(predicate::str::contains("skillfile init"));
+        .output()
+        .expect("failed to execute");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "install should succeed: {stderr}");
+    assert!(
+        stderr.contains("Configured platforms: claude-code (local)"),
+        "first install should show platform hint, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("skillfile init"),
+        "first install should suggest init, got stderr:\n{stderr}"
+    );
 }
 
 #[test]
