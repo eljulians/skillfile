@@ -119,8 +119,11 @@ fn supported_types_hint(adapter_name: &str) -> &'static str {
 // ---------------------------------------------------------------------------
 
 pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
-    // TTY guard: cliclack requires an interactive terminal.
-    if !io::stdin().is_terminal() {
+    // TTY guard: cliclack requires an interactive terminal. Check stdin, stdout,
+    // and the CI env var because some CI runners (macOS GitHub Actions) report
+    // piped fds as TTY.
+    let is_ci = std::env::var("CI").is_ok();
+    if is_ci || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(SkillfileError::Manifest(
             "skillfile init requires an interactive terminal.\n\
              Use `skillfile add` for scripted/CI usage."
