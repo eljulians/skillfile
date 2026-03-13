@@ -48,7 +48,7 @@ fn init_fails_without_tty() {
     let dir = tempfile::tempdir().unwrap();
     sf(dir.path())
         .arg("init")
-        .write_stdin("")  // force piped stdin so is_terminal() returns false
+        .write_stdin("") // force piped stdin so is_terminal() returns false
         .timeout(std::time::Duration::from_secs(5))
         .assert()
         .failure()
