@@ -50,10 +50,7 @@ fn sf_retry(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
             Ok(output)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!(
-                "  retry: `skillfile {}` failed: {stderr}",
-                args.join(" ")
-            );
+            eprintln!("  retry: `skillfile {}` failed: {stderr}", args.join(" "));
             Err(stderr.to_string())
         }
     })
@@ -333,8 +330,10 @@ fn list_repo_skill_entries_real_multi_file_repo() {
     }
     let client = skillfile_sources::http::UreqClient::new();
     let entries: Vec<String> = retry(retry_delays(), || {
-        let result =
-            skillfile_sources::resolver::list_repo_skill_entries(&client, "iannuttall/claude-agents");
+        let result = skillfile_sources::resolver::list_repo_skill_entries(
+            &client,
+            "iannuttall/claude-agents",
+        );
         if result.is_empty() {
             Err("no entries returned")
         } else {
@@ -411,8 +410,10 @@ fn skill_entry_resolution_multi_skill_repo() {
     }
     let client = skillfile_sources::http::UreqClient::new();
     let entries: Vec<String> = retry(retry_delays(), || {
-        let result =
-            skillfile_sources::resolver::list_repo_skill_entries(&client, "jeffallan/claude-skills");
+        let result = skillfile_sources::resolver::list_repo_skill_entries(
+            &client,
+            "jeffallan/claude-skills",
+        );
         if result.is_empty() {
             Err("no entries returned")
         } else {

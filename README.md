@@ -7,7 +7,9 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)]()
 
-Declarative manager for AI skills and agents - the Brewfile for your AI tooling.
+One-stop shop (and file) for AI skills and agents.
+
+Search, install, and track them declaratively across all major AI coding tools. Customize without losing upstream updates.i
 
 ![demo](https://github.com/eljulians/skillfile/raw/master/docs/demo.gif)
 
