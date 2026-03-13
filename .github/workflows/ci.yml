@@ -13,6 +13,7 @@ jobs:
   check:
     name: Static checks
     runs-on: ubuntu-latest
+    timeout-minutes: 1
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +42,7 @@ jobs:
     name: Ubuntu tests (with coverage)
     needs: [check]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -77,6 +79,7 @@ jobs:
     name: macOS tests
     needs: [check]
     runs-on: macos-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
