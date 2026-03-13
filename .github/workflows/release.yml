@@ -11,13 +11,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
-    name: CI
-    uses: ./.github/workflows/ci.yml
-
   build:
     name: Build (${{ matrix.target }})
-    needs: ci
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -70,7 +65,7 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: [ci, build]
+    needs: [build]
     steps:
       - uses: actions/checkout@v4
 
