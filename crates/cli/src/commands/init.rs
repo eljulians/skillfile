@@ -180,7 +180,7 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
 
     // Scope selection
     let scope: &str = cliclack::select("Default scope for selected platforms?")
-        .item("local", "local", "project-specific (recommended)")
+        .item("local", "local", "project-specific")
         .item("global", "global", "user-wide (~/.tool/)")
         .item("both", "both", "add global and local for each platform")
         .interact()?;
@@ -212,7 +212,9 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
         .collect();
     cliclack::note("Install config written to Skillfile", summary.join("\n"))?;
 
-    cliclack::outro("Run `skillfile install` to fetch and deploy.")?;
+    cliclack::outro(format!(
+        "You're all set! Next up:\n  \u{2795} `skillfile add` to add a skill or agent\n  \u{1f50d} `skillfile search` to discover community skills"
+    ))?;
 
     Ok(())
 }

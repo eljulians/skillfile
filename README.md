@@ -13,7 +13,7 @@ Declarative manager for AI skills and agents - the Brewfile for your AI tooling.
 
 Community skills and agents are popping up everywhere ([agentskill.sh](https://agentskill.sh/), [skills.sh](https://skills.sh/), GitHub repos, raw URLs). Installing them usually means `npx` one-liners, copy-pasting markdown, or running tool-specific plugins. Nothing tracks what you installed, there's no lock file, no way to update, and if you tweak a skill you lose your changes the next time you reinstall.
 
-`skillfile` gives you a single config file (`Skillfile`) that declares everything. Run `skillfile install` and it fetches your skills and agents, locks them to exact commit SHAs, and deploys them where Claude Code / Gemini CLI / Codex expect them. Edit an installed skill? `skillfile pin` captures your changes as a patch so they survive upstream updates. You stay in sync with the source without losing your customizations.
+`skillfile` gives you a single config file (`Skillfile`) that declares everything. Run `skillfile search` to browse 110K+ community skills right from your terminal! Including popularity and security scores. Or add entries by hand for repos you already know. `skillfile install` fetches your skills and agents, locks them to exact commit SHAs, and deploys them where your AI tools expect them (7 platforms supported, including Claude Code or Codex). Edit an installed skill? `skillfile pin` captures your changes as a patch so they survive upstream updates. You stay in sync with the source without losing your customizations.
 
 Not a framework. Does not run agents. Just manages the markdown files that frameworks consume.
 
