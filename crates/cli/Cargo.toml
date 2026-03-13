@@ -28,6 +28,8 @@ ureq = { workspace = true }
 dirs = { workspace = true }
 similar = { workspace = true }
 inquire = { workspace = true }
+cliclack = { workspace = true }
+console = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tempfile = { workspace = true }

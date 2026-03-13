@@ -1,74 +1,15 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
-use skillfile_deploy::adapter::known_adapters;
+use skillfile_deploy::adapter::{adapters, known_adapters};
 
 const GITIGNORE_ENTRIES: &[&str] = &[".skillfile/cache/", ".skillfile/conflict"];
 
-fn prompt(
-    reader: &mut dyn BufRead,
-    writer: &mut dyn Write,
-    msg: &str,
-) -> Result<String, SkillfileError> {
-    write!(writer, "{msg}")?;
-    writer.flush()?;
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    Ok(line.trim().to_string())
-}
-
-fn prompt_yn(
-    reader: &mut dyn BufRead,
-    writer: &mut dyn Write,
-    msg: &str,
-) -> Result<bool, SkillfileError> {
-    let answer = prompt(reader, writer, &format!("{msg} [y/N] "))?;
-    Ok(answer.eq_ignore_ascii_case("y"))
-}
-
-fn collect_targets(
-    reader: &mut dyn BufRead,
-    writer: &mut dyn Write,
-) -> Result<Vec<(String, String)>, SkillfileError> {
-    let adapter_list = known_adapters().join(", ");
-    let adapters_set: std::collections::HashSet<String> =
-        known_adapters().iter().map(|s| s.to_string()).collect();
-    let mut targets = Vec::new();
-
-    loop {
-        writeln!(writer, "\nKnown platforms: {adapter_list}")?;
-        let adapter = loop {
-            let a = prompt(reader, writer, "Platform: ")?;
-            if adapters_set.contains(&a) {
-                break a;
-            }
-            writeln!(writer, "  Please enter one of: {adapter_list}")?;
-        };
-
-        let scope = loop {
-            let s = prompt(reader, writer, "Scope [global/local/both]: ")?;
-            if ["global", "local", "both"].contains(&s.as_str()) {
-                break s;
-            }
-            writeln!(writer, "  Please enter one of: global, local, both")?;
-        };
-
-        if scope == "both" {
-            targets.push((adapter.clone(), "global".to_string()));
-            targets.push((adapter, "local".to_string()));
-        } else {
-            targets.push((adapter, scope));
-        }
-
-        if !prompt_yn(reader, writer, "Add another platform?")? {
-            break;
-        }
-    }
-
-    Ok(targets)
-}
+// ---------------------------------------------------------------------------
+// Pure helpers (no terminal interaction — fully testable)
+// ---------------------------------------------------------------------------
 
 fn rewrite_install_lines(
     manifest_path: &Path,
@@ -135,55 +76,115 @@ fn update_gitignore(repo_root: &Path) -> Result<(), SkillfileError> {
         writeln!(file, "{entry}")?;
     }
 
-    let names: Vec<&str> = missing.iter().map(|e| **e).collect();
-    println!("\n.gitignore updated: {}", names.join(", "));
-
     Ok(())
 }
 
-pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
-    cmd_init_with_io(repo_root, &mut io::stdin().lock(), &mut io::stdout())
+/// Return a human-readable hint for the entity types supported by a platform.
+fn supported_types_hint(adapter_name: &str) -> &'static str {
+    let reg = adapters();
+    match reg.get(adapter_name) {
+        Some(a) => match (a.supports("skill"), a.supports("agent")) {
+            (true, true) => "skill, agent",
+            (true, false) => "skill only",
+            (false, true) => "agent only",
+            _ => "",
+        },
+        None => "",
+    }
 }
 
-pub fn cmd_init_with_io(
-    repo_root: &Path,
-    reader: &mut dyn BufRead,
-    writer: &mut dyn Write,
-) -> Result<(), SkillfileError> {
+// ---------------------------------------------------------------------------
+// Public entry point — interactive cliclack flow
+// ---------------------------------------------------------------------------
+
+pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
+    // TTY guard: cliclack requires an interactive terminal.
+    if !io::stdin().is_terminal() {
+        return Err(SkillfileError::Manifest(
+            "skillfile init requires an interactive terminal.\n\
+             Use `skillfile add` for scripted/CI usage."
+                .into(),
+        ));
+    }
+
+    cliclack::intro(console::style(" skillfile init ").on_cyan().black())?;
+
+    // Create Skillfile if missing
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
         std::fs::write(&manifest_path, "")?;
-        writeln!(writer, "Created {MANIFEST_NAME}.")?;
+        cliclack::log::info(format!("Created {MANIFEST_NAME}"))?;
     }
 
+    // Parse existing manifest
     let result = parse_manifest(&manifest_path)?;
     let existing = &result.manifest.install_targets;
 
+    // Show existing config
+    let existing_set: std::collections::HashSet<&str> =
+        existing.iter().map(|t| t.adapter.as_str()).collect();
+
     if !existing.is_empty() {
-        writeln!(writer, "Existing install config found:")?;
-        for t in existing {
-            writeln!(writer, "  install  {}  {}", t.adapter, t.scope)?;
-        }
-        writeln!(writer, "This will be replaced.")?;
-        if !prompt_yn(reader, writer, "Continue?")? {
-            writeln!(writer, "Aborted.")?;
-            return Ok(());
-        }
+        let lines: Vec<String> = existing
+            .iter()
+            .map(|t| format!("install  {}  {}", t.adapter, t.scope))
+            .collect();
+        cliclack::note("Existing config", lines.join("\n"))?;
     }
 
-    writeln!(writer, "\nConfigure install targets.")?;
-    let new_targets = collect_targets(reader, writer)?;
+    // Platform multi-select
+    let adapter_names = known_adapters();
+    let mut multi = cliclack::multiselect("Select platforms to install to");
+    for name in &adapter_names {
+        multi = multi.item(*name, *name, supported_types_hint(name));
+    }
+
+    // Pre-select platforms that already have install lines
+    let initial: Vec<&str> = adapter_names
+        .iter()
+        .copied()
+        .filter(|n| existing_set.contains(n))
+        .collect();
+    if !initial.is_empty() {
+        multi = multi.initial_values(initial);
+    }
+
+    let selected: Vec<&str> = multi.interact()?;
+
+    if selected.is_empty() {
+        cliclack::outro_cancel("No platforms selected.")?;
+        return Ok(());
+    }
+
+    // Scope selection
+    let scope: &str = cliclack::select("Default scope for selected platforms?")
+        .item("local", "local", "project-specific (recommended)")
+        .item("global", "global", "user-wide (~/.tool/)")
+        .interact()?;
+
+    // Build install targets
+    let new_targets: Vec<(String, String)> = selected
+        .iter()
+        .map(|p| (p.to_string(), scope.to_string()))
+        .collect();
 
     rewrite_install_lines(&manifest_path, &new_targets)?;
     update_gitignore(repo_root)?;
 
-    writeln!(writer, "\nInstall config written to Skillfile:")?;
-    for (adapter, scope) in &new_targets {
-        writeln!(writer, "  install  {adapter}  {scope}")?;
-    }
+    let summary: Vec<String> = new_targets
+        .iter()
+        .map(|(a, s)| format!("install  {a}  {s}"))
+        .collect();
+    cliclack::note("Install config written to Skillfile", summary.join("\n"))?;
+
+    cliclack::outro("Run `skillfile install` to fetch and deploy.")?;
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Tests — pure function coverage (interactive flow tested via functional tests)
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -193,30 +194,15 @@ mod tests {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
     }
 
-    fn run_init(dir: &Path, input: &str) -> Vec<u8> {
-        let mut reader = io::Cursor::new(input.as_bytes().to_vec());
-        let mut output = Vec::new();
-        cmd_init_with_io(dir, &mut reader, &mut output).unwrap();
-        output
-    }
-
-    #[test]
-    fn creates_manifest_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!dir.path().join(MANIFEST_NAME).exists());
-
-        run_init(dir.path(), "claude-code\nglobal\nn\n");
-
-        assert!(dir.path().join(MANIFEST_NAME).exists());
-        let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
-        assert!(text.contains("install  claude-code  global"));
-    }
+    // -- rewrite_install_lines --
 
     #[test]
     fn writes_install_lines() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
-        run_init(dir.path(), "claude-code\nglobal\nn\n");
+
+        let targets = vec![("claude-code".into(), "global".into())];
+        rewrite_install_lines(&dir.path().join(MANIFEST_NAME), &targets).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("install  claude-code  global"));
@@ -226,7 +212,9 @@ mod tests {
     fn install_lines_at_top() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "local  skill  skills/foo.md\n");
-        run_init(dir.path(), "claude-code\nglobal\nn\n");
+
+        let targets = vec![("claude-code".into(), "global".into())];
+        rewrite_install_lines(&dir.path().join(MANIFEST_NAME), &targets).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         let lines: Vec<&str> = text.lines().collect();
@@ -237,7 +225,9 @@ mod tests {
     fn preserves_existing_entries() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "local  skill  skills/foo.md\n");
-        run_init(dir.path(), "claude-code\nlocal\nn\n");
+
+        let targets = vec![("claude-code".into(), "local".into())];
+        rewrite_install_lines(&dir.path().join(MANIFEST_NAME), &targets).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("local  skill  skills/foo.md"));
@@ -245,21 +235,15 @@ mod tests {
     }
 
     #[test]
-    fn both_scope_adds_global_and_local() {
-        let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "");
-        run_init(dir.path(), "claude-code\nboth\nn\n");
-
-        let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
-        assert!(text.contains("install  claude-code  global"));
-        assert!(text.contains("install  claude-code  local"));
-    }
-
-    #[test]
     fn multiple_adapters() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
-        run_init(dir.path(), "claude-code\nglobal\ny\ngemini-cli\nlocal\nn\n");
+
+        let targets = vec![
+            ("claude-code".into(), "global".into()),
+            ("gemini-cli".into(), "local".into()),
+        ];
+        rewrite_install_lines(&dir.path().join(MANIFEST_NAME), &targets).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("install  claude-code  global"));
@@ -273,8 +257,9 @@ mod tests {
             dir.path(),
             "install  claude-code  global\nlocal  skill  skills/foo.md\n",
         );
-        // "y" to confirm replacement, then new adapter/scope, then "n" for no more
-        run_init(dir.path(), "y\ngemini-cli\nlocal\nn\n");
+
+        let targets = vec![("gemini-cli".into(), "local".into())];
+        rewrite_install_lines(&dir.path().join(MANIFEST_NAME), &targets).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(!text.contains("claude-code"));
@@ -283,22 +268,30 @@ mod tests {
     }
 
     #[test]
-    fn abort_when_existing_targets() {
+    fn strips_leading_blanks_after_install_removal() {
         let dir = tempfile::tempdir().unwrap();
-        let original = "install  claude-code  global\nlocal  skill  skills/foo.md\n";
-        write_manifest(dir.path(), original);
-        // "n" to abort
-        run_init(dir.path(), "n\n");
+        write_manifest(
+            dir.path(),
+            "install  old  global\n\n\nlocal  skill  keep.md\n",
+        );
+
+        let targets = vec![("new".into(), "local".into())];
+        rewrite_install_lines(&dir.path().join(MANIFEST_NAME), &targets).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
-        assert_eq!(text, original);
+        let lines: Vec<&str> = text.lines().collect();
+        // install line, blank separator, then entry — no extra blank lines
+        assert_eq!(lines[0], "install  new  local");
+        assert_eq!(lines[1], "");
+        assert_eq!(lines[2], "local  skill  keep.md");
     }
+
+    // -- update_gitignore --
 
     #[test]
     fn creates_gitignore() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "");
-        run_init(dir.path(), "claude-code\nglobal\nn\n");
+        update_gitignore(dir.path()).unwrap();
 
         let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gitignore.contains(".skillfile/cache/"));
@@ -308,17 +301,15 @@ mod tests {
     #[test]
     fn gitignore_idempotent() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "");
         std::fs::write(
             dir.path().join(".gitignore"),
             "# skillfile\n.skillfile/cache/\n.skillfile/conflict\n",
         )
         .unwrap();
 
-        run_init(dir.path(), "claude-code\nglobal\nn\n");
+        update_gitignore(dir.path()).unwrap();
 
         let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        // Should not duplicate entries
         assert_eq!(
             gitignore.matches(".skillfile/cache/").count(),
             1,
@@ -329,10 +320,54 @@ mod tests {
     #[test]
     fn gitignore_does_not_include_patches() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "");
-        run_init(dir.path(), "claude-code\nglobal\nn\n");
+        update_gitignore(dir.path()).unwrap();
 
         let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(!gitignore.contains("patches"));
+    }
+
+    #[test]
+    fn gitignore_appends_only_missing_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            "# skillfile\n.skillfile/cache/\n",
+        )
+        .unwrap();
+
+        update_gitignore(dir.path()).unwrap();
+
+        let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(gitignore.contains(".skillfile/conflict"));
+        assert_eq!(gitignore.matches(".skillfile/cache/").count(), 1);
+    }
+
+    // -- supported_types_hint --
+
+    #[test]
+    fn hint_for_full_adapter() {
+        assert_eq!(supported_types_hint("claude-code"), "skill, agent");
+    }
+
+    #[test]
+    fn hint_for_skill_only_adapter() {
+        assert_eq!(supported_types_hint("codex"), "skill only");
+    }
+
+    #[test]
+    fn hint_for_unknown_adapter() {
+        assert_eq!(supported_types_hint("nonexistent"), "");
+    }
+
+    // -- TTY guard --
+
+    #[test]
+    fn init_fails_without_tty() {
+        // In test context, stdin is not a TTY, so cmd_init should fail
+        let dir = tempfile::tempdir().unwrap();
+        let result = cmd_init(dir.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("interactive terminal"), "got: {msg}");
     }
 }

@@ -43,6 +43,8 @@ similar = "2"
 
 # Interactive prompts
 inquire = "0.9"
+cliclack = "0.4"
+console = "0.16"
 
 # TUI
 ratatui = "0.29"
