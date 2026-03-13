@@ -427,6 +427,10 @@ pub fn cmd_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), 
 
     check_preconditions(&manifest, repo_root)?;
 
+    // Detect first install (cache dir absent → fresh clone or first run).
+    let cache_dir = repo_root.join(".skillfile").join("cache");
+    let first_install = !cache_dir.exists();
+
     // Read old locked state before sync (used for SHA context in conflict messages).
     let old_locked = read_lock(repo_root).unwrap_or_default();
 
@@ -435,6 +439,11 @@ pub fn cmd_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), 
         for entry in &manifest.entries {
             auto_pin_entry(entry, &manifest, repo_root);
         }
+    }
+
+    // Ensure cache dir exists (used as first-install marker and by sync).
+    if !dry_run {
+        std::fs::create_dir_all(&cache_dir)?;
     }
 
     // Fetch any missing or stale entries.
@@ -452,6 +461,19 @@ pub fn cmd_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), 
 
     if !dry_run {
         progress!("Done.");
+
+        // On first install, show configured platforms and hint about `init`.
+        // Helps the clone scenario: user clones a repo with a Skillfile targeting
+        // platforms they may not use, and needs to know how to add theirs.
+        if first_install {
+            let platforms: Vec<String> = manifest
+                .install_targets
+                .iter()
+                .map(|t| format!("{} ({})", t.adapter, t.scope))
+                .collect();
+            progress!("  Configured platforms: {}", platforms.join(", "));
+            progress!("  Run `skillfile init` to add or change platforms.");
+        }
     }
 
     Ok(())
