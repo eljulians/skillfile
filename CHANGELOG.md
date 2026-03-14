@@ -4,7 +4,31 @@ All notable changes to skillfile are documented here.
 
 ---
 
-## v1.2.0
+## v1.2.1 - 14-03-2026
+
+### Added
+
+- **Personal platform config** - platform preferences can now be stored in a user-global TOML config file (`~/.config/skillfile/config.toml`) instead of the committed Skillfile. Useful in shared repos where each developer uses different AI tools.
+  - `skillfile init` now asks where to store platform config: personal (recommended for shared repos) or Skillfile (shared with team)
+  - Existing config from both sources shown during `init` with labels ("Skillfile" / "personal config")
+  - Precedence rule: Skillfile install targets always override personal config
+  - All commands (`status`, `diff`, `pin`, `unpin`, `resolve`) fall back to personal config when Skillfile has no install lines
+  - `install` prints "Using platform targets from personal config" when falling back
+- **Smarter init outro** - when the Skillfile already has entries (e.g. after cloning), the wizard now tells you how many and suggests `skillfile install` as the next step.
+
+### Changed
+
+- **Binary size reduced** - release profile now uses `opt-level = "s"` (optimize for size), bringing the binary from ~4.2 MB to ~3.4 MB.
+- **Personal config is the default init choice** - the destination picker now lists personal config first with a tip about avoiding merge conflicts in shared repos.
+- **Status formatting extracted** - `format_entry_status` is now a standalone function, no behavior change.
+
+### Fixed
+
+- **"No install targets" in shared repos** - if a Skillfile had entries but no `install` lines (common when teams don't want to commit platform preferences), every command failed. Now falls back to personal config so each developer can set their own platforms without touching the shared Skillfile.
+
+---
+
+## v1.2.0 - 13-03-2026
 
 ### Added
 
@@ -28,7 +52,7 @@ All notable changes to skillfile are documented here.
 
 ---
 
-## v1.1.0
+## v1.1.0 - 12-03-2026
 
 ### Added
 

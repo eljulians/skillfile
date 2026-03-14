@@ -23,8 +23,8 @@ fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<Strin
         )));
     }
 
-    let result = parse_manifest(&repo_root.join(MANIFEST_NAME))?;
-    let installed = installed_dir_files(entry, &result.manifest, repo_root)?;
+    let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
+    let installed = installed_dir_files(entry, &manifest, repo_root)?;
     if installed.is_empty() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed — run `skillfile install` first",
@@ -116,8 +116,8 @@ fn pin_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<String, S
         )));
     }
 
-    let result = parse_manifest(&repo_root.join(MANIFEST_NAME))?;
-    let dest = installed_path(entry, &result.manifest, repo_root)?;
+    let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
+    let dest = installed_path(entry, &manifest, repo_root)?;
     if !dest.exists() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed — run `skillfile install` first",
@@ -163,9 +163,8 @@ pub fn cmd_pin(name: &str, repo_root: &Path, dry_run: bool) -> Result<(), Skillf
 }
 
 pub fn cmd_unpin(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
-    let manifest_path = repo_root.join(MANIFEST_NAME);
-    let result = parse_manifest(&manifest_path)?;
-    let entry = find_entry_in(name, &result.manifest)?;
+    let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
+    let entry = find_entry_in(name, &manifest)?;
 
     let single = has_patch(entry, repo_root);
     let directory = has_dir_patch(entry, repo_root);
@@ -183,7 +182,7 @@ pub fn cmd_unpin(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
     }
 
     // Restore pristine upstream from vendor cache immediately.
-    for target in &result.manifest.install_targets {
+    for target in &manifest.install_targets {
         install_entry(entry, target, repo_root, None)?;
     }
 

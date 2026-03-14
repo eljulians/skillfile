@@ -3,8 +3,8 @@ use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
-use skillfile_core::models::{short_sha, Entry, Manifest, SourceFields};
-use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
+use skillfile_core::models::{short_sha, Entry, LockEntry, Manifest, SourceFields};
+use skillfile_core::parser::MANIFEST_NAME;
 use skillfile_core::patch::{has_dir_patch, has_patch, walkdir};
 use skillfile_deploy::paths::{installed_dir_files, installed_path};
 use skillfile_sources::strategy::{content_file, is_dir_entry, meta_sha};
@@ -93,6 +93,85 @@ fn is_dir_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -
     result.unwrap_or(false)
 }
 
+/// Per-run context shared across all entry status computations.
+struct StatusContext<'a> {
+    manifest: &'a Manifest,
+    repo_root: &'a Path,
+    locked: &'a std::collections::BTreeMap<String, LockEntry>,
+    check_upstream: bool,
+    sha_cache: &'a mut HashMap<(String, String), String>,
+    col_w: usize,
+}
+
+fn format_entry_status(
+    entry: &Entry,
+    ctx: &mut StatusContext<'_>,
+) -> Result<String, SkillfileError> {
+    let key = lock_key(entry);
+    let name = &entry.name;
+    let col_w = ctx.col_w;
+
+    if matches!(entry.source, SourceFields::Local { .. }) {
+        return Ok(format!("{name:<col_w$} local"));
+    }
+
+    let locked_info = match ctx.locked.get(&key) {
+        Some(li) => li,
+        None => return Ok(format!("{name:<col_w$} unlocked")),
+    };
+
+    let sha = &locked_info.sha;
+    let vdir = vendor_dir_for(entry, ctx.repo_root);
+    let meta = meta_sha(&vdir);
+
+    let mut annotations = Vec::new();
+    if has_patch(entry, ctx.repo_root) || has_dir_patch(entry, ctx.repo_root) {
+        annotations.push("[pinned]");
+    }
+    if is_modified_local(entry, ctx.manifest, ctx.repo_root) {
+        annotations.push("[modified]");
+    }
+    let annotation = if annotations.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", annotations.join("  "))
+    };
+
+    let sha_short = short_sha(sha);
+
+    let status = if meta.as_deref() != Some(sha.as_str()) {
+        format!("locked    sha={sha_short}  (missing or stale){annotation}")
+    } else if ctx.check_upstream {
+        if let SourceFields::Github {
+            owner_repo, ref_, ..
+        } = &entry.source
+        {
+            let cache_key = (owner_repo.clone(), ref_.clone());
+            let upstream_sha = if let Some(cached) = ctx.sha_cache.get(&cache_key) {
+                cached.clone()
+            } else {
+                let client = skillfile_sources::http::UreqClient::new();
+                let resolved =
+                    skillfile_sources::resolver::resolve_github_sha(&client, owner_repo, ref_)?;
+                ctx.sha_cache.insert(cache_key, resolved.clone());
+                resolved
+            };
+            if upstream_sha == *sha {
+                format!("up to date  sha={sha_short}{annotation}")
+            } else {
+                let upstream_short = short_sha(&upstream_sha);
+                format!("outdated    locked={sha_short}  upstream={upstream_short}{annotation}")
+            }
+        } else {
+            format!("locked    sha={sha_short}{annotation}")
+        }
+    } else {
+        format!("locked    sha={sha_short}{annotation}")
+    };
+
+    Ok(format!("{name:<col_w$} {status}"))
+}
+
 pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
@@ -102,10 +181,8 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
         )));
     }
 
-    let result = parse_manifest(&manifest_path)?;
-    let manifest = result.manifest;
+    let manifest = crate::config::parse_and_resolve(&manifest_path)?;
     let locked = read_lock(repo_root)?;
-    let mut sha_cache: HashMap<(String, String), String> = HashMap::new();
 
     let col_w = manifest
         .entries
@@ -115,73 +192,18 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
         .unwrap_or(10)
         + 2;
 
+    let mut ctx = StatusContext {
+        manifest: &manifest,
+        repo_root,
+        locked: &locked,
+        check_upstream,
+        sha_cache: &mut HashMap::new(),
+        col_w,
+    };
+
     for entry in &manifest.entries {
-        let key = lock_key(entry);
-        let name = &entry.name;
-
-        if matches!(entry.source, SourceFields::Local { .. }) {
-            println!("{name:<col_w$} local");
-            continue;
-        }
-
-        let locked_info = match locked.get(&key) {
-            Some(li) => li,
-            None => {
-                println!("{name:<col_w$} unlocked");
-                continue;
-            }
-        };
-
-        let sha = &locked_info.sha;
-        let vdir = vendor_dir_for(entry, repo_root);
-        let meta = meta_sha(&vdir);
-
-        let mut annotations = Vec::new();
-        if has_patch(entry, repo_root) || has_dir_patch(entry, repo_root) {
-            annotations.push("[pinned]");
-        }
-        if is_modified_local(entry, &manifest, repo_root) {
-            annotations.push("[modified]");
-        }
-        let annotation = if annotations.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", annotations.join("  "))
-        };
-
-        let sha_short = short_sha(sha);
-
-        let status = if meta.as_deref() != Some(sha.as_str()) {
-            format!("locked    sha={sha_short}  (missing or stale){annotation}")
-        } else if check_upstream {
-            if let SourceFields::Github {
-                owner_repo, ref_, ..
-            } = &entry.source
-            {
-                let cache_key = (owner_repo.clone(), ref_.clone());
-                let upstream_sha = if let Some(cached) = sha_cache.get(&cache_key) {
-                    cached.clone()
-                } else {
-                    let client = skillfile_sources::http::UreqClient::new();
-                    let resolved =
-                        skillfile_sources::resolver::resolve_github_sha(&client, owner_repo, ref_)?;
-                    sha_cache.insert(cache_key, resolved.clone());
-                    resolved
-                };
-                if upstream_sha == *sha {
-                    format!("up to date  sha={sha_short}{annotation}")
-                } else {
-                    let upstream_short = short_sha(&upstream_sha);
-                    format!("outdated    locked={sha_short}  upstream={upstream_short}{annotation}")
-                }
-            } else {
-                format!("locked    sha={sha_short}{annotation}")
-            }
-        } else {
-            format!("locked    sha={sha_short}{annotation}")
-        };
-
-        println!("{name:<col_w$} {status}");
+        let line = format_entry_status(entry, &mut ctx)?;
+        println!("{line}");
     }
 
     Ok(())
@@ -190,6 +212,7 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skillfile_core::parser::parse_manifest;
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();

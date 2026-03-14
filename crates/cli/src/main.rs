@@ -1,6 +1,7 @@
 mod update_check;
 
 use skillfile::commands;
+use skillfile::config;
 
 use std::path::PathBuf;
 use std::process;
@@ -397,7 +398,13 @@ fn run() -> Result<(), SkillfileError> {
             commands::init::cmd_init(&repo_root)?;
         }
         Command::Install { dry_run, update } => {
-            skillfile_deploy::install::cmd_install(&repo_root, dry_run, update)?;
+            let user_targets = config::read_user_targets();
+            let extra = if user_targets.is_empty() {
+                None
+            } else {
+                Some(user_targets.as_slice())
+            };
+            skillfile_deploy::install::cmd_install(&repo_root, dry_run, update, extra)?;
         }
         Command::Add { source } => {
             handle_add(source, &repo_root)?;

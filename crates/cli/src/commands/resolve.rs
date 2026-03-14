@@ -119,8 +119,8 @@ fn resolve_single_file(
     let theirs = fetch_file_at_sha(&client, entry, &conflict.new_sha)?;
     progress!("done");
 
-    let result = parse_manifest(&repo_root.join(MANIFEST_NAME))?;
-    let installed = installed_path(entry, &result.manifest, repo_root)?;
+    let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
+    let installed = installed_path(entry, &manifest, repo_root)?;
 
     // Reconstruct "yours" from stored patch applied to base upstream
     let yours = if has_patch(entry, repo_root) {
@@ -290,8 +290,8 @@ fn resolve_dir_entry(
     let theirs_files = fetch_dir_at_sha(&client, entry, &conflict.new_sha)?;
     progress!("done");
 
-    let result = parse_manifest(&repo_root.join(MANIFEST_NAME))?;
-    let installed = installed_dir_files(entry, &result.manifest, repo_root)?;
+    let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
+    let installed = installed_dir_files(entry, &manifest, repo_root)?;
     if installed.is_empty() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed",

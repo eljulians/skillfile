@@ -114,6 +114,97 @@ fn supported_types_hint(adapter_name: &str) -> &'static str {
     }
 }
 
+/// Write targets to the user-global personal config file.
+fn write_personal_config(new_targets: &[(String, String)]) -> Result<(), SkillfileError> {
+    use skillfile_core::models::{InstallTarget, Scope};
+    let targets: Vec<InstallTarget> = new_targets
+        .iter()
+        .map(|(a, s)| InstallTarget {
+            adapter: a.clone(),
+            scope: Scope::parse(s).unwrap_or(Scope::Local),
+        })
+        .collect();
+    crate::config::write_user_targets(&targets)?;
+    Ok(())
+}
+
+/// Interactive platform + scope selection. Returns (adapter, scope) pairs.
+fn select_platforms_and_scope(
+    existing_set: &std::collections::HashSet<&str>,
+) -> Result<Option<Vec<(String, String)>>, SkillfileError> {
+    let adapter_names = known_adapters();
+    let mut multi =
+        cliclack::multiselect("Select platforms to install to (space to toggle, enter to confirm)");
+    for name in &adapter_names {
+        multi = multi.item(*name, *name, supported_types_hint(name));
+    }
+
+    let initial: Vec<&str> = adapter_names
+        .iter()
+        .copied()
+        .filter(|n| existing_set.contains(n))
+        .collect();
+    if !initial.is_empty() {
+        multi = multi.initial_values(initial);
+    }
+
+    let selected: Vec<&str> = multi.interact()?;
+
+    if selected.is_empty() {
+        return Ok(None);
+    }
+
+    let scope: &str = cliclack::select("Default scope for selected platforms?")
+        .item("local", "local", "project-specific")
+        .item("global", "global", "user-wide (~/.tool/)")
+        .item("both", "both", "add global and local for each platform")
+        .interact()?;
+
+    let targets = if scope == "both" {
+        selected
+            .iter()
+            .flat_map(|p| {
+                [
+                    (p.to_string(), "global".to_string()),
+                    (p.to_string(), "local".to_string()),
+                ]
+            })
+            .collect()
+    } else {
+        selected
+            .iter()
+            .map(|p| (p.to_string(), scope.to_string()))
+            .collect()
+    };
+
+    Ok(Some(targets))
+}
+
+/// Interactive destination choice: Skillfile or personal config.
+fn select_destination() -> Result<&'static str, SkillfileError> {
+    let config_location = crate::config::config_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "~/.config/skillfile/config.toml".into());
+    let destination: &str = cliclack::select(
+        "Where should platform config be stored?\n\
+         Tip: In shared repos, personal config avoids merge conflicts when\n\
+         teammates use different AI tools.\n\
+         Precedence: Skillfile targets always override personal config.",
+    )
+    .item(
+        "personal",
+        "Personal config (recommended for shared repos)",
+        format!("saved to {config_location} — each developer picks their own platforms"),
+    )
+    .item(
+        "skillfile",
+        "Skillfile (shared with team)",
+        "committed to git, visible to all collaborators",
+    )
+    .interact()?;
+    Ok(destination)
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point — interactive cliclack flow
 // ---------------------------------------------------------------------------
@@ -143,81 +234,74 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     // Parse existing manifest
     let result = parse_manifest(&manifest_path)?;
     let existing = &result.manifest.install_targets;
+    let user_targets = crate::config::read_user_targets();
 
     // Show existing config
-    let existing_set: std::collections::HashSet<&str> =
-        existing.iter().map(|t| t.adapter.as_str()).collect();
+    let existing_set: std::collections::HashSet<&str> = existing
+        .iter()
+        .chain(user_targets.iter())
+        .map(|t| t.adapter.as_str())
+        .collect();
 
-    if !existing.is_empty() {
-        let lines: Vec<String> = existing
+    if !existing.is_empty() || !user_targets.is_empty() {
+        let mut lines: Vec<String> = existing
             .iter()
-            .map(|t| format!("install  {}  {}", t.adapter, t.scope))
+            .map(|t| format!("install  {}  {}  (Skillfile)", t.adapter, t.scope))
             .collect();
+        for t in &user_targets {
+            lines.push(format!(
+                "install  {}  {}  (personal config)",
+                t.adapter, t.scope
+            ));
+        }
         cliclack::note("Existing config", lines.join("\n"))?;
     }
 
-    // Platform multi-select
-    let adapter_names = known_adapters();
-    let mut multi =
-        cliclack::multiselect("Select platforms to install to (space to toggle, enter to confirm)");
-    for name in &adapter_names {
-        multi = multi.item(*name, *name, supported_types_hint(name));
-    }
-
-    // Pre-select platforms that already have install lines
-    let initial: Vec<&str> = adapter_names
-        .iter()
-        .copied()
-        .filter(|n| existing_set.contains(n))
-        .collect();
-    if !initial.is_empty() {
-        multi = multi.initial_values(initial);
-    }
-
-    let selected: Vec<&str> = multi.interact()?;
-
-    if selected.is_empty() {
-        cliclack::outro_cancel("No platforms selected.")?;
-        return Ok(());
-    }
-
-    // Scope selection
-    let scope: &str = cliclack::select("Default scope for selected platforms?")
-        .item("local", "local", "project-specific")
-        .item("global", "global", "user-wide (~/.tool/)")
-        .item("both", "both", "add global and local for each platform")
-        .interact()?;
-
-    // Build install targets
-    let new_targets: Vec<(String, String)> = if scope == "both" {
-        selected
-            .iter()
-            .flat_map(|p| {
-                [
-                    (p.to_string(), "global".to_string()),
-                    (p.to_string(), "local".to_string()),
-                ]
-            })
-            .collect()
-    } else {
-        selected
-            .iter()
-            .map(|p| (p.to_string(), scope.to_string()))
-            .collect()
+    // Platform + scope selection
+    let new_targets = match select_platforms_and_scope(&existing_set)? {
+        Some(t) => t,
+        None => {
+            cliclack::outro_cancel("No platforms selected.")?;
+            return Ok(());
+        }
     };
 
-    rewrite_install_lines(&manifest_path, &new_targets)?;
-    update_gitignore(repo_root)?;
+    // Destination choice
+    let destination = select_destination()?;
 
     let summary: Vec<String> = new_targets
         .iter()
         .map(|(a, s)| format!("install  {a}  {s}"))
         .collect();
-    cliclack::note("Install config written to Skillfile", summary.join("\n"))?;
 
-    cliclack::outro(
-        "You're all set! Next up:\n  \u{2795} `skillfile add` to add a skill or agent\n  \u{1f50d} `skillfile search` to discover community skills"
-    )?;
+    if destination == "personal" {
+        write_personal_config(&new_targets)?;
+        cliclack::note(
+            "Install config written to personal config",
+            summary.join("\n"),
+        )?;
+    } else {
+        rewrite_install_lines(&manifest_path, &new_targets)?;
+        cliclack::note("Install config written to Skillfile", summary.join("\n"))?;
+    }
+
+    update_gitignore(repo_root)?;
+
+    let outro = if result.manifest.entries.is_empty() {
+        "You're all set! Next up:".to_string()
+    } else {
+        let n = result.manifest.entries.len();
+        let word = if n == 1 { "entry" } else { "entries" };
+        format!(
+            "Platforms configured! This Skillfile already has {n} {word}.\n  \
+                 \u{1f680} Run `skillfile install` to fetch and deploy them."
+        )
+    };
+    cliclack::outro(format!(
+        "{outro}\n  \
+         \u{2795} `skillfile add` to add a skill or agent\n  \
+         \u{1f50d} `skillfile search` to discover community skills"
+    ))?;
 
     Ok(())
 }

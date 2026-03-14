@@ -14,7 +14,7 @@ use skillfile_sources::sync::vendor_dir_for;
 use crate::patch::walkdir;
 
 fn diff_local_single(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), SkillfileError> {
-    let result = parse_manifest(&repo_root.join(MANIFEST_NAME))?;
+    let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
     let vdir = vendor_dir_for(entry, repo_root);
     let cf = content_file(entry);
     if cf.is_empty() {
@@ -31,7 +31,7 @@ fn diff_local_single(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), S
         )));
     }
 
-    let dest = installed_path(entry, &result.manifest, repo_root)?;
+    let dest = installed_path(entry, &manifest, repo_root)?;
     if !dest.exists() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed — run `skillfile install` first",
@@ -63,7 +63,7 @@ fn diff_local_single(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), S
 }
 
 fn diff_local_dir(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), SkillfileError> {
-    let result = parse_manifest(&repo_root.join(MANIFEST_NAME))?;
+    let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
     let vdir = vendor_dir_for(entry, repo_root);
     if !vdir.is_dir() {
         return Err(SkillfileError::Manifest(format!(
@@ -72,7 +72,7 @@ fn diff_local_dir(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), Skil
         )));
     }
 
-    let installed = installed_dir_files(entry, &result.manifest, repo_root)?;
+    let installed = installed_dir_files(entry, &manifest, repo_root)?;
     if installed.is_empty() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed — run `skillfile install` first",

@@ -413,7 +413,12 @@ fn deploy_all(
 // cmd_install
 // ---------------------------------------------------------------------------
 
-pub fn cmd_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), SkillfileError> {
+pub fn cmd_install(
+    repo_root: &Path,
+    dry_run: bool,
+    update: bool,
+    extra_targets: Option<&[InstallTarget]>,
+) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
         return Err(SkillfileError::Manifest(format!(
@@ -426,7 +431,20 @@ pub fn cmd_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), 
     for w in &result.warnings {
         eprintln!("{w}");
     }
-    let manifest = result.manifest;
+    let mut manifest = result.manifest;
+
+    // If the Skillfile has no install targets, fall back to caller-provided targets
+    // (e.g. from user-global config).
+    if manifest.install_targets.is_empty() {
+        if let Some(targets) = extra_targets {
+            if !targets.is_empty() {
+                progress!(
+                    "Using platform targets from personal config (Skillfile has no install lines)."
+                );
+            }
+            manifest.install_targets = targets.to_vec();
+        }
+    }
 
     check_preconditions(&manifest, repo_root)?;
 
@@ -867,7 +885,7 @@ mod tests {
     #[test]
     fn cmd_install_no_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        let result = cmd_install(dir.path(), false, false);
+        let result = cmd_install(dir.path(), false, false, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -881,12 +899,60 @@ mod tests {
         )
         .unwrap();
 
-        let result = cmd_install(dir.path(), false, false);
+        let result = cmd_install(dir.path(), false, false, None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
             .contains("No install targets"));
+    }
+
+    #[test]
+    fn cmd_install_extra_targets_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        // Skillfile with entries but NO install lines.
+        std::fs::write(
+            dir.path().join("Skillfile"),
+            "local  skill  foo  skills/foo.md\n",
+        )
+        .unwrap();
+        let source_file = dir.path().join("skills/foo.md");
+        std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+        std::fs::write(&source_file, "# Foo").unwrap();
+
+        // Pass extra targets — should be used as fallback.
+        let targets = vec![make_target("claude-code", Scope::Local)];
+        cmd_install(dir.path(), false, false, Some(&targets)).unwrap();
+
+        let dest = dir.path().join(".claude/skills/foo.md");
+        assert!(
+            dest.exists(),
+            "extra_targets must be used when Skillfile has none"
+        );
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# Foo");
+    }
+
+    #[test]
+    fn cmd_install_skillfile_targets_win_over_extra() {
+        let dir = tempfile::tempdir().unwrap();
+        // Skillfile WITH install lines.
+        std::fs::write(
+            dir.path().join("Skillfile"),
+            "install  claude-code  local\nlocal  skill  foo  skills/foo.md\n",
+        )
+        .unwrap();
+        let source_file = dir.path().join("skills/foo.md");
+        std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+        std::fs::write(&source_file, "# Foo").unwrap();
+
+        // Pass extra targets for gemini-cli — should be IGNORED (Skillfile wins).
+        let targets = vec![make_target("gemini-cli", Scope::Local)];
+        cmd_install(dir.path(), false, false, Some(&targets)).unwrap();
+
+        // claude-code (from Skillfile) should be deployed.
+        assert!(dir.path().join(".claude/skills/foo.md").exists());
+        // gemini-cli (from extra_targets) should NOT be deployed.
+        assert!(!dir.path().join(".gemini").exists());
     }
 
     #[test]
@@ -901,7 +967,7 @@ mod tests {
         std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
         std::fs::write(&source_file, "# Foo").unwrap();
 
-        cmd_install(dir.path(), true, false).unwrap();
+        cmd_install(dir.path(), true, false, None).unwrap();
 
         assert!(!dir.path().join(".claude").exists());
     }
@@ -923,7 +989,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("agents")).unwrap();
         std::fs::write(dir.path().join("agents/bar.md"), "# Bar").unwrap();
 
-        cmd_install(dir.path(), false, false).unwrap();
+        cmd_install(dir.path(), false, false, None).unwrap();
 
         // skill deployed to all three adapters
         assert!(dir.path().join(".claude/skills/foo.md").exists());
@@ -959,7 +1025,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = cmd_install(dir.path(), false, false);
+        let result = cmd_install(dir.path(), false, false, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("pending conflict"));
     }
