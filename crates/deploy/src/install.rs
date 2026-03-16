@@ -151,9 +151,22 @@ fn apply_dir_patches(
 // Auto-pin helpers (used by install --update)
 // ---------------------------------------------------------------------------
 
+/// Check whether applying `patch_text` to `cache_text` reproduces `installed_text`.
+///
+/// Returns `true` when the patch already describes the installed content (no re-pin
+/// needed), or when the patch is inconsistent with the cache (preserve without
+/// clobbering). Returns `false` when the installed content has edits beyond what
+/// the patch captures.
+fn patch_already_covers(patch_text: &str, cache_text: &str, installed_text: &str) -> bool {
+    match apply_patch_pure(cache_text, patch_text) {
+        Ok(expected) if installed_text == expected => true, // no new edits
+        Err(_) => true,                                     // cache inconsistent — preserve
+        Ok(_) => false,                                     // additional edits — fall through
+    }
+}
+
 /// Return `true` if the stored patch already describes the installed content,
-/// meaning no re-pin is needed. Also returns `true` if the patch exists but the
-/// cache is inconsistent with it (preserve without clobbering).
+/// meaning no re-pin is needed.
 #[allow(clippy::too_many_arguments)]
 fn should_skip_pin(
     entry: &Entry,
@@ -167,11 +180,7 @@ fn should_skip_pin(
     let Ok(pt) = read_patch(entry, repo_root) else {
         return false;
     };
-    match apply_patch_pure(cache_text, &pt) {
-        Ok(expected) if installed_text == expected => true, // no new edits
-        Err(_) => true,                                     // cache inconsistent — preserve
-        Ok(_) => false,                                     // additional edits — fall through
-    }
+    patch_already_covers(&pt, cache_text, installed_text)
 }
 
 /// Compare installed vs cache; write patch if they differ. Silent on missing prerequisites.
@@ -243,8 +252,7 @@ struct AutoPinCtx<'a> {
 }
 
 /// Return `true` if the dir-entry patch file at `patch_path` already describes
-/// the transition from `cache_text` to `installed_text` (or if the patch is
-/// inconsistent with the cache, in which case we also skip re-pinning).
+/// the transition from `cache_text` to `installed_text`.
 fn dir_patch_already_matches(patch_path: &Path, cache_text: &str, installed_text: &str) -> bool {
     if !patch_path.exists() {
         return false;
@@ -252,11 +260,7 @@ fn dir_patch_already_matches(patch_path: &Path, cache_text: &str, installed_text
     let Ok(pt) = std::fs::read_to_string(patch_path) else {
         return false;
     };
-    match apply_patch_pure(cache_text, &pt) {
-        Ok(expected) if installed_text == expected => true,
-        Err(_) => true,
-        Ok(_) => false,
-    }
+    patch_already_covers(&pt, cache_text, installed_text)
 }
 
 fn try_auto_pin_file(cache_file: &Path, ctx: &AutoPinCtx<'_>) -> Option<String> {
@@ -351,7 +355,7 @@ pub fn install_entry(
         return Ok(());
     };
 
-    if !adapter.supports(entry.entity_type.as_str()) {
+    if !adapter.supports(entry.entity_type) {
         return Ok(());
     }
 
@@ -462,7 +466,7 @@ fn handle_patch_conflict(
         repo_root,
         &ConflictState {
             entry: entry_name.to_string(),
-            entity_type: entry.entity_type.to_string(),
+            entity_type: entry.entity_type,
             old_sha: old_sha.clone(),
             new_sha: new_sha.clone(),
         },
@@ -1163,7 +1167,7 @@ mod tests {
             dir.path(),
             &ConflictState {
                 entry: "foo".into(),
-                entity_type: "skill".into(),
+                entity_type: EntityType::Skill,
                 old_sha: "aaa".into(),
                 new_sha: "bbb".into(),
             },
@@ -1826,7 +1830,7 @@ mod tests {
             dir.path(),
             &ConflictState {
                 entry: "my-skill".into(),
-                entity_type: "skill".into(),
+                entity_type: EntityType::Skill,
                 old_sha: "aaa".into(),
                 new_sha: "bbb".into(),
             },

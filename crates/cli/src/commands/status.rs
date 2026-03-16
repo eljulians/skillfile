@@ -124,7 +124,6 @@ fn resolve_upstream_sha(
     Ok(resolved)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn upstream_status_for_github(
     ctx: &mut StatusContext<'_>,
     entry: &Entry,

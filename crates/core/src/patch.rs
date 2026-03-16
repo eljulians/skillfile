@@ -97,7 +97,7 @@ pub fn has_dir_patch(entry: &Entry, repo_root: &Path) -> bool {
 /// * `filename` - Relative filename within the entry (e.g. `"python.md"`).
 /// * `patch_text` - Unified diff text to persist.
 /// * `repo_root` - Repository root used to locate `.skillfile/patches/`.
-#[allow(clippy::too_many_arguments)] // 4 args, each semantically distinct; no better grouping
+#[allow(clippy::too_many_arguments)]
 pub fn write_dir_patch(
     entry: &Entry,
     filename: &str,

@@ -47,11 +47,12 @@ pub fn has_conflict(repo_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::EntityType;
 
     fn make_state() -> ConflictState {
         ConflictState {
             entry: "foo".into(),
-            entity_type: "agent".into(),
+            entity_type: EntityType::Agent,
             old_sha: "a".repeat(40),
             new_sha: "b".repeat(40),
         }
@@ -84,7 +85,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = ConflictState {
             entry: "bar".into(),
-            entity_type: "skill".into(),
+            entity_type: EntityType::Skill,
             ..make_state()
         };
         write_conflict(dir.path(), &state).unwrap();

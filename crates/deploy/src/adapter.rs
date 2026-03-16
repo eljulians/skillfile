@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use skillfile_core::models::{Entry, InstallOptions, Scope};
+use skillfile_core::models::{EntityType, Entry, InstallOptions, Scope};
 use skillfile_core::patch::walkdir;
 use skillfile_core::progress;
 use skillfile_sources::strategy::is_dir_entry;
@@ -41,15 +41,15 @@ pub trait PlatformAdapter: Send + Sync + fmt::Debug {
     /// The adapter identifier (e.g. `"claude-code"`, `"gemini-cli"`).
     fn name(&self) -> &str;
 
-    /// Whether this platform supports the given entity type (e.g. `"skill"`, `"agent"`).
-    fn supports(&self, entity_type: &str) -> bool;
+    /// Whether this platform supports the given entity type.
+    fn supports(&self, entity_type: EntityType) -> bool;
 
     /// Resolve the absolute target directory for an entity type + scope.
     #[allow(clippy::too_many_arguments)]
-    fn target_dir(&self, entity_type: &str, scope: Scope, repo_root: &Path) -> PathBuf;
+    fn target_dir(&self, entity_type: EntityType, scope: Scope, repo_root: &Path) -> PathBuf;
 
     /// The install mode for directory entries of this entity type.
-    fn dir_mode(&self, entity_type: &str) -> Option<DirInstallMode>;
+    fn dir_mode(&self, entity_type: EntityType) -> Option<DirInstallMode>;
 
     /// Deploy a single entry from `source` to its platform-specific location.
     ///
@@ -104,11 +104,11 @@ pub struct EntityConfig {
 #[derive(Debug, Clone)]
 pub struct FileSystemAdapter {
     name: String,
-    entities: HashMap<String, EntityConfig>,
+    entities: HashMap<EntityType, EntityConfig>,
 }
 
 impl FileSystemAdapter {
-    pub fn new(name: &str, entities: HashMap<String, EntityConfig>) -> Self {
+    pub fn new(name: &str, entities: HashMap<EntityType, EntityConfig>) -> Self {
         Self {
             name: name.to_string(),
             entities,
@@ -121,12 +121,12 @@ impl PlatformAdapter for FileSystemAdapter {
         &self.name
     }
 
-    fn supports(&self, entity_type: &str) -> bool {
-        self.entities.contains_key(entity_type)
+    fn supports(&self, entity_type: EntityType) -> bool {
+        self.entities.contains_key(&entity_type)
     }
 
-    fn target_dir(&self, entity_type: &str, scope: Scope, repo_root: &Path) -> PathBuf {
-        let config = self.entities.get(entity_type).unwrap_or_else(|| {
+    fn target_dir(&self, entity_type: EntityType, scope: Scope, repo_root: &Path) -> PathBuf {
+        let config = self.entities.get(&entity_type).unwrap_or_else(|| {
             panic!(
                 "BUG: target_dir called for unsupported entity type '{entity_type}' on adapter '{}'. \
                  Call supports() first.",
@@ -145,8 +145,8 @@ impl PlatformAdapter for FileSystemAdapter {
         }
     }
 
-    fn dir_mode(&self, entity_type: &str) -> Option<DirInstallMode> {
-        self.entities.get(entity_type).map(|c| c.dir_mode)
+    fn dir_mode(&self, entity_type: EntityType) -> Option<DirInstallMode> {
+        self.entities.get(&entity_type).map(|c| c.dir_mode)
     }
 
     fn deploy_entry(
@@ -157,7 +157,7 @@ impl PlatformAdapter for FileSystemAdapter {
         repo_root: &Path,
         opts: &InstallOptions,
     ) -> DeployResult {
-        let target_dir = self.target_dir(entry.entity_type.as_str(), scope, repo_root);
+        let target_dir = self.target_dir(entry.entity_type, scope, repo_root);
         // Use filesystem truth: source.is_dir() catches local directory entries
         // that is_dir_entry() misses (it only inspects GitHub path_in_repo).
         let is_dir = is_dir_entry(entry) || source.is_dir();
@@ -165,7 +165,7 @@ impl PlatformAdapter for FileSystemAdapter {
         if is_dir
             && self
                 .entities
-                .get(entry.entity_type.as_str())
+                .get(&entry.entity_type)
                 .is_some_and(|c| c.dir_mode == DirInstallMode::Flat)
         {
             return deploy_flat(source, &target_dir, opts);
@@ -189,7 +189,7 @@ impl PlatformAdapter for FileSystemAdapter {
     }
 
     fn installed_path(&self, entry: &Entry, scope: Scope, repo_root: &Path) -> PathBuf {
-        self.target_dir(entry.entity_type.as_str(), scope, repo_root)
+        self.target_dir(entry.entity_type, scope, repo_root)
             .join(format!("{}.md", entry.name))
     }
 
@@ -199,10 +199,10 @@ impl PlatformAdapter for FileSystemAdapter {
         scope: Scope,
         repo_root: &Path,
     ) -> HashMap<String, PathBuf> {
-        let target_dir = self.target_dir(entry.entity_type.as_str(), scope, repo_root);
+        let target_dir = self.target_dir(entry.entity_type, scope, repo_root);
         let mode = self
             .entities
-            .get(entry.entity_type.as_str())
+            .get(&entry.entity_type)
             .map_or(DirInstallMode::Nested, |c| c.dir_mode);
 
         if mode == DirInstallMode::Nested {
@@ -288,7 +288,6 @@ fn collect_flat_installed(vdir: &Path, target_dir: &Path) -> HashMap<String, Pat
 }
 
 /// Deploy each `.md` in `source_dir` as an individual file in `target_dir` (flat mode).
-#[allow(clippy::too_many_arguments)]
 fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> DeployResult {
     let mut md_files: Vec<PathBuf> = walkdir(source_dir)
         .into_iter()
@@ -432,15 +431,12 @@ impl AdapterRegistry {
 
     /// Create the built-in registry with all known platform adapters.
     pub fn builtin() -> Self {
-        Self::new(vec![
-            Box::new(claude_code_adapter()),
-            Box::new(gemini_cli_adapter()),
-            Box::new(codex_adapter()),
-            Box::new(cursor_adapter()),
-            Box::new(windsurf_adapter()),
-            Box::new(opencode_adapter()),
-            Box::new(copilot_adapter()),
-        ])
+        Self::new(
+            BUILTIN_ADAPTERS
+                .iter()
+                .map(|spec| Box::new(build_adapter(spec)) as Box<dyn PlatformAdapter>)
+                .collect(),
+        )
     }
 
     /// Look up an adapter by name.
@@ -474,175 +470,157 @@ impl fmt::Debug for AdapterRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in adapters
+// Built-in adapter specifications — declarative configuration table
 // ---------------------------------------------------------------------------
 
-fn claude_code_adapter() -> FileSystemAdapter {
-    FileSystemAdapter::new(
-        "claude-code",
-        HashMap::from([
-            (
-                "agent".to_string(),
-                EntityConfig {
-                    global_path: "~/.claude/agents".into(),
-                    local_path: ".claude/agents".into(),
-                    dir_mode: DirInstallMode::Flat,
-                },
-            ),
-            (
-                "skill".to_string(),
-                EntityConfig {
-                    global_path: "~/.claude/skills".into(),
-                    local_path: ".claude/skills".into(),
-                    dir_mode: DirInstallMode::Nested,
-                },
-            ),
-        ]),
-    )
+/// Specification for one entity type within a platform adapter.
+struct EntitySpec {
+    entity_type: EntityType,
+    global_path: &'static str,
+    local_path: &'static str,
+    dir_mode: DirInstallMode,
 }
 
-fn gemini_cli_adapter() -> FileSystemAdapter {
-    FileSystemAdapter::new(
-        "gemini-cli",
-        HashMap::from([
-            (
-                "agent".to_string(),
-                EntityConfig {
-                    global_path: "~/.gemini/agents".into(),
-                    local_path: ".gemini/agents".into(),
-                    dir_mode: DirInstallMode::Flat,
-                },
-            ),
-            (
-                "skill".to_string(),
-                EntityConfig {
-                    global_path: "~/.gemini/skills".into(),
-                    local_path: ".gemini/skills".into(),
-                    dir_mode: DirInstallMode::Nested,
-                },
-            ),
-        ]),
-    )
+/// Specification for a platform adapter. Adding a new platform is one table entry.
+struct AdapterSpec {
+    name: &'static str,
+    entities: &'static [EntitySpec],
 }
 
-fn codex_adapter() -> FileSystemAdapter {
-    FileSystemAdapter::new(
-        "codex",
-        HashMap::from([(
-            "skill".to_string(),
-            EntityConfig {
-                global_path: "~/.codex/skills".into(),
-                local_path: ".codex/skills".into(),
+/// All built-in platform adapters.
+///
+/// | Platform    | Skills | Agents (Flat) | Global prefix              | Local prefix     |
+/// |-------------|--------|---------------|----------------------------|------------------|
+/// | claude-code | yes    | yes           | `~/.claude/`               | `.claude/`       |
+/// | gemini-cli  | yes    | yes           | `~/.gemini/`               | `.gemini/`       |
+/// | codex       | yes    | no            | `~/.codex/`                | `.codex/`        |
+/// | cursor      | yes    | yes           | `~/.cursor/`               | `.cursor/`       |
+/// | windsurf    | yes    | no            | `~/.codeium/windsurf/`     | `.windsurf/`     |
+/// | opencode    | yes    | yes           | `~/.config/opencode/`      | `.opencode/`     |
+/// | copilot     | yes    | yes           | `~/.copilot/`              | `.github/`       |
+const BUILTIN_ADAPTERS: &[AdapterSpec] = &[
+    AdapterSpec {
+        name: "claude-code",
+        entities: &[
+            EntitySpec {
+                entity_type: EntityType::Skill,
+                global_path: "~/.claude/skills",
+                local_path: ".claude/skills",
                 dir_mode: DirInstallMode::Nested,
             },
-        )]),
-    )
-}
-
-/// Cursor adapter.
-///
-/// Cursor reads skills from `.cursor/skills/<name>/SKILL.md` (nested) and
-/// agents from `.cursor/agents/<name>.md` (flat). Same pattern as Claude Code.
-fn cursor_adapter() -> FileSystemAdapter {
-    FileSystemAdapter::new(
-        "cursor",
-        HashMap::from([
-            (
-                "agent".to_string(),
-                EntityConfig {
-                    global_path: "~/.cursor/agents".into(),
-                    local_path: ".cursor/agents".into(),
-                    dir_mode: DirInstallMode::Flat,
-                },
-            ),
-            (
-                "skill".to_string(),
-                EntityConfig {
-                    global_path: "~/.cursor/skills".into(),
-                    local_path: ".cursor/skills".into(),
-                    dir_mode: DirInstallMode::Nested,
-                },
-            ),
-        ]),
-    )
-}
-
-/// Windsurf adapter.
-///
-/// Windsurf reads skills from `.windsurf/skills/<name>/SKILL.md` (nested).
-/// It does not support agent markdown files in a dedicated directory — agents
-/// are defined via `AGENTS.md` files scattered in the project tree instead.
-fn windsurf_adapter() -> FileSystemAdapter {
-    FileSystemAdapter::new(
-        "windsurf",
-        HashMap::from([(
-            "skill".to_string(),
-            EntityConfig {
-                global_path: "~/.codeium/windsurf/skills".into(),
-                local_path: ".windsurf/skills".into(),
+            EntitySpec {
+                entity_type: EntityType::Agent,
+                global_path: "~/.claude/agents",
+                local_path: ".claude/agents",
+                dir_mode: DirInstallMode::Flat,
+            },
+        ],
+    },
+    AdapterSpec {
+        name: "gemini-cli",
+        entities: &[
+            EntitySpec {
+                entity_type: EntityType::Skill,
+                global_path: "~/.gemini/skills",
+                local_path: ".gemini/skills",
                 dir_mode: DirInstallMode::Nested,
             },
-        )]),
-    )
-}
+            EntitySpec {
+                entity_type: EntityType::Agent,
+                global_path: "~/.gemini/agents",
+                local_path: ".gemini/agents",
+                dir_mode: DirInstallMode::Flat,
+            },
+        ],
+    },
+    AdapterSpec {
+        name: "codex",
+        entities: &[EntitySpec {
+            entity_type: EntityType::Skill,
+            global_path: "~/.codex/skills",
+            local_path: ".codex/skills",
+            dir_mode: DirInstallMode::Nested,
+        }],
+    },
+    AdapterSpec {
+        name: "cursor",
+        entities: &[
+            EntitySpec {
+                entity_type: EntityType::Skill,
+                global_path: "~/.cursor/skills",
+                local_path: ".cursor/skills",
+                dir_mode: DirInstallMode::Nested,
+            },
+            EntitySpec {
+                entity_type: EntityType::Agent,
+                global_path: "~/.cursor/agents",
+                local_path: ".cursor/agents",
+                dir_mode: DirInstallMode::Flat,
+            },
+        ],
+    },
+    AdapterSpec {
+        name: "windsurf",
+        entities: &[EntitySpec {
+            entity_type: EntityType::Skill,
+            global_path: "~/.codeium/windsurf/skills",
+            local_path: ".windsurf/skills",
+            dir_mode: DirInstallMode::Nested,
+        }],
+    },
+    AdapterSpec {
+        name: "opencode",
+        entities: &[
+            EntitySpec {
+                entity_type: EntityType::Skill,
+                global_path: "~/.config/opencode/skills",
+                local_path: ".opencode/skills",
+                dir_mode: DirInstallMode::Nested,
+            },
+            EntitySpec {
+                entity_type: EntityType::Agent,
+                global_path: "~/.config/opencode/agents",
+                local_path: ".opencode/agents",
+                dir_mode: DirInstallMode::Flat,
+            },
+        ],
+    },
+    AdapterSpec {
+        name: "copilot",
+        entities: &[
+            EntitySpec {
+                entity_type: EntityType::Skill,
+                global_path: "~/.copilot/skills",
+                local_path: ".github/skills",
+                dir_mode: DirInstallMode::Nested,
+            },
+            EntitySpec {
+                entity_type: EntityType::Agent,
+                global_path: "~/.copilot/agents",
+                local_path: ".github/agents",
+                dir_mode: DirInstallMode::Flat,
+            },
+        ],
+    },
+];
 
-/// OpenCode adapter.
-///
-/// OpenCode reads skills from `.opencode/skills/<name>/SKILL.md` (nested) and
-/// agents from `.opencode/agents/<name>.md` (flat). Global paths follow XDG:
-/// `~/.config/opencode/`.
-fn opencode_adapter() -> FileSystemAdapter {
-    FileSystemAdapter::new(
-        "opencode",
-        HashMap::from([
+/// Construct a `FileSystemAdapter` from a declarative spec.
+fn build_adapter(spec: &AdapterSpec) -> FileSystemAdapter {
+    let entities = spec
+        .entities
+        .iter()
+        .map(|e| {
             (
-                "agent".to_string(),
+                e.entity_type,
                 EntityConfig {
-                    global_path: "~/.config/opencode/agents".into(),
-                    local_path: ".opencode/agents".into(),
-                    dir_mode: DirInstallMode::Flat,
+                    global_path: e.global_path.into(),
+                    local_path: e.local_path.into(),
+                    dir_mode: e.dir_mode,
                 },
-            ),
-            (
-                "skill".to_string(),
-                EntityConfig {
-                    global_path: "~/.config/opencode/skills".into(),
-                    local_path: ".opencode/skills".into(),
-                    dir_mode: DirInstallMode::Nested,
-                },
-            ),
-        ]),
-    )
-}
-
-/// GitHub Copilot adapter.
-///
-/// Copilot reads skills from `.github/skills/<name>/SKILL.md` (nested) and
-/// agents from `.github/agents/<name>.md` (flat). Note: Copilot natively
-/// expects `.agent.md` extension for agent files, but skillfile deploys
-/// standard `.md` files which Copilot also reads.
-fn copilot_adapter() -> FileSystemAdapter {
-    FileSystemAdapter::new(
-        "copilot",
-        HashMap::from([
-            (
-                "agent".to_string(),
-                EntityConfig {
-                    global_path: "~/.copilot/agents".into(),
-                    local_path: ".github/agents".into(),
-                    dir_mode: DirInstallMode::Flat,
-                },
-            ),
-            (
-                "skill".to_string(),
-                EntityConfig {
-                    global_path: "~/.copilot/skills".into(),
-                    local_path: ".github/skills".into(),
-                    dir_mode: DirInstallMode::Nested,
-                },
-            ),
-        ]),
-    )
+            )
+        })
+        .collect();
+    FileSystemAdapter::new(spec.name, entities)
 }
 
 // ---------------------------------------------------------------------------
@@ -716,23 +694,23 @@ mod tests {
     #[test]
     fn claude_code_supports_agent_and_skill() {
         let a = adapters().get("claude-code").unwrap();
-        assert!(a.supports("agent"));
-        assert!(a.supports("skill"));
-        assert!(!a.supports("hook"));
+        assert!(a.supports(EntityType::Agent));
+        assert!(a.supports(EntityType::Skill));
+        // No need to test unsupported string types — `EntityType` makes invalid calls unrepresentable.
     }
 
     #[test]
     fn gemini_cli_supports_agent_and_skill() {
         let a = adapters().get("gemini-cli").unwrap();
-        assert!(a.supports("agent"));
-        assert!(a.supports("skill"));
+        assert!(a.supports(EntityType::Agent));
+        assert!(a.supports(EntityType::Skill));
     }
 
     #[test]
     fn codex_supports_skill_not_agent() {
         let a = adapters().get("codex").unwrap();
-        assert!(a.supports("skill"));
-        assert!(!a.supports("agent"));
+        assert!(a.supports(EntityType::Skill));
+        assert!(!a.supports(EntityType::Agent));
     }
 
     // -- target_dir() --
@@ -742,11 +720,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("claude-code").unwrap();
         assert_eq!(
-            a.target_dir("agent", Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
             tmp.join(".claude/agents")
         );
         assert_eq!(
-            a.target_dir("skill", Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
             tmp.join(".claude/skills")
         );
     }
@@ -756,11 +734,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("gemini-cli").unwrap();
         assert_eq!(
-            a.target_dir("agent", Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
             tmp.join(".gemini/agents")
         );
         assert_eq!(
-            a.target_dir("skill", Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
             tmp.join(".gemini/skills")
         );
     }
@@ -770,7 +748,7 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("codex").unwrap();
         assert_eq!(
-            a.target_dir("skill", Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
             tmp.join(".codex/skills")
         );
     }
@@ -778,7 +756,7 @@ mod tests {
     #[test]
     fn global_target_dir_is_absolute() {
         let a = adapters().get("claude-code").unwrap();
-        let result = a.target_dir("agent", Scope::Global, Path::new("/tmp"));
+        let result = a.target_dir(EntityType::Agent, Scope::Global, Path::new("/tmp"));
         assert!(result.is_absolute());
         assert!(result.to_string_lossy().ends_with(".claude/agents"));
     }
@@ -786,7 +764,7 @@ mod tests {
     #[test]
     fn global_target_dir_gemini_cli_skill() {
         let a = adapters().get("gemini-cli").unwrap();
-        let result = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        let result = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
         assert!(result.is_absolute());
         assert!(result.to_string_lossy().ends_with(".gemini/skills"));
     }
@@ -794,7 +772,7 @@ mod tests {
     #[test]
     fn global_target_dir_codex_skill() {
         let a = adapters().get("codex").unwrap();
-        let result = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        let result = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
         assert!(result.is_absolute());
         assert!(result.to_string_lossy().ends_with(".codex/skills"));
     }
@@ -804,32 +782,32 @@ mod tests {
     #[test]
     fn cursor_supports_agent_and_skill() {
         let a = adapters().get("cursor").unwrap();
-        assert!(a.supports("agent"));
-        assert!(a.supports("skill"));
-        assert!(!a.supports("hook"));
+        assert!(a.supports(EntityType::Agent));
+        assert!(a.supports(EntityType::Skill));
+        // No need to test unsupported string types — `EntityType` makes invalid calls unrepresentable.
     }
 
     #[test]
     fn windsurf_supports_skill_not_agent() {
         let a = adapters().get("windsurf").unwrap();
-        assert!(a.supports("skill"));
-        assert!(!a.supports("agent"));
+        assert!(a.supports(EntityType::Skill));
+        assert!(!a.supports(EntityType::Agent));
     }
 
     #[test]
     fn opencode_supports_agent_and_skill() {
         let a = adapters().get("opencode").unwrap();
-        assert!(a.supports("agent"));
-        assert!(a.supports("skill"));
-        assert!(!a.supports("hook"));
+        assert!(a.supports(EntityType::Agent));
+        assert!(a.supports(EntityType::Skill));
+        // No need to test unsupported string types — `EntityType` makes invalid calls unrepresentable.
     }
 
     #[test]
     fn copilot_supports_agent_and_skill() {
         let a = adapters().get("copilot").unwrap();
-        assert!(a.supports("agent"));
-        assert!(a.supports("skill"));
-        assert!(!a.supports("rule"));
+        assert!(a.supports(EntityType::Agent));
+        assert!(a.supports(EntityType::Skill));
+        // No need to test unsupported string types — `EntityType` makes invalid calls unrepresentable.
     }
 
     // -- target_dir() for new adapters --
@@ -839,11 +817,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("cursor").unwrap();
         assert_eq!(
-            a.target_dir("agent", Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
             tmp.join(".cursor/agents")
         );
         assert_eq!(
-            a.target_dir("skill", Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
             tmp.join(".cursor/skills")
         );
     }
@@ -853,7 +831,7 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("windsurf").unwrap();
         assert_eq!(
-            a.target_dir("skill", Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
             tmp.join(".windsurf/skills")
         );
     }
@@ -863,11 +841,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("opencode").unwrap();
         assert_eq!(
-            a.target_dir("agent", Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
             tmp.join(".opencode/agents")
         );
         assert_eq!(
-            a.target_dir("skill", Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
             tmp.join(".opencode/skills")
         );
     }
@@ -877,11 +855,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("copilot").unwrap();
         assert_eq!(
-            a.target_dir("agent", Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
             tmp.join(".github/agents")
         );
         assert_eq!(
-            a.target_dir("skill", Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
             tmp.join(".github/skills")
         );
     }
@@ -889,10 +867,10 @@ mod tests {
     #[test]
     fn global_target_dir_cursor() {
         let a = adapters().get("cursor").unwrap();
-        let skill = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        let skill = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
         assert!(skill.is_absolute());
         assert!(skill.to_string_lossy().ends_with(".cursor/skills"));
-        let agent = a.target_dir("agent", Scope::Global, Path::new("/tmp"));
+        let agent = a.target_dir(EntityType::Agent, Scope::Global, Path::new("/tmp"));
         assert!(agent.is_absolute());
         assert!(agent.to_string_lossy().ends_with(".cursor/agents"));
     }
@@ -900,7 +878,7 @@ mod tests {
     #[test]
     fn global_target_dir_windsurf() {
         let a = adapters().get("windsurf").unwrap();
-        let result = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        let result = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
         assert!(result.is_absolute());
         assert!(
             result.to_string_lossy().ends_with("windsurf/skills"),
@@ -911,13 +889,13 @@ mod tests {
     #[test]
     fn global_target_dir_opencode() {
         let a = adapters().get("opencode").unwrap();
-        let skill = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        let skill = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
         assert!(skill.is_absolute());
         assert!(
             skill.to_string_lossy().ends_with("opencode/skills"),
             "unexpected: {skill:?}"
         );
-        let agent = a.target_dir("agent", Scope::Global, Path::new("/tmp"));
+        let agent = a.target_dir(EntityType::Agent, Scope::Global, Path::new("/tmp"));
         assert!(agent.is_absolute());
         assert!(
             agent.to_string_lossy().ends_with("opencode/agents"),
@@ -928,10 +906,10 @@ mod tests {
     #[test]
     fn global_target_dir_copilot() {
         let a = adapters().get("copilot").unwrap();
-        let skill = a.target_dir("skill", Scope::Global, Path::new("/tmp"));
+        let skill = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
         assert!(skill.is_absolute());
         assert!(skill.to_string_lossy().ends_with(".copilot/skills"));
-        let agent = a.target_dir("agent", Scope::Global, Path::new("/tmp"));
+        let agent = a.target_dir(EntityType::Agent, Scope::Global, Path::new("/tmp"));
         assert!(agent.is_absolute());
         assert!(agent.to_string_lossy().ends_with(".copilot/agents"));
     }
@@ -941,29 +919,29 @@ mod tests {
     #[test]
     fn cursor_dir_modes() {
         let a = adapters().get("cursor").unwrap();
-        assert_eq!(a.dir_mode("agent"), Some(DirInstallMode::Flat));
-        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode(EntityType::Agent), Some(DirInstallMode::Flat));
+        assert_eq!(a.dir_mode(EntityType::Skill), Some(DirInstallMode::Nested));
     }
 
     #[test]
     fn windsurf_dir_mode() {
         let a = adapters().get("windsurf").unwrap();
-        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
-        assert_eq!(a.dir_mode("agent"), None);
+        assert_eq!(a.dir_mode(EntityType::Skill), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode(EntityType::Agent), None);
     }
 
     #[test]
     fn opencode_dir_modes() {
         let a = adapters().get("opencode").unwrap();
-        assert_eq!(a.dir_mode("agent"), Some(DirInstallMode::Flat));
-        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode(EntityType::Agent), Some(DirInstallMode::Flat));
+        assert_eq!(a.dir_mode(EntityType::Skill), Some(DirInstallMode::Nested));
     }
 
     #[test]
     fn copilot_dir_modes() {
         let a = adapters().get("copilot").unwrap();
-        assert_eq!(a.dir_mode("agent"), Some(DirInstallMode::Flat));
-        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode(EntityType::Agent), Some(DirInstallMode::Flat));
+        assert_eq!(a.dir_mode(EntityType::Skill), Some(DirInstallMode::Nested));
     }
 
     // -- dir_mode --
@@ -971,21 +949,21 @@ mod tests {
     #[test]
     fn claude_code_dir_modes() {
         let a = adapters().get("claude-code").unwrap();
-        assert_eq!(a.dir_mode("agent"), Some(DirInstallMode::Flat));
-        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode(EntityType::Agent), Some(DirInstallMode::Flat));
+        assert_eq!(a.dir_mode(EntityType::Skill), Some(DirInstallMode::Nested));
     }
 
     #[test]
     fn gemini_cli_dir_modes() {
         let a = adapters().get("gemini-cli").unwrap();
-        assert_eq!(a.dir_mode("agent"), Some(DirInstallMode::Flat));
-        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode(EntityType::Agent), Some(DirInstallMode::Flat));
+        assert_eq!(a.dir_mode(EntityType::Skill), Some(DirInstallMode::Nested));
     }
 
     #[test]
     fn codex_dir_mode() {
         let a = adapters().get("codex").unwrap();
-        assert_eq!(a.dir_mode("skill"), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode(EntityType::Skill), Some(DirInstallMode::Nested));
     }
 
     // -- Custom adapter extensibility --
@@ -995,7 +973,7 @@ mod tests {
         let custom = FileSystemAdapter::new(
             "my-tool",
             HashMap::from([(
-                "skill".to_string(),
+                EntityType::Skill,
                 EntityConfig {
                     global_path: "~/.my-tool/skills".into(),
                     local_path: ".my-tool/skills".into(),
@@ -1005,8 +983,8 @@ mod tests {
         );
         let registry = AdapterRegistry::new(vec![Box::new(custom)]);
         let a = registry.get("my-tool").unwrap();
-        assert!(a.supports("skill"));
-        assert!(!a.supports("agent"));
+        assert!(a.supports(EntityType::Skill));
+        assert!(!a.supports(EntityType::Agent));
         assert_eq!(registry.names(), vec!["my-tool"]);
     }
 

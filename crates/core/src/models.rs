@@ -57,7 +57,8 @@ impl fmt::Display for Scope {
 // ---------------------------------------------------------------------------
 
 /// Entity type: either a skill or an agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum EntityType {
     Skill,
     Agent,
@@ -317,7 +318,7 @@ impl Default for InstallOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConflictState {
     pub entry: String,
-    pub entity_type: String,
+    pub entity_type: EntityType,
     pub old_sha: String,
     pub new_sha: String,
 }
@@ -539,7 +540,7 @@ mod tests {
     fn conflict_state_equality() {
         let a = ConflictState {
             entry: "foo".into(),
-            entity_type: "agent".into(),
+            entity_type: EntityType::Agent,
             old_sha: "aaa".into(),
             new_sha: "bbb".into(),
         };

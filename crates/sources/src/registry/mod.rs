@@ -147,10 +147,6 @@ pub trait Registry: Send + Sync {
     fn name(&self) -> &str;
 
     /// Search this registry. Returns a unified [`SearchResponse`].
-    ///
-    /// # Note
-    /// The four parameters (`self`, `client`, `query`, `opts`) are all semantically
-    /// distinct and cannot be collapsed without a breaking trait change.
     #[allow(clippy::too_many_arguments)]
     fn search(
         &self,

@@ -2,6 +2,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
+use skillfile_core::models::EntityType;
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_deploy::adapter::{adapters, known_adapters};
 
@@ -105,7 +106,7 @@ fn update_gitignore(repo_root: &Path) -> Result<(), SkillfileError> {
 fn supported_types_hint(adapter_name: &str) -> &'static str {
     let reg = adapters();
     match reg.get(adapter_name) {
-        Some(a) => match (a.supports("skill"), a.supports("agent")) {
+        Some(a) => match (a.supports(EntityType::Skill), a.supports(EntityType::Agent)) {
             (true, true) => "skill, agent",
             (true, false) => "skill only",
             (false, true) => "agent only",

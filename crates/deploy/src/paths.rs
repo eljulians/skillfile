@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use skillfile_core::error::SkillfileError;
-use skillfile_core::models::{Entry, Manifest, Scope, SourceFields};
+use skillfile_core::models::{EntityType, Entry, Manifest, Scope, SourceFields};
 use skillfile_sources::strategy::{content_file, is_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
@@ -12,7 +12,7 @@ use crate::adapter::{adapters, PlatformAdapter};
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_target_dir(
     adapter_name: &str,
-    entity_type: &str,
+    entity_type: EntityType,
     scope: Scope,
     repo_root: &Path,
 ) -> Result<PathBuf, SkillfileError> {
@@ -86,15 +86,21 @@ mod tests {
 
     #[test]
     fn resolve_target_dir_global() {
-        let result =
-            resolve_target_dir("claude-code", "agent", Scope::Global, Path::new("/tmp")).unwrap();
+        let result = resolve_target_dir(
+            "claude-code",
+            EntityType::Agent,
+            Scope::Global,
+            Path::new("/tmp"),
+        )
+        .unwrap();
         assert!(result.to_string_lossy().ends_with(".claude/agents"));
     }
 
     #[test]
     fn resolve_target_dir_local() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_target_dir("claude-code", "agent", Scope::Local, tmp.path()).unwrap();
+        let result =
+            resolve_target_dir("claude-code", EntityType::Agent, Scope::Local, tmp.path()).unwrap();
         assert_eq!(result, tmp.path().join(".claude/agents"));
     }
 

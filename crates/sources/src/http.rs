@@ -78,8 +78,7 @@ pub trait HttpClient: Send + Sync {
     ///
     /// # Note
     /// The extra `token` parameter is required by non-GitHub registry APIs (e.g.
-    /// skillhub.club). `#[allow]` is intentional: this is a public trait method
-    /// whose signature cannot change without a breaking API change.
+    /// skillhub.club).
     #[allow(clippy::too_many_arguments)]
     fn post_json_with_bearer(
         &self,

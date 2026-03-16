@@ -414,16 +414,16 @@ pub fn cmd_resolve(
 mod tests {
     use super::*;
     use skillfile_core::conflict::write_conflict;
-    use skillfile_core::models::ConflictState;
+    use skillfile_core::models::{ConflictState, EntityType};
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
     }
 
-    fn make_conflict(entry: &str, entity_type: &str) -> ConflictState {
+    fn make_conflict(entry: &str, entity_type: EntityType) -> ConflictState {
         ConflictState {
             entry: entry.to_string(),
-            entity_type: entity_type.to_string(),
+            entity_type,
             old_sha: "aaaaaa".to_string(),
             new_sha: "bbbbbb".to_string(),
         }
@@ -441,7 +441,7 @@ mod tests {
     fn resolve_abort_clears_conflict() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
-        let conflict = make_conflict("test", "skill");
+        let conflict = make_conflict("test", EntityType::Skill);
         write_conflict(dir.path(), &conflict).unwrap();
 
         cmd_resolve(None, true, dir.path()).unwrap();
@@ -467,7 +467,7 @@ mod tests {
     fn resolve_wrong_entry_errors() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "github  skill  owner/repo  skills/test.md\n");
-        let conflict = make_conflict("other-entry", "skill");
+        let conflict = make_conflict("other-entry", EntityType::Skill);
         write_conflict(dir.path(), &conflict).unwrap();
 
         let result = cmd_resolve(Some("test"), false, dir.path());
@@ -550,7 +550,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Manifest has "test" but we request "nonexistent"
         write_manifest(dir.path(), "github  skill  owner/repo  skills/test.md\n");
-        let conflict = make_conflict("nonexistent", "skill");
+        let conflict = make_conflict("nonexistent", EntityType::Skill);
         write_conflict(dir.path(), &conflict).unwrap();
         let result = cmd_resolve(Some("nonexistent"), false, dir.path());
         assert!(result.is_err(), "expected error for entry not in manifest");

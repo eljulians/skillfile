@@ -87,7 +87,7 @@ pub fn resolve_github_sha(
 }
 
 /// Fetch raw file bytes from `raw.githubusercontent.com`.
-#[allow(clippy::too_many_arguments)] // client + three semantically-distinct coordinates; a struct would be artificial
+#[allow(clippy::too_many_arguments)]
 pub fn fetch_github_file(
     client: &dyn HttpClient,
     owner_repo: &str,
@@ -240,7 +240,7 @@ pub struct DirEntry {
 }
 
 /// List all files under `base_path` using the Git Trees API.
-#[allow(clippy::too_many_arguments)] // client + three semantically-distinct coordinates; a struct would be artificial
+#[allow(clippy::too_many_arguments)]
 pub fn list_github_dir_recursive(
     client: &dyn HttpClient,
     owner_repo: &str,
