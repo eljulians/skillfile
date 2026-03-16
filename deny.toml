@@ -1,0 +1,35 @@
+[advisories]
+ignore = [
+  # paste is unmaintained but it's a transitive dep from ratatui.
+  # ratatui will eventually migrate away from it.
+  { id = "RUSTSEC-2024-0436", reason = "transitive dep from ratatui, no action available" },
+]
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "MPL-2.0",
+  "CDLA-Permissive-2.0",
+]
+
+[[licenses.clarify]]
+crate = "skillfile-functional-tests"
+expression = "Apache-2.0"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
