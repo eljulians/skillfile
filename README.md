@@ -9,7 +9,7 @@
 
 One-stop shop (and file) for AI skills and agents.
 
-Search, install, and track them declaratively across all major AI coding tools. Customize without losing upstream updates.i
+Search, install, and track them declaratively across all major AI coding tools. Customize without losing upstream updates.
 
 ![demo](https://github.com/eljulians/skillfile/raw/master/docs/demo.gif)
 
