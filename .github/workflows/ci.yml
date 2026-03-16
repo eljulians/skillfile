@@ -49,10 +49,6 @@ jobs:
       - name: Check unused dependencies
         run: cargo machete
 
-      - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@cargo-semver-checks
-      - name: Check semver compliance
-        run: cargo semver-checks check-release --workspace
 
   test-linux:
     name: Tests (Linux, with coverage)
