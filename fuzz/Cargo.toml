@@ -1,0 +1,18 @@
+[package]
+name = "skillfile-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+skillfile-core = { path = "../crates/core" }
+tempfile = "3"
+
+[[bin]]
+name = "parse_manifest"
+path = "fuzz_targets/parse_manifest.rs"
+doc = false

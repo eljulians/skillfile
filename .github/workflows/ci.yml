@@ -13,7 +13,7 @@ jobs:
   check:
     name: Static checks
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -35,11 +35,27 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Check dependencies
+        run: cargo deny check
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-  test:
-    name: Ubuntu tests (with coverage)
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@cargo-machete
+      - name: Check unused dependencies
+        run: cargo machete
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@cargo-semver-checks
+      - name: Check semver compliance
+        run: cargo semver-checks check-release --workspace
+
+  test-linux:
+    name: Tests (Linux, with coverage)
     needs: [check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -87,8 +103,8 @@ jobs:
           name: coverage-report
           path: target/llvm-cov/html/
 
-  macos:
-    name: macOS tests
+  test-macos:
+    name: Tests (macOS)
     needs: [check]
     runs-on: macos-latest
     timeout-minutes: 5

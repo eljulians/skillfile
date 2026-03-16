@@ -37,6 +37,10 @@ Skillfile.lock
 .skillfile/cache/
 .skillfile/conflict
 
+# Fuzz
+fuzz/corpus/
+fuzz/artifacts/
+
 # Coverage
 lcov.info
 coverage/

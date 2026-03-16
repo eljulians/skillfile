@@ -409,6 +409,7 @@ pub(crate) mod test_support {
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

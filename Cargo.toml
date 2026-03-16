@@ -57,6 +57,9 @@ assert_cmd = "2"
 predicates = "3"
 retry = "2"
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+
 [workspace.lints.clippy]
 # ── Enable pedantic group, then override what we disagree with ───
 pedantic = { level = "warn", priority = -1 }

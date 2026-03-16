@@ -97,6 +97,7 @@ impl Registry for SkillhubClub {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
     use crate::registry::test_support::MockClient;
