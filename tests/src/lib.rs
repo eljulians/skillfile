@@ -2,6 +2,13 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 
+fn skillfile_bin_from_test_dir() -> Option<PathBuf> {
+    let test_exe = std::env::current_exe().ok()?;
+    let profile_dir = test_exe.parent().and_then(|p| p.parent())?;
+    let candidate = profile_dir.join("skillfile");
+    candidate.exists().then_some(candidate)
+}
+
 /// Locate the `skillfile` binary.
 ///
 /// Strategy:
@@ -17,13 +24,8 @@ use assert_cmd::Command;
 ///    finds a fresh binary, not a stale cached one.
 fn skillfile_bin() -> PathBuf {
     // Try same target dir as the running test binary.
-    if let Ok(test_exe) = std::env::current_exe() {
-        if let Some(profile_dir) = test_exe.parent().and_then(|p| p.parent()) {
-            let candidate = profile_dir.join("skillfile");
-            if candidate.exists() {
-                return candidate;
-            }
-        }
+    if let Some(bin) = skillfile_bin_from_test_dir() {
+        return bin;
     }
 
     // Fallback: CARGO_TARGET_DIR or workspace target/.
@@ -33,14 +35,15 @@ fn skillfile_bin() -> PathBuf {
         "release"
     };
 
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    let target_dir = std::env::var("CARGO_TARGET_DIR").map_or_else(
+        |_| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap()
                 .join("target")
-        });
+        },
+        PathBuf::from,
+    );
 
     target_dir.join(profile).join("skillfile")
 }

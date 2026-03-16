@@ -45,6 +45,20 @@ fn sort_key(entry: &Entry) -> (String, String, String) {
     (source_type, repo, path)
 }
 
+fn entry_repo_key(entry: &Entry) -> (String, String) {
+    let repo = match &entry.source {
+        skillfile_core::models::SourceFields::Github { owner_repo, .. } => owner_repo.clone(),
+        _ => String::new(),
+    };
+    (entry.source_type().to_string(), repo)
+}
+
+fn flush_group<'a>(groups: &mut Vec<Vec<&'a Entry>>, current_group: &mut Vec<&'a Entry>) {
+    if !current_group.is_empty() {
+        groups.push(std::mem::take(current_group));
+    }
+}
+
 /// Split sorted entries into sub-lists by (source_type, owner_repo).
 fn group_by_repo<'a>(entries: &'a [&'a Entry]) -> Vec<Vec<&'a Entry>> {
     let mut groups: Vec<Vec<&Entry>> = Vec::new();
@@ -52,23 +66,14 @@ fn group_by_repo<'a>(entries: &'a [&'a Entry]) -> Vec<Vec<&'a Entry>> {
     let mut current_group: Vec<&Entry> = Vec::new();
 
     for entry in entries {
-        let repo = match &entry.source {
-            skillfile_core::models::SourceFields::Github { owner_repo, .. } => owner_repo.clone(),
-            _ => String::new(),
-        };
-        let key = (entry.source_type().to_string(), repo);
+        let key = entry_repo_key(entry);
         if current_key.as_ref() != Some(&key) {
-            if !current_group.is_empty() {
-                groups.push(current_group);
-                current_group = Vec::new();
-            }
+            flush_group(&mut groups, &mut current_group);
             current_key = Some(key);
         }
         current_group.push(entry);
     }
-    if !current_group.is_empty() {
-        groups.push(current_group);
-    }
+    flush_group(&mut groups, &mut current_group);
     groups
 }
 
@@ -81,17 +86,38 @@ fn extract_entry_comments(raw_text: &str) -> std::collections::HashMap<String, V
         let stripped = line.trim();
         if stripped.starts_with('#') {
             pending.push(line.trim_end().to_string());
-        } else if stripped.is_empty() || stripped.starts_with("install") {
-            pending.clear();
-        } else {
-            if !pending.is_empty() {
-                attached.insert(stripped.to_string(), pending.clone());
-            }
-            pending.clear();
+            continue;
         }
+        if stripped.is_empty() || stripped.starts_with("install") {
+            pending.clear();
+            continue;
+        }
+        if !pending.is_empty() {
+            attached.insert(stripped.to_string(), pending.clone());
+        }
+        pending.clear();
     }
 
     attached
+}
+
+fn push_repo_group(
+    lines: &mut Vec<String>,
+    repo_group: &[&Entry],
+    entry_comments: &std::collections::HashMap<String, Vec<String>>,
+) {
+    lines.push(String::new());
+    for entry in repo_group {
+        let formatted = format_line(entry);
+        lines.extend(
+            entry_comments
+                .get(&formatted)
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        lines.push(formatted);
+    }
 }
 
 pub fn sorted_manifest_text(manifest: &Manifest, raw_text: &str) -> String {
@@ -133,14 +159,7 @@ pub fn sorted_manifest_text(manifest: &Manifest, raw_text: &str) -> String {
             lines.push(header.to_string());
         }
         for repo_group in group_by_repo(&group) {
-            lines.push(String::new());
-            for entry in repo_group {
-                let formatted = format_line(entry);
-                if let Some(comments) = entry_comments.get(&formatted) {
-                    lines.extend(comments.clone());
-                }
-                lines.push(formatted);
-            }
+            push_repo_group(&mut lines, &repo_group, &entry_comments);
         }
     }
 

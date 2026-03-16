@@ -21,7 +21,34 @@ fn format_line(entry: &Entry) -> String {
     parts.join("  ")
 }
 
+/// Sync a single entry and install it to all configured targets.
+fn sync_and_install(
+    entry: &Entry,
+    repo_root: &Path,
+    manifest: &skillfile_core::models::Manifest,
+) -> Result<(), SkillfileError> {
+    let mut locked = read_lock(repo_root)?;
+    let client = skillfile_sources::http::UreqClient::new();
+    let mut ctx = SyncContext {
+        repo_root: repo_root.to_path_buf(),
+        dry_run: false,
+        update: false,
+        sha_cache: std::collections::HashMap::new(),
+    };
+    sync_entry(&client, entry, &mut ctx, &mut locked)?;
+    write_lock(repo_root, &locked)?;
+
+    let all_adapters = adapters();
+    for target in &manifest.install_targets {
+        if all_adapters.contains(&target.adapter) {
+            install_entry(entry, target, repo_root, None)?;
+        }
+    }
+    Ok(())
+}
+
 /// Build an Entry from CLI arguments for a github source.
+#[allow(clippy::too_many_arguments)]
 pub fn entry_from_github(
     entity_type: &str,
     owner_repo: &str,
@@ -65,7 +92,7 @@ pub fn entry_from_url(entity_type: &str, url: &str, name: Option<&str>) -> Entry
     }
 }
 
-pub fn cmd_add(entry: Entry, repo_root: &Path) -> Result<(), SkillfileError> {
+pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
         return Err(SkillfileError::Manifest(format!(
@@ -88,7 +115,7 @@ pub fn cmd_add(entry: Entry, repo_root: &Path) -> Result<(), SkillfileError> {
         )));
     }
 
-    let line = format_line(&entry);
+    let line = format_line(entry);
     let original_manifest = std::fs::read_to_string(&manifest_path)?;
 
     // Append the new entry
@@ -121,26 +148,7 @@ pub fn cmd_add(entry: Entry, repo_root: &Path) -> Result<(), SkillfileError> {
         None
     };
 
-    let sync_install_result = (|| -> Result<(), SkillfileError> {
-        let mut locked = read_lock(repo_root)?;
-        let client = skillfile_sources::http::UreqClient::new();
-        let mut ctx = SyncContext {
-            repo_root: repo_root.to_path_buf(),
-            dry_run: false,
-            update: false,
-            sha_cache: std::collections::HashMap::new(),
-        };
-        sync_entry(&client, &entry, &mut ctx, &mut locked)?;
-        write_lock(repo_root, &locked)?;
-
-        let all_adapters = adapters();
-        for target in &result.manifest.install_targets {
-            if all_adapters.contains(&target.adapter) {
-                install_entry(&entry, target, repo_root, None)?;
-            }
-        }
-        Ok(())
-    })();
+    let sync_install_result = sync_and_install(entry, repo_root, &result.manifest);
 
     if let Err(e) = sync_install_result {
         // Rollback
@@ -172,7 +180,7 @@ mod tests {
     fn no_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let entry = entry_from_local("skill", "skills/foo.md", None);
-        let result = cmd_add(entry, dir.path());
+        let result = cmd_add(&entry, dir.path());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -182,7 +190,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
         let entry = entry_from_local("skill", "skills/foo.md", None);
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("local  skill  skills/foo.md"));
@@ -193,7 +201,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
         let entry = entry_from_local("skill", "skills/foo.md", Some("my-foo"));
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("local  skill  my-foo  skills/foo.md"));
@@ -204,7 +212,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
         let entry = entry_from_github("agent", "owner/repo", "agents/agent.md", None, None);
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("github  agent  owner/repo  agents/agent.md"));
@@ -221,7 +229,7 @@ mod tests {
             Some("v1.0"),
             Some("my-agent"),
         );
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("github  agent  my-agent  owner/repo  agents/agent.md  v1.0"));
@@ -232,7 +240,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
         let entry = entry_from_url("skill", "https://example.com/skill.md", None);
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("url  skill  https://example.com/skill.md"));
@@ -243,7 +251,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
         let entry = entry_from_url("skill", "https://example.com/skill.md", Some("my-skill"));
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("url  skill  my-skill  https://example.com/skill.md"));
@@ -254,7 +262,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "local  skill  skills/foo.md\n");
         let entry = entry_from_local("agent", "agents/foo.md", Some("foo"));
-        let result = cmd_add(entry, dir.path());
+        let result = cmd_add(&entry, dir.path());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
     }
@@ -264,7 +272,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "local  skill  skills/foo.md\n");
         let entry = entry_from_local("skill", "skills/bar.md", None);
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("skills/foo.md"));
@@ -276,7 +284,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
         let entry = entry_from_github("agent", "owner/repo", "agents/core-dev", None, None);
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         // Name "core-dev" is inferred from path, so omitted from line
@@ -289,7 +297,7 @@ mod tests {
         write_manifest(dir.path(), "");
         let entry = entry_from_local("skill", "skills/foo.md", None);
         // Should succeed without install targets
-        cmd_add(entry, dir.path()).unwrap();
+        cmd_add(&entry, dir.path()).unwrap();
     }
 
     // --- format_line direct tests ---

@@ -24,15 +24,35 @@ use crate::paths::{installed_dir_files, installed_path, source_path};
 // ---------------------------------------------------------------------------
 
 /// Convert a patch application error into PatchConflict for the given entry.
-fn to_patch_conflict(err: SkillfileError, entry_name: &str) -> SkillfileError {
+fn to_patch_conflict(err: &SkillfileError, entry_name: &str) -> SkillfileError {
     SkillfileError::PatchConflict {
         message: err.to_string(),
         entry_name: entry_name.to_string(),
     }
 }
 
+/// Rebase a patch file against a new cache: write the updated patch or remove it
+/// if the upstream content already equals the patched result.
+#[allow(clippy::too_many_arguments)]
+fn rebase_single_patch(
+    entry: &Entry,
+    source: &Path,
+    patched: &str,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
+    let cache_text = std::fs::read_to_string(source)?;
+    let new_patch = generate_patch(&cache_text, patched, &format!("{}.md", entry.name));
+    if new_patch.is_empty() {
+        remove_patch(entry, repo_root)?;
+    } else {
+        write_patch(entry, &new_patch, repo_root)?;
+    }
+    Ok(())
+}
+
 /// Apply stored patch (if any) to a single installed file, then rebase the patch
 /// against the new cache content so status comparisons remain correct.
+#[allow(clippy::too_many_arguments)]
 fn apply_single_file_patch(
     entry: &Entry,
     dest: &Path,
@@ -45,22 +65,44 @@ fn apply_single_file_patch(
     let patch_text = read_patch(entry, repo_root)?;
     let original = std::fs::read_to_string(dest)?;
     let patched =
-        apply_patch_pure(&original, &patch_text).map_err(|e| to_patch_conflict(e, &entry.name))?;
+        apply_patch_pure(&original, &patch_text).map_err(|e| to_patch_conflict(&e, &entry.name))?;
     std::fs::write(dest, &patched)?;
 
     // Rebase: regenerate patch against new cache so `diff` shows accurate deltas.
-    let cache_text = std::fs::read_to_string(source)?;
-    let new_patch = generate_patch(&cache_text, &patched, &format!("{}.md", entry.name));
-    if !new_patch.is_empty() {
-        write_patch(entry, &new_patch, repo_root)?;
+    rebase_single_patch(entry, source, &patched, repo_root)
+}
+
+/// Rebase a single dir-entry patch file; remove it if the diff becomes empty.
+///
+/// `rel` is the relative path key, `patch_file` the `.patch` file to update or
+/// remove, `source_dir` the new cache dir, and `patched` the content after
+/// applying the old patch.
+#[allow(clippy::too_many_arguments)]
+fn rebase_dir_patch(
+    entry: &Entry,
+    rel: &str,
+    patch_file: &Path,
+    source_dir: &Path,
+    patched: &str,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
+    let cache_file = source_dir.join(rel);
+    if !cache_file.exists() {
+        return Ok(());
+    }
+    let cache_text = std::fs::read_to_string(&cache_file)?;
+    let new_patch = generate_patch(&cache_text, patched, rel);
+    if new_patch.is_empty() {
+        std::fs::remove_file(patch_file)?;
     } else {
-        remove_patch(entry, repo_root)?;
+        write_dir_patch(entry, rel, &new_patch, repo_root)?;
     }
     Ok(())
 }
 
 /// Apply per-file patches to all installed files of a directory entry.
 /// Rebases each patch against the new cache content after applying.
+#[allow(clippy::too_many_arguments)]
 fn apply_dir_patches(
     entry: &Entry,
     installed_files: &HashMap<String, PathBuf>,
@@ -80,37 +122,27 @@ fn apply_dir_patches(
         .collect();
 
     for patch_file in patch_files {
-        let rel = match patch_file
+        let Some(rel) = patch_file
             .strip_prefix(&patches_dir)
             .ok()
             .and_then(|p| p.to_str())
             .and_then(|s| s.strip_suffix(".patch"))
-        {
-            Some(s) => s.to_string(),
-            None => continue,
+            .map(str::to_string)
+        else {
+            continue;
         };
 
-        let target = match installed_files.get(&rel) {
-            Some(p) if p.exists() => p,
-            _ => continue,
+        let Some(target) = installed_files.get(&rel).filter(|p| p.exists()) else {
+            continue;
         };
 
         let patch_text = std::fs::read_to_string(&patch_file)?;
         let original = std::fs::read_to_string(target)?;
         let patched = apply_patch_pure(&original, &patch_text)
-            .map_err(|e| to_patch_conflict(e, &entry.name))?;
+            .map_err(|e| to_patch_conflict(&e, &entry.name))?;
         std::fs::write(target, &patched)?;
 
-        let cache_file = source_dir.join(&rel);
-        if cache_file.exists() {
-            let cache_text = std::fs::read_to_string(&cache_file)?;
-            let new_patch = generate_patch(&cache_text, &patched, &rel);
-            if !new_patch.is_empty() {
-                write_dir_patch(entry, &rel, &new_patch, repo_root)?;
-            } else {
-                std::fs::remove_file(&patch_file)?;
-            }
-        }
+        rebase_dir_patch(entry, &rel, &patch_file, source_dir, &patched, repo_root)?;
     }
     Ok(())
 }
@@ -119,15 +151,37 @@ fn apply_dir_patches(
 // Auto-pin helpers (used by install --update)
 // ---------------------------------------------------------------------------
 
+/// Return `true` if the stored patch already describes the installed content,
+/// meaning no re-pin is needed. Also returns `true` if the patch exists but the
+/// cache is inconsistent with it (preserve without clobbering).
+#[allow(clippy::too_many_arguments)]
+fn should_skip_pin(
+    entry: &Entry,
+    repo_root: &Path,
+    cache_text: &str,
+    installed_text: &str,
+) -> bool {
+    if !has_patch(entry, repo_root) {
+        return false;
+    }
+    let Ok(pt) = read_patch(entry, repo_root) else {
+        return false;
+    };
+    match apply_patch_pure(cache_text, &pt) {
+        Ok(expected) if installed_text == expected => true, // no new edits
+        Err(_) => true,                                     // cache inconsistent — preserve
+        Ok(_) => false,                                     // additional edits — fall through
+    }
+}
+
 /// Compare installed vs cache; write patch if they differ. Silent on missing prerequisites.
 fn auto_pin_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
     if entry.source_type() == "local" {
         return;
     }
 
-    let locked = match read_lock(repo_root) {
-        Ok(l) => l,
-        Err(_) => return,
+    let Ok(locked) = read_lock(repo_root) else {
+        return;
     };
     let key = lock_key(entry);
     if !locked.contains_key(&key) {
@@ -150,32 +204,23 @@ fn auto_pin_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
         return;
     }
 
-    let dest = match installed_path(entry, manifest, repo_root) {
-        Ok(p) => p,
-        Err(_) => return,
+    let Ok(dest) = installed_path(entry, manifest, repo_root) else {
+        return;
     };
     if !dest.exists() {
         return;
     }
 
-    let cache_text = match std::fs::read_to_string(&cache_file) {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(cache_text) = std::fs::read_to_string(&cache_file) else {
+        return;
     };
-    let installed_text = match std::fs::read_to_string(&dest) {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(installed_text) = std::fs::read_to_string(&dest) else {
+        return;
     };
 
     // If already pinned, check if stored patch still describes the installed content exactly.
-    if has_patch(entry, repo_root) {
-        if let Ok(pt) = read_patch(entry, repo_root) {
-            match apply_patch_pure(&cache_text, &pt) {
-                Ok(expected) if installed_text == expected => return, // no new edits
-                Ok(_) => {} // installed has additional edits — fall through to re-pin
-                Err(_) => return, // cache inconsistent with stored patch — preserve
-            }
-        }
+    if should_skip_pin(entry, repo_root, &cache_text, &installed_text) {
+        return;
     }
 
     let patch_text = generate_patch(&cache_text, &installed_text, &format!("{}.md", entry.name));
@@ -190,18 +235,40 @@ fn auto_pin_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
 /// Check a single cache file against its installed counterpart and generate/update
 /// the patch if the user has modified the installed copy. Returns the filename if
 /// a new patch was written.
-fn try_auto_pin_file(
-    cache_file: &Path,
-    vdir: &Path,
-    entry: &Entry,
-    installed: &HashMap<String, PathBuf>,
-    repo_root: &Path,
-) -> Option<String> {
+struct AutoPinCtx<'a> {
+    vdir: &'a Path,
+    entry: &'a Entry,
+    installed: &'a HashMap<String, PathBuf>,
+    repo_root: &'a Path,
+}
+
+/// Return `true` if the dir-entry patch file at `patch_path` already describes
+/// the transition from `cache_text` to `installed_text` (or if the patch is
+/// inconsistent with the cache, in which case we also skip re-pinning).
+fn dir_patch_already_matches(patch_path: &Path, cache_text: &str, installed_text: &str) -> bool {
+    if !patch_path.exists() {
+        return false;
+    }
+    let Ok(pt) = std::fs::read_to_string(patch_path) else {
+        return false;
+    };
+    match apply_patch_pure(cache_text, &pt) {
+        Ok(expected) if installed_text == expected => true,
+        Err(_) => true,
+        Ok(_) => false,
+    }
+}
+
+fn try_auto_pin_file(cache_file: &Path, ctx: &AutoPinCtx<'_>) -> Option<String> {
     if cache_file.file_name().is_some_and(|n| n == ".meta") {
         return None;
     }
-    let filename = cache_file.strip_prefix(vdir).ok()?.to_str()?.to_string();
-    let inst_path = match installed.get(&filename) {
+    let filename = cache_file
+        .strip_prefix(ctx.vdir)
+        .ok()?
+        .to_str()?
+        .to_string();
+    let inst_path = match ctx.installed.get(&filename) {
         Some(p) if p.exists() => p,
         _ => return None,
     };
@@ -210,19 +277,15 @@ fn try_auto_pin_file(
     let installed_text = std::fs::read_to_string(inst_path).ok()?;
 
     // Check if stored dir patch still matches
-    let p = dir_patch_path(entry, &filename, repo_root);
-    if p.exists() {
-        if let Ok(pt) = std::fs::read_to_string(&p) {
-            match apply_patch_pure(&cache_text, &pt) {
-                Ok(expected) if installed_text == expected => return None,
-                Ok(_) => {}
-                Err(_) => return None,
-            }
-        }
+    let p = dir_patch_path(ctx.entry, &filename, ctx.repo_root);
+    if dir_patch_already_matches(&p, &cache_text, &installed_text) {
+        return None;
     }
 
     let patch_text = generate_patch(&cache_text, &installed_text, &filename);
-    if !patch_text.is_empty() && write_dir_patch(entry, &filename, &patch_text, repo_root).is_ok() {
+    if !patch_text.is_empty()
+        && write_dir_patch(ctx.entry, &filename, &patch_text, ctx.repo_root).is_ok()
+    {
         Some(filename)
     } else {
         None
@@ -230,21 +293,27 @@ fn try_auto_pin_file(
 }
 
 /// Auto-pin each modified file in a directory entry's installed copy.
+#[allow(clippy::too_many_arguments)]
 fn auto_pin_dir_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path, vdir: &Path) {
     if !vdir.is_dir() {
         return;
     }
-    let installed = match installed_dir_files(entry, manifest, repo_root) {
-        Ok(m) => m,
-        Err(_) => return,
+    let Ok(installed) = installed_dir_files(entry, manifest, repo_root) else {
+        return;
     };
     if installed.is_empty() {
         return;
     }
 
+    let ctx = AutoPinCtx {
+        vdir,
+        entry,
+        installed: &installed,
+        repo_root,
+    };
     let pinned: Vec<String> = walkdir(vdir)
         .into_iter()
-        .filter_map(|f| try_auto_pin_file(&f, vdir, entry, &installed, repo_root))
+        .filter_map(|f| try_auto_pin_file(&f, &ctx))
         .collect();
 
     if !pinned.is_empty() {
@@ -267,6 +336,7 @@ fn auto_pin_dir_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path, vdir
 /// missing-source warnings, and patch application.
 ///
 /// Returns `Err(PatchConflict)` if a stored patch fails to apply cleanly.
+#[allow(clippy::too_many_arguments)]
 pub fn install_entry(
     entry: &Entry,
     target: &InstallTarget,
@@ -277,9 +347,8 @@ pub fn install_entry(
     let opts = opts.unwrap_or(&default_opts);
 
     let all_adapters = adapters();
-    let adapter = match all_adapters.get(&target.adapter) {
-        Some(a) => a,
-        None => return Ok(()),
+    let Some(adapter) = all_adapters.get(&target.adapter) else {
+        return Ok(());
     };
 
     if !adapter.supports(entry.entity_type.as_str()) {
@@ -298,17 +367,30 @@ pub fn install_entry(
     let installed = adapter.deploy_entry(entry, &source, target.scope, repo_root, opts);
 
     if !installed.is_empty() && !opts.dry_run {
-        if is_dir {
-            apply_dir_patches(entry, &installed, &source, repo_root)?;
-        } else {
-            let key = format!("{}.md", entry.name);
-            if let Some(dest) = installed.get(&key) {
-                apply_single_file_patch(entry, dest, &source, repo_root)?;
-            }
-        }
+        apply_entry_patches(entry, &installed, &source, is_dir, repo_root)?;
     }
 
     Ok(())
+}
+
+/// Dispatch to the correct patch-application strategy for a deployed entry.
+#[allow(clippy::too_many_arguments)]
+fn apply_entry_patches(
+    entry: &Entry,
+    installed: &HashMap<String, PathBuf>,
+    source: &Path,
+    is_dir: bool,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
+    if is_dir {
+        apply_dir_patches(entry, installed, source, repo_root)
+    } else {
+        let key = format!("{}.md", entry.name);
+        if let Some(dest) = installed.get(&key) {
+            apply_single_file_patch(entry, dest, source, repo_root)?;
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +420,83 @@ fn check_preconditions(manifest: &Manifest, repo_root: &Path) -> Result<(), Skil
 // Deploy all entries, handling patch conflicts
 // ---------------------------------------------------------------------------
 
+/// Format a SHA transition hint for conflict error messages.
+fn sha_transition_hint(old_sha: &str, new_sha: &str) -> String {
+    if !old_sha.is_empty() && !new_sha.is_empty() && old_sha != new_sha {
+        format!(
+            "\n  upstream: {} \u{2192} {}",
+            short_sha(old_sha),
+            short_sha(new_sha)
+        )
+    } else {
+        String::new()
+    }
+}
+
+/// Shared lock maps threaded through `deploy_all` and `handle_patch_conflict`.
+struct LockMaps<'a> {
+    locked: &'a std::collections::BTreeMap<String, skillfile_core::models::LockEntry>,
+    old_locked: &'a std::collections::BTreeMap<String, skillfile_core::models::LockEntry>,
+}
+
+/// Handle a patch conflict during deployment: write conflict state and return an error.
+#[allow(clippy::too_many_arguments)]
+fn handle_patch_conflict(
+    entry: &Entry,
+    entry_name: &str,
+    repo_root: &Path,
+    maps: &LockMaps<'_>,
+) -> Result<(), SkillfileError> {
+    let key = lock_key(entry);
+    let old_sha = maps
+        .old_locked
+        .get(&key)
+        .map(|l| l.sha.clone())
+        .unwrap_or_default();
+    let new_sha = maps
+        .locked
+        .get(&key)
+        .map_or_else(|| old_sha.clone(), |l| l.sha.clone());
+
+    write_conflict(
+        repo_root,
+        &ConflictState {
+            entry: entry_name.to_string(),
+            entity_type: entry.entity_type.to_string(),
+            old_sha: old_sha.clone(),
+            new_sha: new_sha.clone(),
+        },
+    )?;
+
+    let sha_info = sha_transition_hint(&old_sha, &new_sha);
+    Err(SkillfileError::Install(format!(
+        "upstream changes to '{entry_name}' conflict with your customisations.{sha_info}\n\
+         Your pinned edits could not be applied to the new upstream version.\n\
+         Run `skillfile diff {entry_name}` to review what changed upstream.\n\
+         Run `skillfile resolve {entry_name}` when ready to merge.\n\
+         Run `skillfile resolve --abort` to discard the conflict and keep the old version."
+    )))
+}
+
+/// Install one entry and translate a `PatchConflict` into a full conflict error.
+#[allow(clippy::too_many_arguments)]
+fn install_entry_or_conflict(
+    entry: &Entry,
+    target: &InstallTarget,
+    repo_root: &Path,
+    opts: &InstallOptions,
+    maps: &LockMaps<'_>,
+) -> Result<(), SkillfileError> {
+    match install_entry(entry, target, repo_root, Some(opts)) {
+        Ok(()) => Ok(()),
+        Err(SkillfileError::PatchConflict { entry_name, .. }) => {
+            handle_patch_conflict(entry, &entry_name, repo_root, maps)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn deploy_all(
     manifest: &Manifest,
     repo_root: &Path,
@@ -347,6 +506,7 @@ fn deploy_all(
 ) -> Result<(), SkillfileError> {
     let mode = if opts.dry_run { " [dry-run]" } else { "" };
     let all_adapters = adapters();
+    let maps = LockMaps { locked, old_locked };
 
     for target in &manifest.install_targets {
         if !all_adapters.contains(&target.adapter) {
@@ -359,50 +519,7 @@ fn deploy_all(
             target.scope
         );
         for entry in &manifest.entries {
-            match install_entry(entry, target, repo_root, Some(opts)) {
-                Ok(()) => {}
-                Err(SkillfileError::PatchConflict { entry_name, .. }) => {
-                    let key = lock_key(entry);
-                    let old_sha = old_locked
-                        .get(&key)
-                        .map(|l| l.sha.clone())
-                        .unwrap_or_default();
-                    let new_sha = locked
-                        .get(&key)
-                        .map(|l| l.sha.clone())
-                        .unwrap_or_else(|| old_sha.clone());
-
-                    write_conflict(
-                        repo_root,
-                        &ConflictState {
-                            entry: entry_name.clone(),
-                            entity_type: entry.entity_type.to_string(),
-                            old_sha: old_sha.clone(),
-                            new_sha: new_sha.clone(),
-                        },
-                    )?;
-
-                    let sha_info =
-                        if !old_sha.is_empty() && !new_sha.is_empty() && old_sha != new_sha {
-                            format!(
-                                "\n  upstream: {} \u{2192} {}",
-                                short_sha(&old_sha),
-                                short_sha(&new_sha)
-                            )
-                        } else {
-                            String::new()
-                        };
-
-                    return Err(SkillfileError::Install(format!(
-                        "upstream changes to '{entry_name}' conflict with your customisations.{sha_info}\n\
-                         Your pinned edits could not be applied to the new upstream version.\n\
-                         Run `skillfile diff {entry_name}` to review what changed upstream.\n\
-                         Run `skillfile resolve {entry_name}` when ready to merge.\n\
-                         Run `skillfile resolve --abort` to discard the conflict and keep the old version."
-                    )));
-                }
-                Err(e) => return Err(e),
-            }
+            install_entry_or_conflict(entry, target, repo_root, opts, &maps)?;
         }
     }
 
@@ -413,12 +530,25 @@ fn deploy_all(
 // cmd_install
 // ---------------------------------------------------------------------------
 
-pub fn cmd_install(
+/// Populate `manifest.install_targets` from `extra_targets` when the manifest
+/// has none of its own. Emits a progress message when targets are injected.
+fn apply_extra_targets(manifest: &mut Manifest, extra_targets: Option<&[InstallTarget]>) {
+    let Some(targets) = extra_targets else {
+        return;
+    };
+    if !targets.is_empty() {
+        progress!("Using platform targets from personal config (Skillfile has no install lines).");
+    }
+    manifest.install_targets = targets.to_vec();
+}
+
+/// Parse the manifest, apply extra targets if the Skillfile has none, and
+/// return the parsed manifest. Extracted to reduce cognitive complexity of
+/// `cmd_install`.
+fn load_manifest(
     repo_root: &Path,
-    dry_run: bool,
-    update: bool,
     extra_targets: Option<&[InstallTarget]>,
-) -> Result<(), SkillfileError> {
+) -> Result<Manifest, SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
         return Err(SkillfileError::Manifest(format!(
@@ -436,15 +566,38 @@ pub fn cmd_install(
     // If the Skillfile has no install targets, fall back to caller-provided targets
     // (e.g. from user-global config).
     if manifest.install_targets.is_empty() {
-        if let Some(targets) = extra_targets {
-            if !targets.is_empty() {
-                progress!(
-                    "Using platform targets from personal config (Skillfile has no install lines)."
-                );
-            }
-            manifest.install_targets = targets.to_vec();
-        }
+        apply_extra_targets(&mut manifest, extra_targets);
     }
+
+    Ok(manifest)
+}
+
+/// Run the auto-pin pass over all entries when `--update` is requested.
+fn auto_pin_all(manifest: &Manifest, repo_root: &Path) {
+    for entry in &manifest.entries {
+        auto_pin_entry(entry, manifest, repo_root);
+    }
+}
+
+/// Print the first-install hint listing the configured platforms.
+fn print_first_install_hint(manifest: &Manifest) {
+    let platforms: Vec<String> = manifest
+        .install_targets
+        .iter()
+        .map(|t| format!("{} ({})", t.adapter, t.scope))
+        .collect();
+    progress!("  Configured platforms: {}", platforms.join(", "));
+    progress!("  Run `skillfile init` to add or change platforms.");
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_install(
+    repo_root: &Path,
+    dry_run: bool,
+    update: bool,
+    extra_targets: Option<&[InstallTarget]>,
+) -> Result<(), SkillfileError> {
+    let manifest = load_manifest(repo_root, extra_targets)?;
 
     check_preconditions(&manifest, repo_root)?;
 
@@ -457,9 +610,7 @@ pub fn cmd_install(
 
     // Auto-pin local edits before re-fetching upstream (--update only).
     if update && !dry_run {
-        for entry in &manifest.entries {
-            auto_pin_entry(entry, &manifest, repo_root);
-        }
+        auto_pin_all(&manifest, repo_root);
     }
 
     // Ensure cache dir exists (used as first-install marker and by sync).
@@ -487,13 +638,7 @@ pub fn cmd_install(
         // Helps the clone scenario: user clones a repo with a Skillfile targeting
         // platforms they may not use, and needs to know how to add theirs.
         if first_install {
-            let platforms: Vec<String> = manifest
-                .install_targets
-                .iter()
-                .map(|t| format!("{} ({})", t.adapter, t.scope))
-                .collect();
-            progress!("  Configured platforms: {}", platforms.join(", "));
-            progress!("  Run `skillfile init` to add or change platforms.");
+            print_first_install_hint(&manifest);
         }
     }
 
@@ -1707,18 +1852,20 @@ mod tests {
     // deploy_all — PatchConflict writes conflict state and returns Install error
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn deploy_all_patch_conflict_writes_conflict_state() {
-        use skillfile_core::conflict::{has_conflict, read_conflict};
-        use skillfile_core::lock::write_lock;
+    fn setup_deploy_all_conflict_scenario(
+        dir: &std::path::Path,
+        name: &str,
+    ) -> (
+        Entry,
+        Manifest,
+        std::collections::BTreeMap<String, skillfile_core::models::LockEntry>,
+        std::collections::BTreeMap<String, skillfile_core::models::LockEntry>,
+    ) {
         use skillfile_core::models::LockEntry;
         use std::collections::BTreeMap;
 
-        let dir = tempfile::tempdir().unwrap();
-        let name = "test";
-
         // Vendor cache: content that cannot match the stored patch.
-        let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
+        let vdir = dir.join(format!(".skillfile/cache/skills/{name}"));
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(
             vdir.join(format!("{name}.md")),
@@ -1730,10 +1877,10 @@ mod tests {
         let entry = make_skill_entry(name);
         let bad_patch =
             "--- a/test.md\n+++ b/test.md\n@@ -1,1 +1,1 @@\n-expected_original_line\n+modified\n";
-        skillfile_core::patch::write_patch(&entry, bad_patch, dir.path()).unwrap();
+        skillfile_core::patch::write_patch(&entry, bad_patch, dir).unwrap();
 
         // Pre-create installed file.
-        let inst_dir = dir.path().join(".claude/skills");
+        let inst_dir = dir.join(".claude/skills");
         std::fs::create_dir_all(&inst_dir).unwrap();
         std::fs::write(
             inst_dir.join(format!("{name}.md")),
@@ -1747,7 +1894,6 @@ mod tests {
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
 
-        // Lock maps — old and new have different SHAs for SHA context in error.
         let lock_key_str = format!("github/skill/{name}");
         let old_sha = "a".repeat(40);
         let new_sha = "b".repeat(40);
@@ -1770,7 +1916,30 @@ mod tests {
             },
         );
 
+        (entry, manifest, new_locked, old_locked)
+    }
+
+    #[test]
+    fn deploy_all_patch_conflict_writes_conflict_state() {
+        use skillfile_core::conflict::{has_conflict, read_conflict};
+        use skillfile_core::lock::write_lock;
+
+        let dir = tempfile::tempdir().unwrap();
+        let name = "test";
+
+        let (_, manifest, new_locked, old_locked) =
+            setup_deploy_all_conflict_scenario(dir.path(), name);
+
         write_lock(dir.path(), &new_locked).unwrap();
+
+        let old_sha = old_locked
+            .get(&format!("github/skill/{name}"))
+            .map(|l| l.sha.clone())
+            .unwrap_or_default();
+        let new_sha = new_locked
+            .get(&format!("github/skill/{name}"))
+            .map(|l| l.sha.clone())
+            .unwrap_or_default();
 
         let opts = InstallOptions {
             dry_run: false,

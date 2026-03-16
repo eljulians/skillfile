@@ -58,13 +58,36 @@ predicates = "3"
 retry = "2"
 
 [workspace.lints.clippy]
-cognitive_complexity = "warn"
-too_many_lines = "warn"
-excessive_nesting = "warn"
-too_many_arguments = "warn"
-type_complexity = "warn"
-many_single_char_names = "warn"
-fn_params_excessive_bools = "warn"
+# ── Enable pedantic group, then override what we disagree with ───
+pedantic = { level = "warn", priority = -1 }
+
+# ── Noisy pedantic lints we opt out of ───────────────────────────
+missing_errors_doc = "allow"          # CLI tool, not a public library
+missing_panics_doc = "allow"          # same
+doc_markdown = "allow"                # backtick enforcement is busywork here
+must_use_candidate = "allow"          # noisy for a CLI
+module_name_repetitions = "allow"     # e.g. SkillfileError in skillfile_core
+return_self_not_must_use = "allow"    # builders don't need #[must_use]
+struct_excessive_bools = "allow"      # covered by fn_params_excessive_bools
+
+# ── Complexity gates (deny = fail CI on regression) ──────────────
+cognitive_complexity = "deny"
+too_many_lines = "deny"
+excessive_nesting = "deny"
+too_many_arguments = "deny"
+type_complexity = "deny"
+many_single_char_names = "deny"
+fn_params_excessive_bools = "deny"
+
+# ── Pedantic lints promoted to deny ──────────────────────────────
+redundant_closure_for_method_calls = "deny"
+manual_let_else = "deny"
+implicit_clone = "deny"
+needless_pass_by_value = "warn"
+semicolon_if_nothing_returned = "deny"
+map_unwrap_or = "deny"
+unnested_or_patterns = "deny"
+manual_string_new = "deny"
 
 [profile.release]
 opt-level = "s"

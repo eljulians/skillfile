@@ -44,6 +44,24 @@ macro_rules! progress_inline {
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+fn run_spinner_loop(stop: &AtomicBool, msg: &str) {
+    let mut i = 0usize;
+    let mut stderr = std::io::stderr();
+    while !stop.load(Ordering::Relaxed) {
+        let _ = write!(
+            stderr,
+            "\r{} {msg}",
+            SPINNER_FRAMES[i % SPINNER_FRAMES.len()]
+        );
+        let _ = stderr.flush();
+        i += 1;
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
+    // Clear the spinner line
+    let _ = write!(stderr, "\r{}\r", " ".repeat(msg.len() + 3));
+    let _ = stderr.flush();
+}
+
 /// An animated spinner that prints to stderr on a background thread.
 ///
 /// The spinner is suppressed in quiet mode or when stderr is not a terminal.
@@ -76,23 +94,7 @@ impl Spinner {
         let stop_clone = stop.clone();
         let msg = message.to_string();
 
-        let handle = std::thread::spawn(move || {
-            let mut i = 0;
-            let mut stderr = std::io::stderr();
-            while !stop_clone.load(Ordering::Relaxed) {
-                let _ = write!(
-                    stderr,
-                    "\r{} {msg}",
-                    SPINNER_FRAMES[i % SPINNER_FRAMES.len()]
-                );
-                let _ = stderr.flush();
-                i += 1;
-                std::thread::sleep(std::time::Duration::from_millis(80));
-            }
-            // Clear the spinner line
-            let _ = write!(stderr, "\r{}\r", " ".repeat(msg.len() + 3));
-            let _ = stderr.flush();
-        });
+        let handle = std::thread::spawn(move || run_spinner_loop(&stop_clone, &msg));
 
         Self {
             stop,

@@ -58,14 +58,7 @@ pub fn remove_patch(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileErro
         return Ok(());
     }
     std::fs::remove_file(&p)?;
-    if let Some(parent) = p.parent() {
-        if parent.exists() {
-            let is_empty = std::fs::read_dir(parent)?.next().is_none();
-            if is_empty {
-                let _ = std::fs::remove_dir(parent);
-            }
-        }
-    }
+    remove_empty_parent(&p);
     Ok(())
 }
 
@@ -96,6 +89,15 @@ pub fn has_dir_patch(entry: &Entry, repo_root: &Path) -> bool {
         .any(|p| p.extension().is_some_and(|e| e == "patch"))
 }
 
+/// Write a per-file patch for a directory entry.
+///
+/// # Arguments
+///
+/// * `entry` - The directory entry this patch belongs to.
+/// * `filename` - Relative filename within the entry (e.g. `"python.md"`).
+/// * `patch_text` - Unified diff text to persist.
+/// * `repo_root` - Repository root used to locate `.skillfile/patches/`.
+#[allow(clippy::too_many_arguments)] // 4 args, each semantically distinct; no better grouping
 pub fn write_dir_patch(
     entry: &Entry,
     filename: &str,
@@ -120,14 +122,7 @@ pub fn remove_dir_patch(
         return Ok(());
     }
     std::fs::remove_file(&p)?;
-    if let Some(parent) = p.parent() {
-        if parent.exists() {
-            let is_empty = std::fs::read_dir(parent)?.next().is_none();
-            if is_empty {
-                let _ = std::fs::remove_dir(parent);
-            }
-        }
-    }
+    remove_empty_parent(&p);
     Ok(())
 }
 
@@ -139,6 +134,26 @@ pub fn remove_all_dir_patches(entry: &Entry, repo_root: &Path) -> Result<(), Ski
         std::fs::remove_dir_all(&d)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Remove `path`'s parent directory if it exists and is now empty. No-op otherwise.
+fn remove_empty_parent(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if !parent.exists() {
+        return;
+    }
+    let is_empty = std::fs::read_dir(parent)
+        .map(|mut rd| rd.next().is_none())
+        .unwrap_or(true);
+    if is_empty {
+        let _ = std::fs::remove_dir(parent);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -181,21 +196,29 @@ pub fn generate_patch(original: &str, modified: &str, label: &str) -> String {
     // normalize any lines not ending with \n.
     let mut result = String::new();
     for line in raw.split_inclusive('\n') {
-        if line.starts_with("\\ ") {
-            // "\ No newline at end of file" — normalize preceding line
-            if !result.ends_with('\n') {
-                result.push('\n');
-            }
-            // Skip the marker
-        } else if line.ends_with('\n') {
-            result.push_str(line);
-        } else {
-            result.push_str(line);
-            result.push('\n');
-        }
+        normalize_diff_line(line, &mut result);
     }
 
     result
+}
+
+/// Process one line from a raw unified-diff output into `result`.
+///
+/// "\ No newline at end of file" markers are dropped (but a trailing newline is
+/// ensured on the preceding content line). Every other line is guaranteed to end
+/// with `'\n'`.
+fn normalize_diff_line(line: &str, result: &mut String) {
+    if line.starts_with("\\ ") {
+        // "\ No newline at end of file" — ensure the preceding line ends with \n
+        if !result.ends_with('\n') {
+            result.push('\n');
+        }
+        return;
+    }
+    result.push_str(line);
+    if !line.ends_with('\n') {
+        result.push('\n');
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -235,26 +258,33 @@ fn parse_hunks(patch_text: &str) -> Result<Vec<Hunk>, SkillfileError> {
             .ok_or_else(|| SkillfileError::Manifest(format!("malformed hunk header: {pl:?}")))?;
 
         pi += 1;
-        let mut body: Vec<String> = Vec::new();
-
-        while pi < lines.len() {
-            let hl = lines[pi];
-            if hl.starts_with("@@ ") || hl.starts_with("--- ") || hl.starts_with("+++ ") {
-                break;
-            }
-            if hl.starts_with("\\ ") {
-                // "\ No newline at end of file" — skip
-                pi += 1;
-                continue;
-            }
-            body.push(hl.to_string());
-            pi += 1;
-        }
+        let body = collect_hunk_body(&lines, &mut pi);
 
         hunks.push(Hunk { orig_start, body });
     }
 
     Ok(hunks)
+}
+
+/// Collect the body lines of a single hunk, advancing `pi` past them.
+///
+/// Stops at the next `@@ `, `--- `, or `+++ ` line. Skips "\ No newline" markers.
+fn collect_hunk_body(lines: &[&str], pi: &mut usize) -> Vec<String> {
+    let mut body: Vec<String> = Vec::new();
+    while *pi < lines.len() {
+        let hl = lines[*pi];
+        if hl.starts_with("@@ ") || hl.starts_with("--- ") || hl.starts_with("+++ ") {
+            break;
+        }
+        if hl.starts_with("\\ ") {
+            // "\ No newline at end of file" — skip
+            *pi += 1;
+            continue;
+        }
+        body.push(hl.to_string());
+        *pi += 1;
+    }
+    body
 }
 
 fn try_hunk_at(lines: &[String], start: usize, ctx_lines: &[&str]) -> bool {
@@ -269,26 +299,34 @@ fn try_hunk_at(lines: &[String], start: usize, ctx_lines: &[&str]) -> bool {
     true
 }
 
+/// Groups the search inputs for hunk-position lookup to stay within the 3-argument limit.
+struct HunkSearch<'a> {
+    lines: &'a [String],
+    min_pos: usize,
+}
+
+impl HunkSearch<'_> {
+    /// Scan outward from `center` within ±100 lines for a position where the hunk context matches.
+    fn search_nearby(&self, center: usize, ctx_lines: &[&str]) -> Option<usize> {
+        (1..100usize)
+            .flat_map(|delta| [Some(center + delta), center.checked_sub(delta)])
+            .flatten()
+            .filter(|&c| c >= self.min_pos && c <= self.lines.len())
+            .find(|&c| try_hunk_at(self.lines, c, ctx_lines))
+    }
+}
+
 fn find_hunk_position(
-    lines: &[String],
+    ctx: &HunkSearch<'_>,
     hunk_start: usize,
     ctx_lines: &[&str],
-    min_pos: usize,
 ) -> Result<usize, SkillfileError> {
-    if try_hunk_at(lines, hunk_start, ctx_lines) {
+    if try_hunk_at(ctx.lines, hunk_start, ctx_lines) {
         return Ok(hunk_start);
     }
 
-    for delta in 1..100usize {
-        let candidates = [Some(hunk_start + delta), hunk_start.checked_sub(delta)];
-        for candidate in candidates.into_iter().flatten() {
-            if candidate < min_pos || candidate > lines.len() {
-                continue;
-            }
-            if try_hunk_at(lines, candidate, ctx_lines) {
-                return Ok(candidate);
-            }
-        }
+    if let Some(pos) = ctx.search_nearby(hunk_start, ctx_lines) {
+        return Ok(pos);
     }
 
     if !ctx_lines.is_empty() {
@@ -301,6 +339,46 @@ fn find_hunk_position(
     Err(SkillfileError::Manifest(
         "patch extends beyond end of file".into(),
     ))
+}
+
+/// State threaded through hunk application in [`apply_patch_pure`].
+struct PatchState<'a> {
+    lines: &'a [String],
+    output: Vec<String>,
+    pos: usize,
+}
+
+impl<'a> PatchState<'a> {
+    fn new(lines: &'a [String]) -> Self {
+        Self {
+            lines,
+            output: Vec::new(),
+            pos: 0,
+        }
+    }
+
+    /// Apply a single hunk body line (`hl`) from a unified diff, updating `output` and `pos`.
+    fn apply_line(&mut self, hl: &str) {
+        let Some(prefix) = hl.as_bytes().first() else {
+            return;
+        };
+        match prefix {
+            b' ' if self.pos < self.lines.len() => {
+                self.output.push(self.lines[self.pos].clone());
+                self.pos += 1;
+            }
+            b'-' => self.pos += 1,
+            b'+' => self.output.push(hl[1..].to_string()),
+            _ => {} // context beyond EOF or unrecognized — skip
+        }
+    }
+
+    /// Apply all body lines of a hunk, updating `output` and `pos`.
+    fn apply_hunk(&mut self, hunk: &Hunk) {
+        for hl in &hunk.body {
+            self.apply_line(hl);
+        }
+    }
 }
 
 /// Apply a unified diff to original text, returning modified content.
@@ -325,11 +403,10 @@ pub fn apply_patch_pure(original: &str, patch_text: &str) -> Result<String, Skil
     // Split into lines preserving newlines (like Python's splitlines(keepends=True))
     let lines: Vec<String> = original
         .split_inclusive('\n')
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
-    let mut output: Vec<String> = Vec::new();
-    let mut li = 0usize; // current position in lines (0-based)
+    let mut state = PatchState::new(&lines);
 
     for hunk in parse_hunks(patch_text)? {
         // Build context: lines with ' ' or '-' prefix, stripped of prefix and trailing \n
@@ -340,39 +417,25 @@ pub fn apply_patch_pure(original: &str, patch_text: &str) -> Result<String, Skil
             .map(|hl| hl[1..].trim_end_matches('\n'))
             .collect();
 
+        let search = HunkSearch {
+            lines: &lines,
+            min_pos: state.pos,
+        };
         let hunk_start =
-            find_hunk_position(&lines, hunk.orig_start.saturating_sub(1), &ctx_lines, li)?;
+            find_hunk_position(&search, hunk.orig_start.saturating_sub(1), &ctx_lines)?;
 
         // Copy unchanged lines before this hunk
-        output.extend_from_slice(&lines[li..hunk_start]);
-        li = hunk_start;
+        state
+            .output
+            .extend_from_slice(&lines[state.pos..hunk_start]);
+        state.pos = hunk_start;
 
-        // Apply hunk: emit context and additions, skip removals
-        for hl in &hunk.body {
-            if hl.is_empty() {
-                continue;
-            }
-            match hl.chars().next() {
-                Some(' ') => {
-                    if li < lines.len() {
-                        output.push(lines[li].clone());
-                        li += 1;
-                    }
-                }
-                Some('-') => {
-                    li += 1;
-                }
-                Some('+') => {
-                    output.push(hl[1..].to_string());
-                }
-                _ => {}
-            }
-        }
+        state.apply_hunk(&hunk);
     }
 
     // Copy remaining lines
-    output.extend_from_slice(&lines[li..]);
-    Ok(output.concat())
+    state.output.extend_from_slice(&lines[state.pos..]);
+    Ok(state.output.concat())
 }
 
 // ---------------------------------------------------------------------------
@@ -389,14 +452,15 @@ pub fn walkdir(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn walkdir_inner(dir: &Path, result: &mut Vec<PathBuf>) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walkdir_inner(&path, result);
-            } else {
-                result.push(path);
-            }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walkdir_inner(&path, result);
+        } else {
+            result.push(path);
         }
     }
 }
@@ -493,7 +557,11 @@ mod tests {
 
     #[test]
     fn apply_patch_multi_hunk() {
-        let orig = (0..20).map(|i| format!("line{i}\n")).collect::<String>();
+        use std::fmt::Write;
+        let mut orig = String::new();
+        for i in 0..20 {
+            let _ = writeln!(orig, "line{i}");
+        }
         let mut modified = orig.clone();
         modified = modified.replace("line2\n", "MODIFIED2\n");
         modified = modified.replace("line15\n", "MODIFIED15\n");
@@ -831,8 +899,12 @@ mod tests {
 
     #[test]
     fn apply_patch_pure_fuzzy_hunk_matching() {
+        use std::fmt::Write;
         // Build an original with 20 lines.
-        let orig: String = (1..=20).map(|i| format!("line{i}\n")).collect();
+        let mut orig = String::new();
+        for i in 1..=20 {
+            let _ = writeln!(orig, "line{i}");
+        }
 
         // Construct a patch whose hunk header claims the context starts at line 5
         // (1-based), but the actual content we want to change is at line 7.

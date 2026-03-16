@@ -14,6 +14,33 @@ use crate::patch::{
     remove_patch, walkdir, write_dir_patch, write_patch,
 };
 
+/// Process a single file in a dir entry: generate a patch and write or remove it.
+/// Returns the filename if the file was pinned (patch is non-empty), or `None`.
+#[allow(clippy::too_many_arguments)]
+fn process_dir_file(
+    entry: &Entry,
+    cache_file: &std::path::Path,
+    inst_path: &std::path::Path,
+    filename: &str,
+    repo_root: &Path,
+    dry_run: bool,
+) -> Result<Option<String>, SkillfileError> {
+    let original_text = std::fs::read_to_string(cache_file)?;
+    let inst_text = std::fs::read_to_string(inst_path)?;
+    let patch_text = generate_patch(&original_text, &inst_text, filename);
+
+    if patch_text.is_empty() {
+        if !dry_run {
+            remove_dir_patch(entry, filename, repo_root)?;
+        }
+        return Ok(None);
+    }
+    if !dry_run {
+        write_dir_patch(entry, filename, &patch_text, repo_root)?;
+    }
+    Ok(Some(filename.to_string()))
+}
+
 fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<String, SkillfileError> {
     let vdir = vendor_dir_for(entry, repo_root);
     if !vdir.is_dir() {
@@ -47,24 +74,16 @@ fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<Strin
         if filename.is_empty() {
             continue;
         }
-        let inst_path = match installed.get(&filename) {
-            Some(p) => p,
-            None => continue,
+        let Some(inst_path) = installed.get(&filename) else {
+            continue;
         };
         if !inst_path.exists() {
             continue;
         }
-        let original_text = std::fs::read_to_string(&cache_file)?;
-        let inst_text = std::fs::read_to_string(inst_path)?;
-        let patch_text = generate_patch(&original_text, &inst_text, &filename);
-
-        if !patch_text.is_empty() {
-            if !dry_run {
-                write_dir_patch(entry, &filename, &patch_text, repo_root)?;
-            }
-            pinned.push(filename);
-        } else if !dry_run {
-            remove_dir_patch(entry, &filename, repo_root)?;
+        if let Some(f) =
+            process_dir_file(entry, &cache_file, inst_path, &filename, repo_root, dry_run)?
+        {
+            pinned.push(f);
         }
     }
 

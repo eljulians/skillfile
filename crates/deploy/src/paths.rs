@@ -9,6 +9,7 @@ use skillfile_sources::sync::vendor_dir_for;
 use crate::adapter::{adapters, PlatformAdapter};
 
 /// Resolve absolute deploy directory for (adapter, entity_type, scope).
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_target_dir(
     adapter_name: &str,
     entity_type: &str,
@@ -49,22 +50,19 @@ pub fn source_path(entry: &Entry, repo_root: &Path) -> Option<PathBuf> {
     match &entry.source {
         SourceFields::Local { path } => Some(repo_root.join(path)),
         SourceFields::Github { .. } | SourceFields::Url { .. } => {
-            let vdir = vendor_dir_for(entry, repo_root);
-            if is_dir_entry(entry) {
-                if vdir.exists() {
-                    Some(vdir)
-                } else {
-                    None
-                }
-            } else {
-                let filename = content_file(entry);
-                if filename.is_empty() {
-                    None
-                } else {
-                    Some(vdir.join(filename))
-                }
-            }
+            source_path_remote(entry, repo_root)
         }
+    }
+}
+
+/// Resolve cache path for a remote (GitHub/URL) entry.
+fn source_path_remote(entry: &Entry, repo_root: &Path) -> Option<PathBuf> {
+    let vdir = vendor_dir_for(entry, repo_root);
+    if is_dir_entry(entry) {
+        vdir.exists().then_some(vdir)
+    } else {
+        let filename = content_file(entry);
+        (!filename.is_empty()).then(|| vdir.join(filename))
     }
 }
 

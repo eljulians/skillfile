@@ -147,6 +147,11 @@ pub trait Registry: Send + Sync {
     fn name(&self) -> &str;
 
     /// Search this registry. Returns a unified [`SearchResponse`].
+    ///
+    /// # Note
+    /// The four parameters (`self`, `client`, `query`, `opts`) are all semantically
+    /// distinct and cannot be collapsed without a breaking trait change.
+    #[allow(clippy::too_many_arguments)]
     fn search(
         &self,
         client: &dyn HttpClient,
@@ -226,6 +231,11 @@ pub fn search_registry(
 }
 
 /// Search a single registry by name using an injected HTTP client (for testing).
+///
+/// # Note
+/// The four parameters are all semantically required; bundling them would
+/// complicate the public API at every call site.
+#[allow(clippy::too_many_arguments)]
 pub fn search_registry_with_client(
     client: &dyn HttpClient,
     registry_name: &str,
@@ -304,6 +314,14 @@ fn sort_by_popularity(items: &mut [SearchResult]) {
     });
 }
 
+/// Percent-encode a single character that requires escaping in a URL query component.
+fn percent_encode_char(c: char, out: &mut String) {
+    use std::fmt::Write;
+    for byte in c.to_string().as_bytes() {
+        let _ = write!(out, "%{byte:02X}");
+    }
+}
+
 /// Minimal URL encoding for query parameters.
 pub(crate) fn urlencoded(s: &str) -> String {
     let s = s.trim();
@@ -311,11 +329,7 @@ pub(crate) fn urlencoded(s: &str) -> String {
     for c in s.chars() {
         match c {
             ' ' => out.push('+'),
-            '&' | '=' | '?' | '#' | '+' | '%' => {
-                for byte in c.to_string().as_bytes() {
-                    out.push_str(&format!("%{byte:02X}"));
-                }
-            }
+            '&' | '=' | '?' | '#' | '+' | '%' => percent_encode_char(c, &mut out),
             _ => out.push(c),
         }
     }

@@ -38,9 +38,8 @@ fn try_resolve_sha(
     ref_: &str,
 ) -> Result<Option<String>, SkillfileError> {
     let url = format!("https://api.github.com/repos/{owner_repo}/commits/{ref_}");
-    let text = match client.get_json(&url)? {
-        Some(t) => t,
-        None => return Ok(None),
+    let Some(text) = client.get_json(&url)? else {
+        return Ok(None);
     };
     let data: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
         SkillfileError::Network(format!(
@@ -48,7 +47,7 @@ fn try_resolve_sha(
         ))
     })?;
 
-    Ok(data["sha"].as_str().map(|s| s.to_string()))
+    Ok(data["sha"].as_str().map(std::string::ToString::to_string))
 }
 
 /// Resolve a branch/tag/SHA ref to a full commit SHA via GitHub API.
@@ -88,6 +87,7 @@ pub fn resolve_github_sha(
 }
 
 /// Fetch raw file bytes from `raw.githubusercontent.com`.
+#[allow(clippy::too_many_arguments)] // client + three semantically-distinct coordinates; a struct would be artificial
 pub fn fetch_github_file(
     client: &dyn HttpClient,
     owner_repo: &str,
@@ -128,6 +128,30 @@ fn is_repo_meta_file(path: &str) -> bool {
 /// Convert raw `.md` file paths into deduplicated Skillfile entry paths.
 ///
 /// Follows the Skillfile convention:
+/// Map a root-level filename to its Skillfile entry path.
+///
+/// `SKILL.md` (case-insensitive) becomes `"."`, everything else stays as-is.
+fn root_entry_path(filename: &str) -> String {
+    if filename.eq_ignore_ascii_case("SKILL.md") {
+        ".".to_string()
+    } else {
+        filename.to_string()
+    }
+}
+
+/// Determine the entry path when a directory contains exactly one `.md` file.
+///
+/// If the file is named `SKILL.md` (case-insensitive), the directory itself
+/// is the entry. Otherwise the file path is the entry.
+fn single_file_dir_entry(dir: &str, file_path: &str) -> String {
+    let filename = file_path.rsplit('/').next().unwrap_or(file_path);
+    if filename.eq_ignore_ascii_case("SKILL.md") {
+        dir.to_string()
+    } else {
+        file_path.to_string()
+    }
+}
+
 /// - `SKILL.md` at repo root → `.`
 /// - `dir/SKILL.md` (or multiple `.md` files in a dir) → `dir` (directory entry)
 /// - `path/to/file.md` (only `.md` file in its dir) → `path/to/file.md` (single file)
@@ -150,24 +174,12 @@ fn collapse_to_entries(md_files: &[String]) -> Vec<String> {
     for (dir, files) in &dirs {
         if dir.is_empty() {
             // Root level: a root SKILL.md becomes "."; other files stay as-is.
-            for f in files {
-                if f.eq_ignore_ascii_case("SKILL.md") {
-                    entries.push(".".to_string());
-                } else {
-                    entries.push(f.to_string());
-                }
-            }
+            entries.extend(files.iter().map(|f| root_entry_path(f)));
         } else if files.len() > 1 {
             // Multiple .md files in one dir → directory entry.
             entries.push(dir.to_string());
         } else if files.len() == 1 {
-            // Check if the single file is a SKILL.md → treat as dir entry.
-            let filename = files[0].rsplit('/').next().unwrap_or(files[0]);
-            if filename.eq_ignore_ascii_case("SKILL.md") {
-                entries.push(dir.to_string());
-            } else {
-                entries.push(files[0].to_string());
-            }
+            entries.push(single_file_dir_entry(dir, files[0]));
         }
     }
     entries
@@ -228,6 +240,7 @@ pub struct DirEntry {
 }
 
 /// List all files under `base_path` using the Git Trees API.
+#[allow(clippy::too_many_arguments)] // client + three semantically-distinct coordinates; a struct would be artificial
 pub fn list_github_dir_recursive(
     client: &dyn HttpClient,
     owner_repo: &str,
@@ -272,7 +285,7 @@ pub fn list_github_dir_recursive(
 
 /// Attempt to decode bytes as UTF-8 text. Returns `Err(original_bytes)` for binary.
 pub fn decode_safe(raw: Vec<u8>) -> Result<String, Vec<u8>> {
-    String::from_utf8(raw).map_err(|e| e.into_bytes())
+    String::from_utf8(raw).map_err(std::string::FromUtf8Error::into_bytes)
 }
 
 /// File content: either decoded text or raw binary bytes.
@@ -298,6 +311,19 @@ impl FileContent {
     }
 }
 
+/// Download a single file and return `(relative_path, content)`.
+///
+/// Extracted to reduce nesting inside the `thread::scope` closure in
+/// [`fetch_files_parallel`].
+fn download_one(
+    client: &dyn HttpClient,
+    url: &str,
+    rel: &str,
+) -> Result<(String, FileContent), SkillfileError> {
+    let bytes = http_get(client, url)?;
+    Ok((rel.to_string(), FileContent::from_bytes(bytes)))
+}
+
 /// Fetch multiple files in parallel using threads.
 pub fn fetch_files_parallel(
     client: &dyn HttpClient,
@@ -319,12 +345,7 @@ pub fn fetch_files_parallel(
         let handles: Vec<_> = files
             .iter()
             .map(|entry| {
-                let url = entry.download_url.clone();
-                let rel = entry.relative_path.clone();
-                s.spawn(move || {
-                    let bytes = http_get(client, &url)?;
-                    Ok((rel, FileContent::from_bytes(bytes)))
-                })
+                s.spawn(|| download_one(client, &entry.download_url, &entry.relative_path))
             })
             .collect();
         handles
@@ -1016,17 +1037,32 @@ mod tests {
     }
 
     #[test]
-    fn is_repo_meta_file_all_meta_files() {
+    fn is_repo_meta_file_changelog() {
         assert!(is_repo_meta_file("CHANGELOG.md"));
-        assert!(is_repo_meta_file("LICENSE.md"));
-        assert!(is_repo_meta_file("CONTRIBUTING.md"));
-        assert!(is_repo_meta_file("CODE_OF_CONDUCT.md"));
-        assert!(is_repo_meta_file("SECURITY.md"));
-        // Mixed case
         assert!(is_repo_meta_file("changelog.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_license() {
+        assert!(is_repo_meta_file("LICENSE.md"));
         assert!(is_repo_meta_file("License.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_contributing() {
+        assert!(is_repo_meta_file("CONTRIBUTING.md"));
         assert!(is_repo_meta_file("Contributing.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_code_of_conduct() {
+        assert!(is_repo_meta_file("CODE_OF_CONDUCT.md"));
         assert!(is_repo_meta_file("Code_Of_Conduct.md"));
+    }
+
+    #[test]
+    fn is_repo_meta_file_security() {
+        assert!(is_repo_meta_file("SECURITY.md"));
         assert!(is_repo_meta_file("security.md"));
     }
 
@@ -1081,7 +1117,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn strs(s: &[&str]) -> Vec<String> {
-        s.iter().map(|x| x.to_string()).collect()
+        s.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

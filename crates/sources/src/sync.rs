@@ -33,15 +33,25 @@ pub fn vendor_dir_for(entry: &Entry, repo_root: &Path) -> PathBuf {
         .join(&entry.name)
 }
 
+/// Return `true` if `vdir` is a directory with at least one non-`.meta` file.
+fn dir_has_content(vdir: &Path) -> bool {
+    if !vdir.is_dir() {
+        return false;
+    }
+    std::fs::read_dir(vdir)
+        .map(|rd| {
+            rd.filter_map(std::result::Result::ok)
+                .any(|e| e.file_name() != ".meta")
+        })
+        .unwrap_or(false)
+}
+
 /// Check if content exists in the vendor directory for an entry.
 fn content_exists(entry: &Entry, vdir: &Path) -> bool {
     match &entry.source {
         SourceFields::Github { .. } => {
             if is_dir_entry(entry) {
-                vdir.is_dir()
-                    && std::fs::read_dir(vdir)
-                        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.file_name() != ".meta"))
-                        .unwrap_or(false)
+                dir_has_content(vdir)
             } else {
                 let cf = content_file(entry);
                 !cf.is_empty() && vdir.join(&cf).exists()
@@ -55,7 +65,22 @@ fn content_exists(entry: &Entry, vdir: &Path) -> bool {
     }
 }
 
+/// Cache the SHA for a GitHub entry after a successful sync result.
+fn cache_github_sha(ctx: &mut SyncContext, entry: &Entry, sha: &str) {
+    let SourceFields::Github {
+        owner_repo, ref_, ..
+    } = &entry.source
+    else {
+        return;
+    };
+    let cache_key = (owner_repo.clone(), ref_.clone());
+    ctx.sha_cache
+        .entry(cache_key)
+        .or_insert_with(|| sha.to_owned());
+}
+
 /// Sync a single entry. Returns updated lock map.
+#[allow(clippy::too_many_arguments)]
 pub fn sync_entry(
     client: &dyn HttpClient,
     entry: &Entry,
@@ -67,8 +92,27 @@ pub fn sync_entry(
             progress!("  {entry}: local — skipping");
             Ok(())
         }
-        SourceFields::Github { .. } => sync_github(client, entry, ctx, locked),
-        SourceFields::Url { url } => sync_url(client, entry, url, ctx, locked),
+        SourceFields::Github { .. } => {
+            let params = SyncParams {
+                repo_root: &ctx.repo_root,
+                dry_run: ctx.dry_run,
+                update: ctx.update,
+                sha_cache: &ctx.sha_cache,
+                locked,
+            };
+            if let Some((key, le)) = sync_github_core(client, entry, &params)? {
+                cache_github_sha(ctx, entry, &le.sha);
+                locked.insert(key, le);
+            }
+            Ok(())
+        }
+        SourceFields::Url { url } => sync_url_core(&UrlSyncOp {
+            client,
+            entry,
+            url,
+            repo_root: &ctx.repo_root,
+            dry_run: ctx.dry_run,
+        }),
     }
 }
 
@@ -81,74 +125,236 @@ struct SyncParams<'a> {
     locked: &'a BTreeMap<String, LockEntry>,
 }
 
-/// Resolved coordinates for a GitHub entry, passed to `fetch_and_write_github`.
+/// Resolved coordinates for a GitHub entry.
 struct GithubRef<'a> {
     owner_repo: &'a str,
     path_in_repo: &'a str,
     sha: &'a str,
 }
 
-/// Fetch and write the content for a GitHub entry into `vdir`.
+/// Bundles the `HttpClient` reference with the GitHub coordinates for a write operation.
 ///
-/// Handles both directory entries (via Tree API) and single-file entries.
+/// This lets `write_github_dir` and `write_github_file` stay within the 3-argument limit
+/// while still receiving client, coordinates, and destination.
+struct FetchOp<'a> {
+    client: &'a dyn HttpClient,
+    gh: &'a GithubRef<'a>,
+    vdir: &'a Path,
+    label: &'a str,
+}
+
+/// Fetch and write a GitHub directory entry. Returns the lock `raw_url`.
+fn write_github_dir(op: &FetchOp<'_>) -> Result<String, SkillfileError> {
+    let FetchOp {
+        client,
+        gh: GithubRef {
+            owner_repo,
+            path_in_repo,
+            sha,
+        },
+        vdir,
+        label,
+    } = op;
+    let dir_entries = list_github_dir_recursive(*client, owner_repo, path_in_repo, sha)?;
+    let fetched = fetch_files_parallel(*client, &dir_entries)?;
+    for (relative_path, content) in &fetched {
+        let dest = vdir.join(relative_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest, content.as_bytes())?;
+    }
+    progress!(
+        "{label}: sha={} -> {}/ ({} files)",
+        short_sha(sha),
+        vdir.display(),
+        fetched.len()
+    );
+    Ok(format!(
+        "https://api.github.com/repos/{owner_repo}/contents/{path_in_repo}?ref={sha}"
+    ))
+}
+
+/// Fetch and write a single GitHub file entry. Returns the lock `raw_url`.
+fn write_github_file(op: &FetchOp<'_>) -> Result<String, SkillfileError> {
+    let FetchOp {
+        client,
+        gh: GithubRef {
+            owner_repo,
+            path_in_repo,
+            sha,
+        },
+        vdir,
+        label,
+    } = op;
+    let content = fetch_github_file(*client, owner_repo, path_in_repo, sha)?;
+    let effective_path = if *path_in_repo == "." {
+        "SKILL.md"
+    } else {
+        path_in_repo
+    };
+    let filename = std::path::Path::new(effective_path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("content.md");
+    let dest = vdir.join(filename);
+    std::fs::write(&dest, &content)?;
+    progress!("{label}: sha={} -> {}", short_sha(sha), dest.display());
+    Ok(format!(
+        "https://raw.githubusercontent.com/{owner_repo}/{sha}/{effective_path}"
+    ))
+}
+
+/// Fetch and write the content for a GitHub entry into `op.vdir`.
+///
+/// Dispatches to `write_github_dir` or `write_github_file` based on `is_dir`.
 /// Returns the canonical `raw_url` to store in the lock file.
-fn fetch_and_write_github(
-    client: &dyn HttpClient,
-    gh: &GithubRef<'_>,
-    is_dir: bool,
-    vdir: &Path,
-    label: &str,
-) -> Result<String, SkillfileError> {
-    let GithubRef {
+fn fetch_and_write_github(op: &FetchOp<'_>, is_dir: bool) -> Result<String, SkillfileError> {
+    std::fs::create_dir_all(op.vdir)?;
+    if is_dir {
+        write_github_dir(op)
+    } else {
+        write_github_file(op)
+    }
+}
+
+/// All fields needed to write the `.meta` file for a GitHub entry.
+struct GithubMeta<'a> {
+    vdir: &'a Path,
+    owner_repo: &'a str,
+    path_in_repo: &'a str,
+    ref_: &'a str,
+    sha: &'a str,
+    raw_url: &'a str,
+}
+
+/// Write the `.meta` JSON file for a GitHub entry.
+fn write_github_meta(m: &GithubMeta<'_>) -> Result<(), SkillfileError> {
+    let GithubMeta {
+        vdir,
         owner_repo,
         path_in_repo,
+        ref_,
         sha,
-    } = gh;
-    std::fs::create_dir_all(vdir)?;
+        raw_url,
+    } = m;
+    let meta_data = serde_json::json!({
+        "source_type": "github",
+        "owner_repo": owner_repo,
+        "path_in_repo": path_in_repo,
+        "ref": ref_,
+        "sha": sha,
+        "raw_url": raw_url,
+    });
+    std::fs::write(
+        vdir.join(".meta"),
+        serde_json::to_string_pretty(&meta_data).expect("json! values are always serializable")
+            + "\n",
+    )?;
+    Ok(())
+}
 
-    if is_dir {
-        let dir_entries = list_github_dir_recursive(client, owner_repo, path_in_repo, sha)?;
-        let fetched = fetch_files_parallel(client, &dir_entries)?;
-        for (relative_path, content) in &fetched {
-            let dest = vdir.join(relative_path);
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&dest, content.as_bytes())?;
-        }
+/// Input for `resolve_sha_for_entry`: coordinates + label + previously-locked SHA.
+struct ShaLookup<'a> {
+    owner_repo: &'a str,
+    ref_: &'a str,
+    label: &'a str,
+    locked_sha: Option<&'a str>,
+}
+
+/// Resolve the SHA for a GitHub entry, returning `None` in dry-run mode.
+///
+/// Uses locked SHA if available (not in `--update` mode), otherwise looks
+/// up the sha_cache, or resolves via the GitHub API.
+fn resolve_sha_for_entry(
+    client: &dyn HttpClient,
+    q: &ShaLookup<'_>,
+    params: &SyncParams<'_>,
+) -> Result<Option<String>, SkillfileError> {
+    if let Some(ls) = q.locked_sha {
         progress!(
-            "{label}: sha={} -> {}/ ({} files)",
-            short_sha(sha),
-            vdir.display(),
-            fetched.len()
+            "{}: re-fetching (locked sha={}) ...",
+            q.label,
+            short_sha(ls)
         );
-        Ok(format!(
-            "https://api.github.com/repos/{owner_repo}/contents/{path_in_repo}?ref={sha}"
-        ))
-    } else {
-        let content = fetch_github_file(client, owner_repo, path_in_repo, sha)?;
-        let effective_path = if *path_in_repo == "." {
-            "SKILL.md"
-        } else {
-            path_in_repo
-        };
-        let filename = std::path::Path::new(effective_path)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or("content.md");
-        let dest = vdir.join(filename);
-        std::fs::write(&dest, &content)?;
-        progress!("{label}: sha={} -> {}", short_sha(sha), dest.display());
-        Ok(format!(
-            "https://raw.githubusercontent.com/{owner_repo}/{sha}/{effective_path}"
-        ))
+        return Ok(Some(ls.to_owned()));
     }
+
+    let cache_key = (q.owner_repo.to_owned(), q.ref_.to_owned());
+    if let Some(cached) = params.sha_cache.get(&cache_key) {
+        return Ok(Some(cached.clone()));
+    }
+
+    if params.dry_run {
+        progress!(
+            "{}: resolving {}@{} ... [dry-run]",
+            q.label,
+            q.owner_repo,
+            q.ref_
+        );
+        return Ok(None);
+    }
+
+    // Fallback: resolve inline (single-entry mode or missed cache)
+    let sha = resolve_github_sha(client, q.owner_repo, q.ref_)?;
+    Ok(Some(sha))
 }
 
 /// Core sync logic for a github entry. Parallel-safe: all inputs are read-only,
 /// result is returned rather than inserted into a mutable map.
 ///
-/// `sha_cache` maps `(owner_repo, ref_)` → resolved SHA. Pre-populated by
+/// Parameters for `fetch_store_github`.
+struct StoreOp<'a> {
+    client: &'a dyn HttpClient,
+    entry: &'a Entry,
+    vdir: &'a Path,
+    label: &'a str,
+    sha: &'a str,
+}
+
+/// Fetch content, write it to disk, and record `.meta`. Returns the lock `raw_url`.
+///
+/// Used by `sync_github_core` after SHA resolution.
+fn fetch_store_github(op: &StoreOp<'_>) -> Result<String, SkillfileError> {
+    let StoreOp {
+        client,
+        entry,
+        vdir,
+        label,
+        sha,
+    } = op;
+    let SourceFields::Github {
+        owner_repo,
+        path_in_repo,
+        ref_,
+    } = &entry.source
+    else {
+        unreachable!()
+    };
+    let gh = GithubRef {
+        owner_repo,
+        path_in_repo,
+        sha,
+    };
+    let fetch_op = FetchOp {
+        client: *client,
+        gh: &gh,
+        vdir,
+        label,
+    };
+    let raw_url = fetch_and_write_github(&fetch_op, is_dir_entry(entry))?;
+    write_github_meta(&GithubMeta {
+        vdir,
+        owner_repo,
+        path_in_repo,
+        ref_,
+        sha,
+        raw_url: &raw_url,
+    })?;
+    Ok(raw_url)
+}
+
+/// `sha_cache` maps `(owner_repo, ref_)` -> resolved SHA. Pre-populated by
 /// `resolve_shas_parallel` so no mutation is needed here.
 fn sync_github_core(
     client: &dyn HttpClient,
@@ -160,9 +366,7 @@ fn sync_github_core(
     let key = lock_key(entry);
 
     let SourceFields::Github {
-        owner_repo,
-        path_in_repo,
-        ref_,
+        owner_repo, ref_, ..
     } = &entry.source
     else {
         unreachable!()
@@ -183,27 +387,15 @@ fn sync_github_core(
         }
     }
 
-    // Resolve SHA
-    let sha = if let Some(ref ls) = locked_sha {
-        progress!("{label}: re-fetching (locked sha={}) ...", short_sha(ls));
-        ls.clone()
-    } else {
-        let cache_key = (owner_repo.to_string(), ref_.to_string());
-        if let Some(cached) = params.sha_cache.get(&cache_key) {
-            cached.clone()
-        } else if params.dry_run {
-            progress!("{label}: resolving {owner_repo}@{ref_} ... [dry-run]");
-            return Ok(None);
-        } else {
-            // Fallback: resolve inline (single-entry mode or missed cache)
-            resolve_github_sha(client, owner_repo, ref_)?
-        }
+    let q = ShaLookup {
+        owner_repo,
+        ref_,
+        label: &label,
+        locked_sha: locked_sha.as_deref(),
     };
-
-    if params.dry_run {
-        progress!("{label}: sha={} [dry-run]", short_sha(&sha));
-        return Ok(None);
-    }
+    let Some(sha) = resolve_sha_for_entry(client, &q, params)? else {
+        return Ok(None); // dry-run
+    };
 
     // After resolving SHA on --update, skip download if cache is current
     if params.update && meta.as_deref() == Some(sha.as_str()) && has_content {
@@ -216,81 +408,43 @@ fn sync_github_core(
         return Ok(Some((key, LockEntry { sha, raw_url })));
     }
 
-    // Fetch and write
-    let gh = GithubRef {
-        owner_repo,
-        path_in_repo,
+    let raw_url = fetch_store_github(&StoreOp {
+        client,
+        entry,
+        vdir: &vdir,
+        label: &label,
         sha: &sha,
-    };
-    let raw_url = fetch_and_write_github(client, &gh, is_dir_entry(entry), &vdir, &label)?;
-
-    // Write .meta
-    let meta_data = serde_json::json!({
-        "source_type": "github",
-        "owner_repo": owner_repo,
-        "path_in_repo": path_in_repo,
-        "ref": ref_,
-        "sha": &sha,
-        "raw_url": &raw_url,
-    });
-    std::fs::write(
-        vdir.join(".meta"),
-        serde_json::to_string_pretty(&meta_data).expect("json! values are always serializable")
-            + "\n",
-    )?;
-
+    })?;
     Ok(Some((key, LockEntry { sha, raw_url })))
 }
 
-/// Thin wrapper around `sync_github_core` for backward-compatible sequential use.
-fn sync_github(
-    client: &dyn HttpClient,
-    entry: &Entry,
-    ctx: &mut SyncContext,
-    locked: &mut BTreeMap<String, LockEntry>,
-) -> Result<(), SkillfileError> {
-    let params = SyncParams {
-        repo_root: &ctx.repo_root,
-        dry_run: ctx.dry_run,
-        update: ctx.update,
-        sha_cache: &ctx.sha_cache,
-        locked,
-    };
-    let result = sync_github_core(client, entry, &params)?;
-    // Update mutable state from the result
-    if let Some((key, le)) = result {
-        // If the SHA was freshly resolved (not from cache), insert into sha_cache
-        if let SourceFields::Github {
-            owner_repo, ref_, ..
-        } = &entry.source
-        {
-            let cache_key = (owner_repo.clone(), ref_.clone());
-            ctx.sha_cache
-                .entry(cache_key)
-                .or_insert_with(|| le.sha.clone());
-        }
-        locked.insert(key, le);
-    }
-    Ok(())
+/// Parameters for a URL sync operation.
+struct UrlSyncOp<'a> {
+    client: &'a dyn HttpClient,
+    entry: &'a Entry,
+    url: &'a str,
+    repo_root: &'a Path,
+    dry_run: bool,
 }
 
 /// Core sync logic for a URL entry. Parallel-safe.
-fn sync_url_core(
-    client: &dyn HttpClient,
-    entry: &Entry,
-    url: &str,
-    repo_root: &Path,
-    dry_run: bool,
-) -> Result<(), SkillfileError> {
+fn sync_url_core(op: &UrlSyncOp<'_>) -> Result<(), SkillfileError> {
+    let UrlSyncOp {
+        client,
+        entry,
+        url,
+        repo_root,
+        dry_run,
+    } = op;
     let label = format!("  {entry}");
     let vdir = vendor_dir_for(entry, repo_root);
 
-    if dry_run {
+    if *dry_run {
         progress!("{label}: fetching {url} ... [dry-run]");
         return Ok(());
     }
 
-    let content = http_get(client, url)?;
+    let content = http_get(*client, url)?;
     let filename = std::path::Path::new(url)
         .file_name()
         .and_then(|f| f.to_str())
@@ -314,17 +468,6 @@ fn sync_url_core(
     Ok(())
 }
 
-/// Thin wrapper for backward-compatible sequential use.
-fn sync_url(
-    client: &dyn HttpClient,
-    entry: &Entry,
-    url: &str,
-    ctx: &SyncContext,
-    _locked: &mut BTreeMap<String, LockEntry>,
-) -> Result<(), SkillfileError> {
-    sync_url_core(client, entry, url, &ctx.repo_root, ctx.dry_run)
-}
-
 /// Dispatch a single entry sync using parallel-safe core functions.
 /// Returns `Ok(Some((key, lock_entry)))` for entries that update the lock file.
 fn sync_entry_core(
@@ -339,34 +482,91 @@ fn sync_entry_core(
         }
         SourceFields::Github { .. } => sync_github_core(client, entry, params),
         SourceFields::Url { url } => {
-            sync_url_core(client, entry, url, params.repo_root, params.dry_run)?;
+            sync_url_core(&UrlSyncOp {
+                client,
+                entry,
+                url,
+                repo_root: params.repo_root,
+                dry_run: params.dry_run,
+            })?;
             Ok(None)
         }
     }
 }
 
-/// Return `true` if any entry using `(owner_repo, ref_)` lacks a locked SHA.
+/// A `(owner_repo, ref_)` pair for SHA resolution checks.
+struct RepoRef<'a> {
+    owner_repo: &'a str,
+    ref_: &'a str,
+}
+
+/// Return `true` if the entry matches `rr` and lacks a locked SHA.
+fn entry_needs_resolution(
+    e: &Entry,
+    rr: &RepoRef<'_>,
+    locked: &BTreeMap<String, LockEntry>,
+) -> bool {
+    let SourceFields::Github {
+        owner_repo: or,
+        ref_: r,
+        ..
+    } = &e.source
+    else {
+        return false;
+    };
+    or == rr.owner_repo && r == rr.ref_ && locked.get(&lock_key(e)).is_none()
+}
+
+/// Return `true` if any entry matching `rr` lacks a locked SHA.
 ///
-/// Used by `resolve_shas_parallel` to decide whether resolution is needed
+/// Used by `collect_pairs_to_resolve` to decide whether resolution is needed
 /// in non-update mode.
 fn needs_sha_resolution(
     entries: &[&Entry],
-    owner_repo: &str,
-    ref_: &str,
+    rr: &RepoRef<'_>,
     locked: &BTreeMap<String, LockEntry>,
 ) -> bool {
-    entries.iter().any(|e| {
-        if let SourceFields::Github {
-            owner_repo: or,
-            ref_: r,
-            ..
-        } = &e.source
-        {
-            or == owner_repo && r == ref_ && locked.get(&lock_key(e)).is_none()
-        } else {
-            false
+    entries
+        .iter()
+        .any(|e| entry_needs_resolution(e, rr, locked))
+}
+
+/// Collect unique `(owner_repo, ref_)` pairs that need SHA resolution.
+fn collect_pairs_to_resolve(
+    entries: &[&Entry],
+    locked: &BTreeMap<String, LockEntry>,
+    update: bool,
+) -> Vec<(String, String)> {
+    let mut need_resolve: Vec<(String, String)> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for entry in entries {
+        let SourceFields::Github {
+            owner_repo, ref_, ..
+        } = &entry.source
+        else {
+            continue;
+        };
+        let key_pair = (owner_repo.clone(), ref_.clone());
+        if !seen.insert(key_pair.clone()) {
+            continue;
         }
-    })
+        // In update mode, always re-resolve. Otherwise, skip if all entries
+        // with this repo+ref already have locked SHAs.
+        let rr = RepoRef { owner_repo, ref_ };
+        if update || needs_sha_resolution(entries, &rr, locked) {
+            need_resolve.push(key_pair);
+        }
+    }
+
+    need_resolve
+}
+
+/// Context for parallel SHA resolution: entries, locked map, and update flag.
+struct ResolveCtx<'a> {
+    entries: &'a [&'a Entry],
+    locked: &'a BTreeMap<String, LockEntry>,
+    update: bool,
 }
 
 /// Resolve all unique `(owner_repo, ref_)` SHAs in parallel.
@@ -375,29 +575,9 @@ fn needs_sha_resolution(
 /// In normal mode, only entries without a locked SHA need resolution.
 fn resolve_shas_parallel(
     client: &dyn HttpClient,
-    entries: &[&Entry],
-    locked: &BTreeMap<String, LockEntry>,
-    update: bool,
+    ctx: &ResolveCtx<'_>,
 ) -> Result<HashMap<(String, String), String>, SkillfileError> {
-    // Collect unique (owner_repo, ref_) pairs that need resolution
-    let mut need_resolve: Vec<(String, String)> = Vec::new();
-    let mut seen = HashSet::new();
-
-    for entry in entries {
-        if let SourceFields::Github {
-            owner_repo, ref_, ..
-        } = &entry.source
-        {
-            let key_pair = (owner_repo.clone(), ref_.clone());
-            if seen.insert(key_pair.clone()) {
-                // In update mode, always re-resolve. Otherwise, skip if all entries
-                // with this repo+ref already have locked SHAs.
-                if update || needs_sha_resolution(entries, owner_repo, ref_, locked) {
-                    need_resolve.push(key_pair);
-                }
-            }
-        }
-    }
+    let need_resolve = collect_pairs_to_resolve(ctx.entries, ctx.locked, ctx.update);
 
     if need_resolve.is_empty() {
         return Ok(HashMap::new());
@@ -424,7 +604,18 @@ fn resolve_shas_parallel(
     Ok(cache)
 }
 
+/// Bundles state for the parallel and sequential sync execution paths.
+struct SyncJob<'a> {
+    client: &'a UreqClient,
+    repo_root: &'a Path,
+    entries: &'a [&'a Entry],
+    dry_run: bool,
+    update: bool,
+    locked: BTreeMap<String, LockEntry>,
+}
+
 /// Run the `sync` command.
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_sync(
     repo_root: &Path,
     dry_run: bool,
@@ -460,35 +651,75 @@ pub fn cmd_sync(
         return Ok(());
     }
 
-    let mode = if dry_run { " [dry-run]" } else { "" };
     let count = entries.len();
     let noun = if count == 1 { "entry" } else { "entries" };
+    let mode = if dry_run { " [dry-run]" } else { "" };
     progress!("Syncing {count} {noun}{mode}...");
 
     let locked = read_lock(repo_root)?;
     let client = UreqClient::new();
 
+    let job = SyncJob {
+        client: &client,
+        repo_root,
+        entries: &entries,
+        dry_run,
+        update,
+        locked,
+    };
+
     // For single-entry filter, dry-run, or trivial manifests, use sequential path
     if entry_filter.is_some() || dry_run || entries.len() <= 1 {
-        let mut locked = locked;
-        let mut ctx = SyncContext {
-            repo_root: repo_root.to_path_buf(),
-            dry_run,
-            update,
-            sha_cache: HashMap::new(),
-        };
-        for entry in &entries {
-            sync_entry(&client, entry, &mut ctx, &mut locked)?;
-        }
-        if !dry_run {
-            write_lock(repo_root, &locked)?;
-            progress!("Done.");
-        }
-        return Ok(());
+        return run_sequential_sync(job);
     }
 
+    run_parallel_sync(job)
+}
+
+/// Execute sync sequentially (used for single-entry, dry-run, or small manifests).
+fn run_sequential_sync(job: SyncJob<'_>) -> Result<(), SkillfileError> {
+    let SyncJob {
+        client,
+        repo_root,
+        entries,
+        dry_run,
+        update,
+        mut locked,
+    } = job;
+    let mut ctx = SyncContext {
+        repo_root: repo_root.to_path_buf(),
+        dry_run,
+        update,
+        sha_cache: HashMap::new(),
+    };
+    for entry in entries {
+        sync_entry(client, entry, &mut ctx, &mut locked)?;
+    }
+    if !dry_run {
+        write_lock(repo_root, &locked)?;
+        progress!("Done.");
+    }
+    Ok(())
+}
+
+/// Execute sync in parallel using two-phase SHA resolution then fetch.
+fn run_parallel_sync(job: SyncJob<'_>) -> Result<(), SkillfileError> {
+    let SyncJob {
+        client,
+        repo_root,
+        entries,
+        dry_run,
+        update,
+        mut locked,
+    } = job;
+
     // Phase 1: Resolve all SHAs in parallel
-    let sha_cache = resolve_shas_parallel(&client, &entries, &locked, update)?;
+    let resolve_ctx = ResolveCtx {
+        entries,
+        locked: &locked,
+        update,
+    };
+    let sha_cache = resolve_shas_parallel(client, &resolve_ctx)?;
 
     // Phase 2: Sync all entries in parallel
     let params = SyncParams {
@@ -502,7 +733,7 @@ pub fn cmd_sync(
         std::thread::scope(|s| {
             let handles: Vec<_> = entries
                 .iter()
-                .map(|entry| s.spawn(|| sync_entry_core(&client, entry, &params)))
+                .map(|entry| s.spawn(|| sync_entry_core(client, entry, &params)))
                 .collect();
             handles
                 .into_iter()
@@ -511,7 +742,6 @@ pub fn cmd_sync(
         });
 
     // Merge results into locked map
-    let mut locked = locked;
     for result in results {
         if let Some((key, le)) = result? {
             locked.insert(key, le);
@@ -791,7 +1021,7 @@ mod tests {
     #[test]
     fn content_exists_github_dir_entry_with_files() {
         let dir = tempfile::tempdir().unwrap();
-        // "skills/python-pro" has no ".md" suffix → dir entry
+        // "skills/python-pro" has no ".md" suffix -> dir entry
         let entry = skill_entry("python-pro", "skills/python-pro");
         let vdir = dir.path().join("vdir");
         std::fs::create_dir_all(&vdir).unwrap();
@@ -807,7 +1037,7 @@ mod tests {
         let entry = skill_entry("python-pro", "skills/python-pro");
         let vdir = dir.path().join("vdir");
         std::fs::create_dir_all(&vdir).unwrap();
-        // Only .meta — should be treated as empty
+        // Only .meta -- should be treated as empty
         std::fs::write(vdir.join(".meta"), b"{}").unwrap();
         assert!(!content_exists(&entry, &vdir));
     }
@@ -852,7 +1082,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // sync_entry — local entry is skipped
+    // sync_entry -- local entry is skipped
     // -----------------------------------------------------------------------
 
     #[test]
@@ -870,7 +1100,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // sync_entry — github single-file entry, dry_run
+    // sync_entry -- github single-file entry, dry_run
     // -----------------------------------------------------------------------
 
     #[test]
@@ -891,7 +1121,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // sync_entry — github single-file entry, up-to-date (locked SHA matches meta)
+    // sync_entry -- github single-file entry, up-to-date (locked SHA matches meta)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -941,7 +1171,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // sync_entry — github single-file entry, SHA resolved via mock
+    // sync_entry -- github single-file entry, SHA resolved via mock
     // -----------------------------------------------------------------------
 
     #[test]
@@ -985,7 +1215,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // sync_entry — github, SHA cached across entries
+    // sync_entry -- github, SHA cached across entries
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1002,7 +1232,7 @@ mod tests {
         let raw_url1 = format!("https://raw.githubusercontent.com/owner/repo/{sha}/skills/one.md");
         let raw_url2 = format!("https://raw.githubusercontent.com/owner/repo/{sha}/skills/two.md");
 
-        // SHA resolution URL appears only once in the mock — the second call must
+        // SHA resolution URL appears only once in the mock -- the second call must
         // use the cache, otherwise MockClient would error on the second get_json.
         let client = MockClient::new()
             .with_json(sha_url, Some(sha_json))
@@ -1026,7 +1256,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // sync_entry — github dot-path (SKILL.md convention)
+    // sync_entry -- github dot-path (SKILL.md convention)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1112,7 +1342,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // cmd_sync — local-only manifest (no network)
+    // cmd_sync -- local-only manifest (no network)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1171,7 +1401,7 @@ mod tests {
         )
         .unwrap();
 
-        // Filter to only 'alpha' — must succeed
+        // Filter to only 'alpha' -- must succeed
         let result = super::cmd_sync(dir.path(), false, Some("alpha"), false);
         assert!(result.is_ok(), "cmd_sync with filter failed: {result:?}");
     }
@@ -1295,7 +1525,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Build the JSON that `list_github_dir_recursive` expects from the Git Trees API.
-    fn make_tree_json(owner_repo: &str, _sha: &str, base: &str, files: &[&str]) -> String {
+    fn make_tree_json(owner_repo: &str, base: &str, files: &[&str]) -> String {
         let prefix = format!("{base}/");
         let tree: Vec<serde_json::Value> = files
             .iter()
@@ -1319,7 +1549,6 @@ mod tests {
             format!("https://api.github.com/repos/owner/repo/git/trees/{sha}?recursive=1");
         let tree_json = make_tree_json(
             "owner/repo",
-            sha,
             "skills/python-pro",
             &["python.md", "advanced.md"],
         );
@@ -1372,12 +1601,7 @@ mod tests {
 
         let tree_url =
             format!("https://api.github.com/repos/owner/repo/git/trees/{sha}?recursive=1");
-        let tree_json = make_tree_json(
-            "owner/repo",
-            sha,
-            "skills/mixed-dir",
-            &["text.md", "image.png"],
-        );
+        let tree_json = make_tree_json("owner/repo", "skills/mixed-dir", &["text.md", "image.png"]);
 
         let raw_url_txt =
             format!("https://raw.githubusercontent.com/owner/repo/{sha}/skills/mixed-dir/text.md");

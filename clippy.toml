@@ -1,10 +1,10 @@
 # Complexity and quality thresholds for clippy lints.
 # See: https://doc.rust-lang.org/clippy/lint_configuration.html
 
-cognitive-complexity-threshold = 15
-too-many-lines-threshold = 80
-too-many-arguments-threshold = 6
+cognitive-complexity-threshold = 10
+too-many-lines-threshold = 60
+too-many-arguments-threshold = 3
 type-complexity-threshold = 250
-excessive-nesting-threshold = 5
+excessive-nesting-threshold = 3
 single-char-binding-names-threshold = 4
-max-fn-params-bools = 3
+max-fn-params-bools = 2

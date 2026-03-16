@@ -10,87 +10,93 @@ use skillfile_deploy::paths::{installed_dir_files, installed_path};
 use skillfile_sources::strategy::{content_file, is_dir_entry, meta_sha};
 use skillfile_sources::sync::vendor_dir_for;
 
+fn is_cache_file_modified(
+    cache_file: &std::path::PathBuf,
+    vdir: &std::path::PathBuf,
+    installed: &HashMap<String, std::path::PathBuf>,
+) -> Result<bool, ()> {
+    let filename = cache_file
+        .strip_prefix(vdir)
+        .map_err(|_| ())?
+        .to_string_lossy()
+        .to_string();
+    let inst_path = match installed.get(&filename) {
+        Some(p) if p.exists() => p,
+        _ => return Ok(false),
+    };
+    let cache_text = std::fs::read_to_string(cache_file).map_err(|_| ())?;
+    let installed_text = std::fs::read_to_string(inst_path).map_err(|_| ())?;
+    Ok(installed_text != cache_text)
+}
+
+fn check_dir_files_modified(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<bool, ()> {
+    let installed = installed_dir_files(entry, manifest, repo_root).map_err(|_| ())?;
+    if installed.is_empty() {
+        return Ok(false);
+    }
+    // If pinned, the installed files are expected to differ from cache
+    if has_dir_patch(entry, repo_root) {
+        return Ok(false);
+    }
+    let vdir = vendor_dir_for(entry, repo_root);
+    if !vdir.is_dir() {
+        return Ok(false);
+    }
+    for cache_file in walkdir(&vdir) {
+        if cache_file.file_name().is_none_or(|n| n == ".meta") {
+            continue;
+        }
+        if is_cache_file_modified(&cache_file, &vdir, &installed)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn is_dir_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -> bool {
+    check_dir_files_modified(entry, manifest, repo_root).unwrap_or(false)
+}
+
+fn check_single_file_modified(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<bool, ()> {
+    let dest = installed_path(entry, manifest, repo_root).map_err(|_| ())?;
+    if !dest.exists() {
+        return Ok(false);
+    }
+    let vdir = vendor_dir_for(entry, repo_root);
+    let cf = content_file(entry);
+    if cf.is_empty() {
+        return Ok(false);
+    }
+    let cache_file = vdir.join(&cf);
+    if !cache_file.exists() {
+        return Ok(false);
+    }
+    // If pinned, the installed file is expected to differ from cache
+    if has_patch(entry, repo_root) {
+        return Ok(false);
+    }
+    let cache_text = std::fs::read_to_string(&cache_file).map_err(|_| ())?;
+    let installed_text = std::fs::read_to_string(&dest).map_err(|_| ())?;
+    Ok(installed_text != cache_text)
+}
+
 /// Check if an installed file differs from cache (local only, no network).
 fn is_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -> bool {
     if matches!(entry.source, SourceFields::Local { .. }) {
         return false;
     }
-
-    let result: Result<bool, ()> = (|| {
-        if is_dir_entry(entry) {
-            return Ok(is_dir_modified_local(entry, manifest, repo_root));
-        }
-
-        let dest = installed_path(entry, manifest, repo_root).map_err(|_| ())?;
-        if !dest.exists() {
-            return Ok(false);
-        }
-
-        let vdir = vendor_dir_for(entry, repo_root);
-        let cf = content_file(entry);
-        if cf.is_empty() {
-            return Ok(false);
-        }
-        let cache_file = vdir.join(&cf);
-        if !cache_file.exists() {
-            return Ok(false);
-        }
-
-        let cache_text = std::fs::read_to_string(&cache_file).map_err(|_| ())?;
-        let installed_text = std::fs::read_to_string(&dest).map_err(|_| ())?;
-
-        // If pinned, the installed file is expected to differ from cache
-        if has_patch(entry, repo_root) {
-            return Ok(false);
-        }
-        Ok(installed_text != cache_text)
-    })();
-
-    result.unwrap_or(false)
-}
-
-fn is_dir_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -> bool {
-    let result: Result<bool, ()> = (|| {
-        let installed = installed_dir_files(entry, manifest, repo_root).map_err(|_| ())?;
-        if installed.is_empty() {
-            return Ok(false);
-        }
-
-        // If pinned, the installed files are expected to differ from cache
-        if has_dir_patch(entry, repo_root) {
-            return Ok(false);
-        }
-
-        let vdir = vendor_dir_for(entry, repo_root);
-        if !vdir.is_dir() {
-            return Ok(false);
-        }
-
-        for cache_file in walkdir(&vdir) {
-            if cache_file.file_name().is_none_or(|n| n == ".meta") {
-                continue;
-            }
-            let filename = cache_file
-                .strip_prefix(&vdir)
-                .map_err(|_| ())?
-                .to_string_lossy()
-                .to_string();
-            let inst_path = match installed.get(&filename) {
-                Some(p) if p.exists() => p,
-                _ => continue,
-            };
-
-            let cache_text = std::fs::read_to_string(&cache_file).map_err(|_| ())?;
-            let installed_text = std::fs::read_to_string(inst_path).map_err(|_| ())?;
-
-            if installed_text != cache_text {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    })();
-
-    result.unwrap_or(false)
+    if is_dir_entry(entry) {
+        return is_dir_modified_local(entry, manifest, repo_root);
+    }
+    check_single_file_modified(entry, manifest, repo_root).unwrap_or(false)
 }
 
 /// Per-run context shared across all entry status computations.
@@ -101,6 +107,62 @@ struct StatusContext<'a> {
     check_upstream: bool,
     sha_cache: &'a mut HashMap<(String, String), String>,
     col_w: usize,
+}
+
+fn resolve_upstream_sha(
+    ctx: &mut StatusContext<'_>,
+    owner_repo: &str,
+    ref_: &str,
+) -> Result<String, SkillfileError> {
+    let cache_key = (owner_repo.to_string(), ref_.to_string());
+    if let Some(cached) = ctx.sha_cache.get(&cache_key) {
+        return Ok(cached.clone());
+    }
+    let client = skillfile_sources::http::UreqClient::new();
+    let resolved = skillfile_sources::resolver::resolve_github_sha(&client, owner_repo, ref_)?;
+    ctx.sha_cache.insert(cache_key, resolved.clone());
+    Ok(resolved)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upstream_status_for_github(
+    ctx: &mut StatusContext<'_>,
+    entry: &Entry,
+    sha: &str,
+) -> Result<String, SkillfileError> {
+    let SourceFields::Github {
+        owner_repo, ref_, ..
+    } = &entry.source
+    else {
+        return Ok(format!("locked    sha={}", short_sha(sha)));
+    };
+    let owner_repo = owner_repo.clone();
+    let ref_ = ref_.clone();
+    let upstream_sha = resolve_upstream_sha(ctx, &owner_repo, &ref_)?;
+    let sha_short = short_sha(sha);
+    if upstream_sha == sha {
+        Ok(format!("up to date  sha={sha_short}"))
+    } else {
+        let upstream_short = short_sha(&upstream_sha);
+        Ok(format!(
+            "outdated    locked={sha_short}  upstream={upstream_short}"
+        ))
+    }
+}
+
+fn build_annotation(entry: &Entry, ctx: &StatusContext<'_>) -> String {
+    let mut parts = Vec::new();
+    if has_patch(entry, ctx.repo_root) || has_dir_patch(entry, ctx.repo_root) {
+        parts.push("[pinned]");
+    }
+    if is_modified_local(entry, ctx.manifest, ctx.repo_root) {
+        parts.push("[modified]");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", parts.join("  "))
+    }
 }
 
 fn format_entry_status(
@@ -115,61 +177,25 @@ fn format_entry_status(
         return Ok(format!("{name:<col_w$} local"));
     }
 
-    let locked_info = match ctx.locked.get(&key) {
-        Some(li) => li,
-        None => return Ok(format!("{name:<col_w$} unlocked")),
+    let Some(locked_info) = ctx.locked.get(&key) else {
+        return Ok(format!("{name:<col_w$} unlocked"));
     };
 
     let sha = &locked_info.sha;
     let vdir = vendor_dir_for(entry, ctx.repo_root);
     let meta = meta_sha(&vdir);
-
-    let mut annotations = Vec::new();
-    if has_patch(entry, ctx.repo_root) || has_dir_patch(entry, ctx.repo_root) {
-        annotations.push("[pinned]");
-    }
-    if is_modified_local(entry, ctx.manifest, ctx.repo_root) {
-        annotations.push("[modified]");
-    }
-    let annotation = if annotations.is_empty() {
-        String::new()
-    } else {
-        format!("  {}", annotations.join("  "))
-    };
-
     let sha_short = short_sha(sha);
 
-    let status = if meta.as_deref() != Some(sha.as_str()) {
-        format!("locked    sha={sha_short}  (missing or stale){annotation}")
+    let base_status = if meta.as_deref() != Some(sha.as_str()) {
+        format!("locked    sha={sha_short}  (missing or stale)")
     } else if ctx.check_upstream {
-        if let SourceFields::Github {
-            owner_repo, ref_, ..
-        } = &entry.source
-        {
-            let cache_key = (owner_repo.clone(), ref_.clone());
-            let upstream_sha = if let Some(cached) = ctx.sha_cache.get(&cache_key) {
-                cached.clone()
-            } else {
-                let client = skillfile_sources::http::UreqClient::new();
-                let resolved =
-                    skillfile_sources::resolver::resolve_github_sha(&client, owner_repo, ref_)?;
-                ctx.sha_cache.insert(cache_key, resolved.clone());
-                resolved
-            };
-            if upstream_sha == *sha {
-                format!("up to date  sha={sha_short}{annotation}")
-            } else {
-                let upstream_short = short_sha(&upstream_sha);
-                format!("outdated    locked={sha_short}  upstream={upstream_short}{annotation}")
-            }
-        } else {
-            format!("locked    sha={sha_short}{annotation}")
-        }
+        upstream_status_for_github(ctx, entry, sha)?
     } else {
-        format!("locked    sha={sha_short}{annotation}")
+        format!("locked    sha={sha_short}")
     };
 
-    Ok(format!("{name:<col_w$} {status}"))
+    let annotation = build_annotation(entry, ctx);
+    Ok(format!("{name:<col_w$} {base_status}{annotation}"))
 }
 
 pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), SkillfileError> {
@@ -226,6 +252,7 @@ mod tests {
         .unwrap();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_meta(dir: &Path, entity_type: &str, name: &str, sha: &str) {
         let vdir = dir
             .join(".skillfile/cache")
@@ -239,6 +266,7 @@ mod tests {
         .unwrap();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_vendor_content(
         dir: &Path,
         entity_type: &str,

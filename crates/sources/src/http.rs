@@ -12,31 +12,30 @@ static TOKEN_CACHE: OnceLock<Option<String>> = OnceLock::new();
 /// Discover a GitHub token from environment or `gh` CLI. Cached after first call.
 #[must_use]
 pub fn github_token() -> Option<&'static str> {
-    TOKEN_CACHE
-        .get_or_init(|| {
-            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-                if !token.is_empty() {
-                    return Some(token);
-                }
-            }
-            if let Ok(token) = std::env::var("GH_TOKEN") {
-                if !token.is_empty() {
-                    return Some(token);
-                }
-            }
-            match Command::new("gh").args(["auth", "token"]).output() {
-                Ok(output) if output.status.success() => {
-                    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if token.is_empty() {
-                        None
-                    } else {
-                        Some(token)
-                    }
-                }
-                _ => None,
-            }
-        })
-        .as_deref()
+    TOKEN_CACHE.get_or_init(discover_github_token).as_deref()
+}
+
+fn env_token(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|t| !t.is_empty())
+}
+
+fn discover_github_token() -> Option<String> {
+    if let Some(token) = env_token("GITHUB_TOKEN") {
+        return Some(token);
+    }
+    if let Some(token) = env_token("GH_TOKEN") {
+        return Some(token);
+    }
+    let output = Command::new("gh").args(["auth", "token"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +75,12 @@ pub trait HttpClient: Send + Sync {
     ///
     /// Default: ignores the token and delegates to [`post_json`](Self::post_json).
     /// Test mocks use this default; [`UreqClient`] overrides to send the header.
+    ///
+    /// # Note
+    /// The extra `token` parameter is required by non-GitHub registry APIs (e.g.
+    /// skillhub.club). `#[allow]` is intentional: this is a public trait method
+    /// whose signature cannot change without a breaking API change.
+    #[allow(clippy::too_many_arguments)]
     fn post_json_with_bearer(
         &self,
         url: &str,
@@ -90,6 +95,11 @@ pub trait HttpClient: Send + Sync {
 // ---------------------------------------------------------------------------
 // UreqClient — the production implementation backed by ureq
 // ---------------------------------------------------------------------------
+
+fn read_response_text(body: &mut ureq::Body, url: &str) -> Result<String, SkillfileError> {
+    body.read_to_string()
+        .map_err(|e| SkillfileError::Network(format!("failed to read response from {url}: {e}")))
+}
 
 /// Production HTTP client backed by `ureq::Agent`.
 ///
@@ -161,12 +171,7 @@ impl HttpClient for UreqClient {
             .call();
 
         match result {
-            Ok(mut response) => {
-                let text = response.body_mut().read_to_string().map_err(|e| {
-                    SkillfileError::Network(format!("failed to read response from {url}: {e}"))
-                })?;
-                Ok(Some(text))
-            }
+            Ok(mut response) => read_response_text(response.body_mut(), url).map(Some),
             Err(ureq::Error::StatusCode(code)) if (400..500).contains(&code) => Ok(None),
             Err(e) => Err(SkillfileError::Network(format!("{e} fetching {url}"))),
         }

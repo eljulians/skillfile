@@ -33,8 +33,34 @@ struct ApiResult {
     github_path: Option<String>,
 }
 
+fn github_repo_from(owner: Option<&str>, repo: Option<&str>) -> Option<String> {
+    match (owner, repo) {
+        (Some(o), Some(r)) if !o.is_empty() && !r.is_empty() => Some(format!("{o}/{r}")),
+        _ => None,
+    }
+}
+
+fn map_api_result(r: ApiResult) -> Option<SearchResult> {
+    let name = r.name?;
+    let owner = r.owner.unwrap_or_default();
+    let slug = r.slug.unwrap_or_else(|| format!("{owner}/{name}"));
+    let source_repo = github_repo_from(r.github_owner.as_deref(), r.github_repo.as_deref())
+        .or_else(|| Some(slug.clone()));
+    Some(SearchResult {
+        url: format!("https://agentskill.sh/@{slug}"),
+        source_repo,
+        source_path: r.github_path,
+        name,
+        owner,
+        description: r.description,
+        security_score: r.security_score,
+        stars: r.github_stars,
+        registry: RegistryId::AgentskillSh,
+    })
+}
+
 impl Registry for AgentskillSh {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "agentskill.sh"
     }
 
@@ -58,34 +84,7 @@ impl Registry for AgentskillSh {
             SkillfileError::Network(format!("failed to parse agentskill.sh results: {e}"))
         })?;
 
-        let items: Vec<SearchResult> = api
-            .results
-            .into_iter()
-            .filter_map(|r| {
-                let name = r.name?;
-                let owner = r.owner.unwrap_or_default();
-                let slug = r.slug.unwrap_or_else(|| format!("{owner}/{name}"));
-
-                let source_repo = match (&r.github_owner, &r.github_repo) {
-                    (Some(o), Some(repo)) if !o.is_empty() && !repo.is_empty() => {
-                        Some(format!("{o}/{repo}"))
-                    }
-                    _ => Some(slug.clone()),
-                };
-
-                Some(SearchResult {
-                    url: format!("https://agentskill.sh/@{slug}"),
-                    source_repo,
-                    source_path: r.github_path,
-                    name,
-                    owner,
-                    description: r.description,
-                    security_score: r.security_score,
-                    stars: r.github_stars,
-                    registry: RegistryId::AgentskillSh,
-                })
-            })
-            .collect();
+        let items: Vec<SearchResult> = api.results.into_iter().filter_map(map_api_result).collect();
 
         Ok(SearchResponse {
             total: api.total.unwrap_or(items.len()),
@@ -338,7 +337,15 @@ mod tests {
 
     // -- Detail API tests -------------------------------------------------------
 
-    fn detail_mock(slug: &str, owner: &str, repo: &str, path: &str) -> String {
+    struct DetailMockParams<'a> {
+        slug: &'a str,
+        owner: &'a str,
+        repo: &'a str,
+        path: &'a str,
+    }
+
+    fn detail_mock(p: &DetailMockParams<'_>) -> String {
+        let (slug, owner, repo, path) = (p.slug, p.owner, p.repo, p.path);
         format!(
             r#"{{"data": [{{"slug": "{slug}", "githubOwner": "{owner}", "githubRepo": "{repo}", "githubPath": "{path}"}}]}}"#
         )
@@ -346,12 +353,12 @@ mod tests {
 
     #[test]
     fn fetch_github_meta_returns_coordinates() {
-        let json = detail_mock(
-            "openclaw/fzf-fuzzy-finder",
-            "openclaw",
-            "skills",
-            "skills/arnarsson/fzf-fuzzy-finder/SKILL.md",
-        );
+        let json = detail_mock(&DetailMockParams {
+            slug: "openclaw/fzf-fuzzy-finder",
+            owner: "openclaw",
+            repo: "skills",
+            path: "skills/arnarsson/fzf-fuzzy-finder/SKILL.md",
+        });
         let client = MockClient::new(vec![Ok(json)]);
         let meta =
             fetch_agentskill_github_meta(&client, "openclaw/fzf-fuzzy-finder", "fzf-fuzzy-finder");
@@ -365,12 +372,12 @@ mod tests {
 
     #[test]
     fn fetch_github_meta_case_insensitive_slug() {
-        let json = detail_mock(
-            "OpenClaw/FZF-Fuzzy-Finder",
-            "openclaw",
-            "skills",
-            "skills/arnarsson/fzf-fuzzy-finder/SKILL.md",
-        );
+        let json = detail_mock(&DetailMockParams {
+            slug: "OpenClaw/FZF-Fuzzy-Finder",
+            owner: "openclaw",
+            repo: "skills",
+            path: "skills/arnarsson/fzf-fuzzy-finder/SKILL.md",
+        });
         let client = MockClient::new(vec![Ok(json)]);
         let meta =
             fetch_agentskill_github_meta(&client, "openclaw/fzf-fuzzy-finder", "fzf-fuzzy-finder");
@@ -379,7 +386,12 @@ mod tests {
 
     #[test]
     fn fetch_github_meta_no_match_returns_none() {
-        let json = detail_mock("other/skill", "other", "repo", "skill.md");
+        let json = detail_mock(&DetailMockParams {
+            slug: "other/skill",
+            owner: "other",
+            repo: "repo",
+            path: "skill.md",
+        });
         let client = MockClient::new(vec![Ok(json)]);
         let meta =
             fetch_agentskill_github_meta(&client, "openclaw/fzf-fuzzy-finder", "fzf-fuzzy-finder");

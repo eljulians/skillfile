@@ -89,6 +89,30 @@ fn is_interactive_tty() -> bool {
 // Interactive selection
 // ===========================================================================
 
+/// Resolve the GitHub source coordinates for a search result.
+///
+/// For `agentskill.sh` items that lack a `source_path`, fetches the detail
+/// API to obtain the real `owner/repo` and path. For all other items the
+/// coordinates are taken directly from the search result.
+fn resolve_source_coords(
+    item: &skillfile_sources::registry::SearchResult,
+) -> (Option<String>, Option<String>) {
+    if item.registry == RegistryId::AgentskillSh && item.source_path.is_none() {
+        let slug = item.source_repo.as_deref().unwrap_or("");
+        if !slug.is_empty() {
+            let client = UreqClient::new();
+            let spinner = Spinner::new("Resolving GitHub coordinates");
+            let meta = fetch_agentskill_github_meta(&client, slug, &item.name);
+            spinner.finish();
+            return match meta {
+                Some(m) => (Some(m.source_repo), Some(m.source_path)),
+                None => (item.source_repo.clone(), None),
+            };
+        }
+    }
+    (item.source_repo.clone(), item.source_path.clone())
+}
+
 /// Present search results in the ratatui TUI.
 ///
 /// On selection, gathers the information needed to construct a `skillfile add`
@@ -102,28 +126,7 @@ fn interactive_select(resp: &SearchResponse, repo_root: &Path) -> Result<(), Ski
     };
 
     let item = &resp.items[idx];
-
-    // For agentskill.sh results, the search API only returns a registry slug
-    // (e.g. "openclaw/fzf-fuzzy-finder") as source_repo, not the actual GitHub
-    // coordinates. Fetch the detail API to get the real owner/repo and path.
-    let (source_repo, source_path) =
-        if item.registry == RegistryId::AgentskillSh && item.source_path.is_none() {
-            let slug = item.source_repo.as_deref().unwrap_or("");
-            if !slug.is_empty() {
-                let client = UreqClient::new();
-                let spinner = Spinner::new("Resolving GitHub coordinates");
-                let meta = fetch_agentskill_github_meta(&client, slug, &item.name);
-                spinner.finish();
-                match meta {
-                    Some(m) => (Some(m.source_repo), Some(m.source_path)),
-                    None => (item.source_repo.clone(), None),
-                }
-            } else {
-                (item.source_repo.clone(), None)
-            }
-        } else {
-            (item.source_repo.clone(), item.source_path.clone())
-        };
+    let (source_repo, source_path) = resolve_source_coords(item);
 
     // Show selection context before follow-up prompts.
     println!();
@@ -170,7 +173,7 @@ fn interactive_select(resp: &SearchResponse, repo_root: &Path) -> Result<(), Ski
     };
 
     let entry = entry_from_github(entity_type, &owner_repo, &path, None, None);
-    cmd_add(entry, repo_root)
+    cmd_add(&entry, repo_root)
 }
 
 /// Convert a GitHub file path into a Skillfile entry path.
@@ -299,6 +302,30 @@ fn prompt_result<T>(result: Result<T, inquire::InquireError>) -> Result<Option<T
 // Plain text output
 // ===========================================================================
 
+/// Append a separator then `text` to `meta`, only when `meta` is non-empty.
+fn append_meta_field(meta: &mut String, text: &str) {
+    if !meta.is_empty() {
+        meta.push_str("  ");
+    }
+    meta.push_str(text);
+}
+
+/// Build the metadata line (owner / stars / security score) for one result.
+fn build_meta_line(item: &skillfile_sources::registry::SearchResult) -> String {
+    use std::fmt::Write;
+    let mut meta = String::new();
+    if !item.owner.is_empty() {
+        let _ = write!(meta, "by {}", item.owner);
+    }
+    if let Some(stars) = item.stars {
+        append_meta_field(&mut meta, &format!("{stars} stars"));
+    }
+    if let Some(score) = item.security_score {
+        append_meta_field(&mut meta, &format!("score: {score}/100"));
+    }
+    meta
+}
+
 /// Print results as formatted text for terminal display.
 pub fn print_table(w: &mut dyn Write, resp: &SearchResponse, single_registry: Option<&str>) {
     if resp.items.is_empty() {
@@ -321,22 +348,7 @@ pub fn print_table(w: &mut dyn Write, resp: &SearchResponse, single_registry: Op
         }
 
         // Source line: owner + url
-        let mut meta = String::new();
-        if !item.owner.is_empty() {
-            meta.push_str(&format!("by {}", item.owner));
-        }
-        if let Some(stars) = item.stars {
-            if !meta.is_empty() {
-                meta.push_str("  ");
-            }
-            meta.push_str(&format!("{stars} stars"));
-        }
-        if let Some(score) = item.security_score {
-            if !meta.is_empty() {
-                meta.push_str("  ");
-            }
-            meta.push_str(&format!("score: {score}/100"));
-        }
+        let meta = build_meta_line(item);
         if !meta.is_empty() {
             let _ = writeln!(w, "  {:<24}{meta}", "");
         }
@@ -460,7 +472,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn paths(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| s.to_string()).collect()
+        strs.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

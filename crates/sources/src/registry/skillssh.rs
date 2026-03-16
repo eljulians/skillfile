@@ -30,7 +30,7 @@ struct ApiResult {
 }
 
 impl Registry for SkillsSh {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "skills.sh"
     }
 

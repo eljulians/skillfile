@@ -11,34 +11,37 @@ pub const KNOWN_SOURCES: &[&str] = &["github", "local", "url"];
 #[must_use]
 pub fn content_file(entry: &Entry) -> String {
     match &entry.source {
-        SourceFields::Github { path_in_repo, .. } => {
-            if is_dir_entry(entry) {
-                String::new()
-            } else {
-                let effective = if path_in_repo == "." {
-                    "SKILL.md"
-                } else {
-                    path_in_repo
-                };
-                Path::new(effective)
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    .unwrap_or("")
-                    .to_string()
-            }
-        }
+        SourceFields::Github { path_in_repo, .. } => github_content_file(entry, path_in_repo),
         SourceFields::Local { .. } => String::new(),
-        SourceFields::Url { url } => {
-            let name = Path::new(url)
-                .file_name()
-                .and_then(|f| f.to_str())
-                .unwrap_or("");
-            if name.is_empty() {
-                "content.md".to_string()
-            } else {
-                name.to_string()
-            }
-        }
+        SourceFields::Url { url } => url_content_file(url),
+    }
+}
+
+fn github_content_file(entry: &Entry, path_in_repo: &str) -> String {
+    if is_dir_entry(entry) {
+        return String::new();
+    }
+    let effective = if path_in_repo == "." {
+        "SKILL.md"
+    } else {
+        path_in_repo
+    };
+    Path::new(effective)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn url_content_file(url: &str) -> String {
+    let name = Path::new(url)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("");
+    if name.is_empty() {
+        "content.md".to_string()
+    } else {
+        name.to_string()
     }
 }
 
@@ -47,7 +50,10 @@ pub fn content_file(entry: &Entry) -> String {
 pub fn is_dir_entry(entry: &Entry) -> bool {
     match &entry.source {
         SourceFields::Github { path_in_repo, .. } => {
-            path_in_repo != "." && !path_in_repo.ends_with(".md")
+            path_in_repo != "."
+                && !Path::new(path_in_repo)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("md"))
         }
         _ => false,
     }
@@ -99,7 +105,7 @@ pub fn meta_sha(vdir: &Path) -> Option<String> {
     let meta_path = vdir.join(".meta");
     let text = std::fs::read_to_string(&meta_path).ok()?;
     let data: serde_json::Value = serde_json::from_str(&text).ok()?;
-    data["sha"].as_str().map(|s| s.to_string())
+    data["sha"].as_str().map(std::string::ToString::to_string)
 }
 
 #[cfg(test)]

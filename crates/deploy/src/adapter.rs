@@ -45,6 +45,7 @@ pub trait PlatformAdapter: Send + Sync + fmt::Debug {
     fn supports(&self, entity_type: &str) -> bool;
 
     /// Resolve the absolute target directory for an entity type + scope.
+    #[allow(clippy::too_many_arguments)]
     fn target_dir(&self, entity_type: &str, scope: Scope, repo_root: &Path) -> PathBuf;
 
     /// The install mode for directory entries of this entity type.
@@ -54,6 +55,7 @@ pub trait PlatformAdapter: Send + Sync + fmt::Debug {
     ///
     /// Returns `{patch_key: installed_path}` for every file that was placed.
     /// Returns an empty map for dry-run or when deployment is skipped.
+    #[allow(clippy::too_many_arguments)]
     fn deploy_entry(
         &self,
         entry: &Entry,
@@ -64,9 +66,11 @@ pub trait PlatformAdapter: Send + Sync + fmt::Debug {
     ) -> DeployResult;
 
     /// The installed path for a single-file entry.
+    #[allow(clippy::too_many_arguments)]
     fn installed_path(&self, entry: &Entry, scope: Scope, repo_root: &Path) -> PathBuf;
 
     /// Map of `{relative_path: absolute_path}` for all installed files of a directory entry.
+    #[allow(clippy::too_many_arguments)]
     fn installed_dir_files(
         &self,
         entry: &Entry,
@@ -178,16 +182,7 @@ impl PlatformAdapter for FileSystemAdapter {
         }
 
         if is_dir {
-            let mut result = HashMap::new();
-            for file in walkdir(source) {
-                if file.file_name().is_none_or(|n| n == ".meta") {
-                    continue;
-                }
-                if let Ok(rel) = file.strip_prefix(source) {
-                    result.insert(rel.to_string_lossy().to_string(), dest.join(rel));
-                }
-            }
-            result
+            collect_dir_deploy_result(source, &dest)
         } else {
             HashMap::from([(format!("{}.md", entry.name), dest)])
         }
@@ -208,44 +203,14 @@ impl PlatformAdapter for FileSystemAdapter {
         let mode = self
             .entities
             .get(entry.entity_type.as_str())
-            .map(|c| c.dir_mode)
-            .unwrap_or(DirInstallMode::Nested);
+            .map_or(DirInstallMode::Nested, |c| c.dir_mode);
 
         if mode == DirInstallMode::Nested {
-            let installed_dir = target_dir.join(&entry.name);
-            if !installed_dir.is_dir() {
-                return HashMap::new();
-            }
-            let mut result = HashMap::new();
-            for file in walkdir(&installed_dir) {
-                if let Ok(rel) = file.strip_prefix(&installed_dir) {
-                    result.insert(rel.to_string_lossy().to_string(), file);
-                }
-            }
-            result
+            collect_nested_installed(entry, &target_dir)
         } else {
             // Flat: keys are relative-from-vdir so they match patch lookup keys
             let vdir = skillfile_sources::sync::vendor_dir_for(entry, repo_root);
-            if !vdir.is_dir() {
-                return HashMap::new();
-            }
-            let mut result = HashMap::new();
-            for file in walkdir(&vdir) {
-                if file
-                    .extension()
-                    .is_none_or(|ext| ext.to_string_lossy() != "md")
-                {
-                    continue;
-                }
-                let Ok(rel) = file.strip_prefix(&vdir) else {
-                    continue;
-                };
-                let dest = target_dir.join(file.file_name().unwrap_or_default());
-                if dest.exists() {
-                    result.insert(rel.to_string_lossy().to_string(), dest);
-                }
-            }
-            result
+            collect_flat_installed_checked(&vdir, &target_dir)
         }
     }
 }
@@ -254,7 +219,76 @@ impl PlatformAdapter for FileSystemAdapter {
 // Deployment helpers (used by FileSystemAdapter)
 // ---------------------------------------------------------------------------
 
+/// Build `{relative_path: absolute_path}` for all non-.meta files in a deployed directory.
+fn collect_dir_deploy_result(source: &Path, dest: &Path) -> DeployResult {
+    let mut result = HashMap::new();
+    for file in walkdir(source) {
+        if file.file_name().is_none_or(|n| n == ".meta") {
+            continue;
+        }
+        let Ok(rel) = file.strip_prefix(source) else {
+            continue;
+        };
+        result.insert(rel.to_string_lossy().to_string(), dest.join(rel));
+    }
+    result
+}
+
+/// Build `{relative_path: absolute_path}` for nested-mode installed dir.
+/// Returns empty map when the installed directory does not exist.
+fn collect_nested_installed(entry: &Entry, target_dir: &Path) -> HashMap<String, PathBuf> {
+    let installed_dir = target_dir.join(&entry.name);
+    if !installed_dir.is_dir() {
+        return HashMap::new();
+    }
+    collect_walkdir_relative(&installed_dir)
+}
+
+/// Build `{relative_path: target_path}` for flat-mode installed files.
+/// Returns empty map when the vendor cache directory does not exist.
+fn collect_flat_installed_checked(vdir: &Path, target_dir: &Path) -> HashMap<String, PathBuf> {
+    if !vdir.is_dir() {
+        return HashMap::new();
+    }
+    collect_flat_installed(vdir, target_dir)
+}
+
+/// Build `{relative_path: absolute_path}` from a walkdir rooted at `base`.
+fn collect_walkdir_relative(base: &Path) -> HashMap<String, PathBuf> {
+    let mut result = HashMap::new();
+    for file in walkdir(base) {
+        let Ok(rel) = file.strip_prefix(base) else {
+            continue;
+        };
+        result.insert(rel.to_string_lossy().to_string(), file);
+    }
+    result
+}
+
+/// Build `{relative_path: target_path}` for `.md` files in a flat-mode vendor dir
+/// that have corresponding deployed files in `target_dir`.
+fn collect_flat_installed(vdir: &Path, target_dir: &Path) -> HashMap<String, PathBuf> {
+    let mut result = HashMap::new();
+    for file in walkdir(vdir) {
+        if file
+            .extension()
+            .is_none_or(|ext| ext.to_string_lossy() != "md")
+        {
+            continue;
+        }
+        let Ok(rel) = file.strip_prefix(vdir) else {
+            continue;
+        };
+        let dest = target_dir.join(file.file_name().unwrap_or_default());
+        if dest.exists() {
+            result.insert(rel.to_string_lossy().to_string(), dest);
+        }
+    }
+    result
+}
+
 /// Deploy each `.md` in `source_dir` as an individual file in `target_dir` (flat mode).
+#[allow(clippy::too_many_arguments)]
 fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> DeployResult {
     let mut md_files: Vec<PathBuf> = walkdir(source_dir)
         .into_iter()
@@ -263,14 +297,13 @@ fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> D
     md_files.sort();
 
     if opts.dry_run {
-        for src in &md_files {
-            if let Some(name) = src.file_name() {
-                progress!(
-                    "  {} -> {} [copy, dry-run]",
-                    name.to_string_lossy(),
-                    target_dir.join(name).display()
-                );
-            }
+        for src in md_files.iter().filter(|s| s.file_name().is_some()) {
+            let name = src.file_name().unwrap_or_default();
+            progress!(
+                "  {} -> {} [copy, dry-run]",
+                name.to_string_lossy(),
+                target_dir.join(name).display()
+            );
         }
         return HashMap::new();
     }
@@ -290,15 +323,27 @@ fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> D
         }
         if std::fs::copy(src, &dest).is_ok() {
             progress!("  {} -> {}", name.to_string_lossy(), dest.display());
-            if let Ok(rel) = src.strip_prefix(source_dir) {
-                result.insert(rel.to_string_lossy().to_string(), dest);
-            }
+            deploy_flat_insert_result(&mut result, src, source_dir, dest);
         }
     }
     result
 }
 
+/// Insert `{relative_path: dest}` into `result` if `src` is within `source_dir`.
+#[allow(clippy::too_many_arguments)]
+fn deploy_flat_insert_result(
+    result: &mut DeployResult,
+    src: &Path,
+    source_dir: &Path,
+    dest: PathBuf,
+) {
+    if let Ok(rel) = src.strip_prefix(source_dir) {
+        result.insert(rel.to_string_lossy().to_string(), dest);
+    }
+}
+
 /// Copy `source` to `dest`. Returns `true` if placed, `false` if skipped.
+#[allow(clippy::too_many_arguments)]
 fn place_file(source: &Path, dest: &Path, is_dir: bool, opts: &InstallOptions) -> bool {
     if !opts.overwrite && !opts.dry_run {
         if is_dir && dest.is_dir() {
@@ -344,6 +389,9 @@ fn place_file(source: &Path, dest: &Path, is_dir: bool, opts: &InstallOptions) -
 }
 
 /// Recursively copy a directory tree.
+// The recursive structure naturally produces multiple `?` operators and
+// branching that triggers cognitive-complexity, but the logic is straightforward.
+#[allow(clippy::cognitive_complexity)]
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -407,8 +455,12 @@ impl AdapterRegistry {
 
     /// Sorted list of all adapter names.
     pub fn names(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = self.adapters.keys().map(|s| s.as_str()).collect();
-        names.sort();
+        let mut names: Vec<&str> = self
+            .adapters
+            .keys()
+            .map(std::string::String::as_str)
+            .collect();
+        names.sort_unstable();
         names
     }
 }

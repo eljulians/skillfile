@@ -29,7 +29,8 @@ fn build_manifest_with_targets(existing: &str, new_targets: &[(String, String)])
 
     let mut output = String::new();
     for (adapter, scope) in new_targets {
-        output.push_str(&format!("install  {adapter}  {scope}\n"));
+        use std::fmt::Write as _;
+        let _ = writeln!(output, "install  {adapter}  {scope}");
     }
     output.push('\n');
     for line in &non_install {
@@ -182,9 +183,10 @@ fn select_platforms_and_scope(
 
 /// Interactive destination choice: Skillfile or personal config.
 fn select_destination() -> Result<&'static str, SkillfileError> {
-    let config_location = crate::config::config_path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "~/.config/skillfile/config.toml".into());
+    let config_location = crate::config::config_path().map_or_else(
+        || "~/.config/skillfile/config.toml".into(),
+        |p| p.display().to_string(),
+    );
     let destination: &str = cliclack::select(
         "Where should platform config be stored?\n\
          Tip: In shared repos, personal config avoids merge conflicts when\n\
@@ -208,6 +210,30 @@ fn select_destination() -> Result<&'static str, SkillfileError> {
 // ---------------------------------------------------------------------------
 // Public entry point — interactive cliclack flow
 // ---------------------------------------------------------------------------
+
+/// Write targets to manifest or personal config and print a summary note.
+fn persist_targets(
+    manifest_path: &Path,
+    destination: &str,
+    new_targets: &[(String, String)],
+) -> Result<(), SkillfileError> {
+    let summary: Vec<String> = new_targets
+        .iter()
+        .map(|(a, s)| format!("install  {a}  {s}"))
+        .collect();
+
+    if destination == "personal" {
+        write_personal_config(new_targets)?;
+        cliclack::note(
+            "Install config written to personal config",
+            summary.join("\n"),
+        )?;
+    } else {
+        rewrite_install_lines(manifest_path, new_targets)?;
+        cliclack::note("Install config written to Skillfile", summary.join("\n"))?;
+    }
+    Ok(())
+}
 
 pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     // TTY guard: cliclack requires an interactive terminal. Check stdin, stdout,
@@ -258,33 +284,13 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     }
 
     // Platform + scope selection
-    let new_targets = match select_platforms_and_scope(&existing_set)? {
-        Some(t) => t,
-        None => {
-            cliclack::outro_cancel("No platforms selected.")?;
-            return Ok(());
-        }
+    let Some(new_targets) = select_platforms_and_scope(&existing_set)? else {
+        cliclack::outro_cancel("No platforms selected.")?;
+        return Ok(());
     };
 
-    // Destination choice
     let destination = select_destination()?;
-
-    let summary: Vec<String> = new_targets
-        .iter()
-        .map(|(a, s)| format!("install  {a}  {s}"))
-        .collect();
-
-    if destination == "personal" {
-        write_personal_config(&new_targets)?;
-        cliclack::note(
-            "Install config written to personal config",
-            summary.join("\n"),
-        )?;
-    } else {
-        rewrite_install_lines(&manifest_path, &new_targets)?;
-        cliclack::note("Install config written to Skillfile", summary.join("\n"))?;
-    }
-
+    persist_targets(&manifest_path, destination, &new_targets)?;
     update_gitignore(repo_root)?;
 
     let outro = if result.manifest.entries.is_empty() {

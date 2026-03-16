@@ -18,6 +18,7 @@ use crate::patch::{
 /// Map of filename to file content used during dir-entry merge operations.
 type FileMap = std::collections::HashMap<String, String>;
 
+#[allow(clippy::too_many_arguments)]
 fn three_way_merge(
     base: &str,
     theirs: &str,
@@ -97,6 +98,52 @@ fn open_in_editor(content: &str, filename: &str) -> Result<String, SkillfileErro
     Ok(result)
 }
 
+/// Reconstruct the user's version ("yours") for a single-file entry.
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_yours_single(
+    entry: &skillfile_core::models::Entry,
+    base: &str,
+    installed: &std::path::Path,
+    repo_root: &Path,
+) -> Result<String, SkillfileError> {
+    if has_patch(entry, repo_root) {
+        let patch_text = read_patch(entry, repo_root)?;
+        return apply_patch_pure(base, &patch_text);
+    }
+    if !installed.exists() {
+        return Err(SkillfileError::Manifest(format!(
+            "'{}' is not installed at {}",
+            entry.name,
+            installed.display()
+        )));
+    }
+    Ok(std::fs::read_to_string(installed)?)
+}
+
+/// Apply conflict resolution: open editor when needed, return resolved text.
+/// Returns `Ok(None)` when conflict markers remain after editing.
+#[allow(clippy::too_many_arguments)]
+fn resolve_conflicts_or_clean(
+    merged: String,
+    has_conflicts: bool,
+    entry_name: &str,
+    filename: &str,
+) -> Result<Option<String>, SkillfileError> {
+    if !has_conflicts {
+        progress!("  clean merge — no conflicts in '{entry_name}'");
+        return Ok(Some(merged));
+    }
+    eprintln!(
+        "\nConflicts detected in '{entry_name}'. Opening in editor to resolve...\n  Save and close when done."
+    );
+    let resolved = open_in_editor(&merged, filename)?;
+    if resolved.contains("<<<<<<<") {
+        eprintln!("error: conflict markers still present — resolve all conflicts and try again");
+        return Ok(None);
+    }
+    Ok(Some(resolved))
+}
+
 fn resolve_single_file(
     entry: &skillfile_core::models::Entry,
     conflict: &ConflictState,
@@ -121,55 +168,28 @@ fn resolve_single_file(
 
     let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
     let installed = installed_path(entry, &manifest, repo_root)?;
-
-    // Reconstruct "yours" from stored patch applied to base upstream
-    let yours = if has_patch(entry, repo_root) {
-        let patch_text = read_patch(entry, repo_root)?;
-        apply_patch_pure(&base, &patch_text)?
-    } else {
-        if !installed.exists() {
-            return Err(SkillfileError::Manifest(format!(
-                "'{}' is not installed at {}",
-                entry.name,
-                installed.display()
-            )));
-        }
-        std::fs::read_to_string(&installed)?
-    };
+    let yours = reconstruct_yours_single(entry, &base, &installed, repo_root)?;
 
     progress!("  merging ...");
-    let (mut merged, has_conflicts) = three_way_merge(&base, &theirs, &yours, &filename)?;
+    let (merged_raw, has_conflicts) = three_way_merge(&base, &theirs, &yours, &filename)?;
+    let Some(merged) =
+        resolve_conflicts_or_clean(merged_raw, has_conflicts, &entry.name, &filename)?
+    else {
+        return Ok(());
+    };
 
-    if has_conflicts {
-        eprintln!(
-            "\nConflicts detected in '{}'. Opening in editor to resolve...\n  Save and close when done.",
-            entry.name
-        );
-        merged = open_in_editor(&merged, &filename)?;
-        if merged.contains("<<<<<<<") {
-            eprintln!(
-                "error: conflict markers still present — resolve all conflicts and try again"
-            );
-            return Ok(());
-        }
-    } else {
-        progress!("  clean merge — no conflicts in '{}'", entry.name);
-    }
-
-    // Write merged result to installed path
     std::fs::write(&installed, &merged)?;
 
-    // Regenerate patch: diff between new upstream and merged result
     let patch_text = generate_patch(&theirs, &merged, &filename);
-    if !patch_text.is_empty() {
-        write_patch(entry, &patch_text, repo_root)?;
-        progress!("  updated .skillfile/patches/ for '{}'", entry.name);
-    } else {
+    if patch_text.is_empty() {
         remove_patch(entry, repo_root)?;
         progress!(
             "  merged result matches upstream — removed pin for '{}'",
             entry.name
         );
+    } else {
+        write_patch(entry, &patch_text, repo_root)?;
+        progress!("  updated .skillfile/patches/ for '{}'", entry.name);
     }
 
     clear_conflict(repo_root)?;
@@ -183,6 +203,7 @@ fn resolve_single_file(
 /// Merge each file using three-way merge. Returns the merged results and whether
 /// any file had conflicts requiring manual resolution. Returns `Ok(None)` when
 /// conflict markers remain after editor interaction (signals early exit to caller).
+#[allow(clippy::too_many_arguments)]
 fn merge_all_files(
     all_filenames: &[String],
     base_files: &FileMap,
@@ -195,8 +216,12 @@ fn merge_all_files(
     let mut any_conflict = false;
 
     for filename in all_filenames {
-        let base = base_files.get(filename).map(|s| s.as_str()).unwrap_or("");
-        let theirs = theirs_files.get(filename).map(|s| s.as_str()).unwrap_or("");
+        let base = base_files
+            .get(filename)
+            .map_or("", std::string::String::as_str);
+        let theirs = theirs_files
+            .get(filename)
+            .map_or("", std::string::String::as_str);
 
         // Reconstruct "yours" from stored patch + base
         let p = dir_patch_path(entry, filename, repo_root);
@@ -210,21 +235,16 @@ fn merge_all_files(
             }
         };
 
-        let (mut merged, has_conflicts) = three_way_merge(base, theirs, &yours, filename)?;
-
+        let (merged_raw, has_conflicts) = three_way_merge(base, theirs, &yours, filename)?;
         if has_conflicts {
             any_conflict = true;
             eprintln!("\n  Conflicts in '{filename}'. Opening in editor...");
-            merged = open_in_editor(&merged, filename)?;
-            if merged.contains("<<<<<<<") {
-                eprintln!(
-                    "error: conflict markers still present in '{filename}' — resolve and try again"
-                );
-                return Ok(None);
-            }
-        } else {
-            progress!("  {filename}: clean merge");
         }
+        let Some(merged) =
+            resolve_conflicts_or_clean(merged_raw, has_conflicts, filename, filename)?
+        else {
+            return Ok(None);
+        };
 
         merged_results.insert(filename.clone(), merged);
     }
@@ -233,6 +253,7 @@ fn merge_all_files(
 }
 
 /// Write merged results to installed paths and update patch files.
+#[allow(clippy::too_many_arguments)]
 fn write_merged_results(
     merged_results: &FileMap,
     theirs_files: &FileMap,
@@ -243,7 +264,9 @@ fn write_merged_results(
     remove_all_dir_patches(entry, repo_root)?;
     let mut pinned: Vec<String> = Vec::new();
     for (filename, merged_text) in merged_results {
-        let theirs = theirs_files.get(filename).map(|s| s.as_str()).unwrap_or("");
+        let theirs = theirs_files
+            .get(filename)
+            .map_or("", std::string::String::as_str);
         if let Some(inst_path) = installed.get(filename) {
             std::fs::write(inst_path, merged_text)?;
         }
@@ -254,16 +277,16 @@ fn write_merged_results(
         }
     }
 
-    if !pinned.is_empty() {
+    if pinned.is_empty() {
+        progress!(
+            "  merged result matches upstream — no pin needed for '{}'",
+            entry.name
+        );
+    } else {
         progress!(
             "  updated .skillfile/patches/ for '{}' ({})",
             entry.name,
             pinned.join(", ")
-        );
-    } else {
-        progress!(
-            "  merged result matches upstream — no pin needed for '{}'",
-            entry.name
         );
     }
     Ok(())

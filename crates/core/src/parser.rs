@@ -40,6 +40,13 @@ fn is_valid_name(name: &str) -> bool {
             .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_')
 }
 
+/// Push `current` into `parts` if non-empty, leaving `current` empty.
+fn flush_token(current: &mut String, parts: &mut Vec<String>) {
+    if !current.is_empty() {
+        parts.push(std::mem::take(current));
+    }
+}
+
 /// Split a manifest line respecting double-quoted fields.
 ///
 /// Unquoted lines split identically to whitespace split.
@@ -50,21 +57,17 @@ fn split_line(line: &str) -> Vec<String> {
     let mut in_quotes = false;
 
     for ch in line.chars() {
-        match ch {
-            '"' => {
-                in_quotes = !in_quotes;
-            }
-            c if c.is_whitespace() && !in_quotes => {
-                if !current.is_empty() {
-                    parts.push(std::mem::take(&mut current));
-                }
-            }
-            c => current.push(c),
+        if ch == '"' {
+            in_quotes = !in_quotes;
+            continue;
         }
+        if ch.is_whitespace() && !in_quotes {
+            flush_token(&mut current, &mut parts);
+            continue;
+        }
+        current.push(ch);
     }
-    if !current.is_empty() {
-        parts.push(current);
-    }
+    flush_token(&mut current, &mut parts);
     parts
 }
 
@@ -152,7 +155,11 @@ fn parse_local_entry(
     let mut warnings = Vec::new();
 
     // Detection: if parts[2] ends in ".md" or contains '/' → path (inferred name)
-    if parts[2].ends_with(".md") || parts[2].contains('/') {
+    if Path::new(&parts[2])
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        || parts[2].contains('/')
+    {
         let local_path = &parts[2];
         let name = infer_name(local_path);
         (
@@ -225,61 +232,98 @@ fn parse_url_entry(
     }
 }
 
+/// Accumulator for manifest parsing state passed to helper functions.
+struct ParseAccumulator {
+    entries: Vec<Entry>,
+    install_targets: Vec<InstallTarget>,
+    warnings: Vec<String>,
+    seen_names: HashSet<String>,
+}
+
 /// Process an `install` line, pushing a target or a warning.
-fn parse_install_line(
-    parts: &[String],
-    lineno: usize,
-    install_targets: &mut Vec<InstallTarget>,
-    warnings: &mut Vec<String>,
-) {
+fn parse_install_line(parts: &[String], lineno: usize, acc: &mut ParseAccumulator) {
     if parts.len() < 3 {
-        warnings.push(format!(
+        acc.warnings.push(format!(
             "warning: line {lineno}: install line needs: adapter scope"
         ));
         return;
     }
     let scope_str = &parts[2];
-    match Scope::parse(scope_str) {
-        Some(scope) => {
-            install_targets.push(InstallTarget {
-                adapter: parts[1].clone(),
-                scope,
-            });
-        }
-        None => {
-            let valid: Vec<&str> = Scope::ALL.iter().map(|s| s.as_str()).collect();
-            warnings.push(format!(
-                "warning: line {lineno}: invalid scope '{scope_str}', \
-                 must be one of: {}",
-                valid.join(", ")
-            ));
-        }
+    if let Some(scope) = Scope::parse(scope_str) {
+        acc.install_targets.push(InstallTarget {
+            adapter: parts[1].clone(),
+            scope,
+        });
+    } else {
+        let valid: Vec<&str> = Scope::ALL
+            .iter()
+            .map(super::models::Scope::as_str)
+            .collect();
+        acc.warnings.push(format!(
+            "warning: line {lineno}: invalid scope '{scope_str}', \
+             must be one of: {}",
+            valid.join(", ")
+        ));
     }
 }
 
 /// Validate an entry name and insert it into the accumulator, warning on problems.
-fn validate_and_push_entry(
-    entry: Entry,
-    lineno: usize,
-    seen_names: &mut HashSet<String>,
-    entries: &mut Vec<Entry>,
-    warnings: &mut Vec<String>,
-) {
+fn validate_and_push_entry(entry: Entry, lineno: usize, acc: &mut ParseAccumulator) {
     if !is_valid_name(&entry.name) {
-        warnings.push(format!(
+        acc.warnings.push(format!(
             "warning: line {lineno}: invalid name '{}' \
              — names must match [a-zA-Z0-9._-], skipping",
             entry.name
         ));
-    } else if seen_names.contains(&entry.name) {
-        warnings.push(format!(
+    } else if acc.seen_names.contains(&entry.name) {
+        acc.warnings.push(format!(
             "warning: line {lineno}: duplicate entry name '{}'",
             entry.name
         ));
-        entries.push(entry);
+        acc.entries.push(entry);
     } else {
-        seen_names.insert(entry.name.clone());
-        entries.push(entry);
+        acc.seen_names.insert(entry.name.clone());
+        acc.entries.push(entry);
+    }
+}
+
+/// Dispatch a known-source line to the appropriate parser and return the result.
+fn parse_source_entry(
+    parts: &[String],
+    lineno: usize,
+    source_type: &str,
+) -> (Option<Entry>, Vec<String>) {
+    if parts.len() < 3 {
+        return (
+            None,
+            vec![format!("warning: line {lineno}: too few fields, skipping")],
+        );
+    }
+    let Some(entity_type) = EntityType::parse(&parts[1]) else {
+        return (
+            None,
+            vec![format!(
+                "warning: line {lineno}: unknown entity type '{}', skipping",
+                parts[1]
+            )],
+        );
+    };
+    match source_type {
+        "github" => parse_github_entry(parts, entity_type, lineno),
+        "local" => parse_local_entry(parts, entity_type, lineno),
+        "url" => parse_url_entry(parts, entity_type, lineno),
+        _ => (None, vec![]),
+    }
+}
+
+/// Parse and accumulate a known-source line: dispatch, collect warnings, push entry.
+/// `parts[0]` must be a known source type (`github`, `local`, or `url`).
+fn process_source_line(parts: &[String], lineno: usize, acc: &mut ParseAccumulator) {
+    let source_type = parts[0].as_str();
+    let (entry_opt, mut entry_warnings) = parse_source_entry(parts, lineno, source_type);
+    acc.warnings.append(&mut entry_warnings);
+    if let Some(entry) = entry_opt {
+        validate_and_push_entry(entry, lineno, acc);
     }
 }
 
@@ -294,10 +338,12 @@ pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileErro
         String::from_utf8_lossy(&raw_bytes).into_owned()
     };
 
-    let mut entries = Vec::new();
-    let mut install_targets = Vec::new();
-    let mut warnings = Vec::new();
-    let mut seen_names = HashSet::new();
+    let mut acc = ParseAccumulator {
+        entries: Vec::new(),
+        install_targets: Vec::new(),
+        warnings: Vec::new(),
+        seen_names: HashSet::new(),
+    };
 
     for (lineno, raw) in text.lines().enumerate() {
         let lineno = lineno + 1; // 1-indexed
@@ -306,54 +352,21 @@ pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileErro
             continue;
         }
 
-        let parts = split_line(line);
-        let parts = strip_inline_comment(parts);
+        let parts = strip_inline_comment(split_line(line));
         if parts.len() < 2 {
-            warnings.push(format!("warning: line {lineno}: too few fields, skipping"));
+            acc.warnings
+                .push(format!("warning: line {lineno}: too few fields, skipping"));
             continue;
         }
 
-        let source_type = &parts[0];
-
-        match source_type.as_str() {
-            "install" => {
-                parse_install_line(&parts, lineno, &mut install_targets, &mut warnings);
+        match parts[0].as_str() {
+            "install" => parse_install_line(&parts, lineno, &mut acc),
+            _ if KNOWN_SOURCES.contains(&parts[0].as_str()) => {
+                process_source_line(&parts, lineno, &mut acc);
             }
-            st if KNOWN_SOURCES.contains(&st) => {
-                if parts.len() < 3 {
-                    warnings.push(format!("warning: line {lineno}: too few fields, skipping"));
-                    continue;
-                }
-                let entity_type = match EntityType::parse(&parts[1]) {
-                    Some(et) => et,
-                    None => {
-                        warnings.push(format!(
-                            "warning: line {lineno}: unknown entity type '{}', skipping",
-                            parts[1]
-                        ));
-                        continue;
-                    }
-                };
-                let (entry_opt, mut entry_warnings) = match st {
-                    "github" => parse_github_entry(&parts, entity_type, lineno),
-                    "local" => parse_local_entry(&parts, entity_type, lineno),
-                    "url" => parse_url_entry(&parts, entity_type, lineno),
-                    _ => unreachable!(),
-                };
-                warnings.append(&mut entry_warnings);
-                if let Some(entry) = entry_opt {
-                    validate_and_push_entry(
-                        entry,
-                        lineno,
-                        &mut seen_names,
-                        &mut entries,
-                        &mut warnings,
-                    );
-                }
-            }
-            _ => {
-                warnings.push(format!(
-                    "warning: line {lineno}: unknown source type '{source_type}', skipping"
+            st => {
+                acc.warnings.push(format!(
+                    "warning: line {lineno}: unknown source type '{st}', skipping"
                 ));
             }
         }
@@ -361,10 +374,10 @@ pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileErro
 
     Ok(ParseResult {
         manifest: Manifest {
-            entries,
-            install_targets,
+            entries: acc.entries,
+            install_targets: acc.install_targets,
         },
-        warnings,
+        warnings: acc.warnings,
     })
 }
 
@@ -406,6 +419,14 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn dedent_line(line: &str, indent: usize) -> &str {
+        if line.len() >= indent {
+            &line[indent..]
+        } else {
+            line.trim()
+        }
+    }
+
     fn write_manifest(dir: &Path, content: &str) -> std::path::PathBuf {
         let p = dir.join(MANIFEST_NAME);
         // Dedent: strip leading whitespace common to all non-empty lines
@@ -418,13 +439,7 @@ mod tests {
             .unwrap_or(0);
         let dedented: String = lines
             .iter()
-            .map(|l| {
-                if l.len() >= min_indent {
-                    &l[min_indent..]
-                } else {
-                    l.trim()
-                }
-            })
+            .map(|l| dedent_line(l, min_indent))
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(&p, dedented.trim_start_matches('\n').to_string() + "\n").unwrap();

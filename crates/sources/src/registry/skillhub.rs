@@ -30,7 +30,7 @@ struct ApiResult {
 }
 
 impl Registry for SkillhubClub {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "skillhub.club"
     }
 

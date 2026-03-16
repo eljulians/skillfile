@@ -446,7 +446,9 @@ fn skill_entry_resolution_multi_skill_repo() {
     // The resolved path should be a directory entry like "skills/kubernetes-specialist".
     let matched = exact_match.unwrap();
     assert!(
-        !matched.ends_with(".md"),
+        !std::path::Path::new(&matched)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md")),
         "directory skill should not end in .md: {matched}"
     );
 }

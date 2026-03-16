@@ -3,7 +3,7 @@ mod update_check;
 use skillfile::commands;
 use skillfile::config;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Parser, Subcommand};
@@ -374,44 +374,49 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             name,
         } => commands::add::entry_from_url(&entity_type, &url, name.as_deref()),
     };
-    commands::add::cmd_add(entry, repo_root)
+    commands::add::cmd_add(&entry, repo_root)
 }
 
-fn run() -> Result<(), SkillfileError> {
-    let cli = Cli::parse();
-    let quiet = cli.quiet || std::env::var("SKILLFILE_QUIET").is_ok_and(|v| !v.is_empty());
-    skillfile_core::output::set_quiet(quiet);
-    let repo_root = PathBuf::from(".");
+fn run_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), SkillfileError> {
+    let user_targets = config::read_user_targets();
+    let extra = if user_targets.is_empty() {
+        None
+    } else {
+        Some(user_targets.as_slice())
+    };
+    skillfile_deploy::install::cmd_install(repo_root, dry_run, update, extra)
+}
 
-    match cli.command {
+/// Dispatch content-management commands (validate through resolve).
+fn run_content_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileError> {
+    match cmd {
+        Command::Validate => commands::validate::cmd_validate(repo_root),
+        Command::Format { dry_run } => commands::format::cmd_format(repo_root, dry_run),
+        Command::Pin { name, dry_run } => commands::pin::cmd_pin(&name, repo_root, dry_run),
+        Command::Unpin { name } => commands::pin::cmd_unpin(&name, repo_root),
+        Command::Diff { name } => commands::diff::cmd_diff(&name, repo_root),
+        Command::Resolve { name, abort } => {
+            commands::resolve::cmd_resolve(name.as_deref(), abort, repo_root)
+        }
+        // Remaining commands are handled by run()
+        cmd => run_source_commands(repo_root, cmd),
+    }
+}
+
+fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileError> {
+    match cmd {
         Command::Sync {
             dry_run,
             entry,
             update,
-        } => {
-            skillfile_sources::sync::cmd_sync(&repo_root, dry_run, entry.as_deref(), update)?;
-        }
+        } => skillfile_sources::sync::cmd_sync(repo_root, dry_run, entry.as_deref(), update),
         Command::Status { check_upstream } => {
-            commands::status::cmd_status(&repo_root, check_upstream)?;
+            commands::status::cmd_status(repo_root, check_upstream)
         }
-        Command::Init => {
-            commands::init::cmd_init(&repo_root)?;
-        }
-        Command::Install { dry_run, update } => {
-            let user_targets = config::read_user_targets();
-            let extra = if user_targets.is_empty() {
-                None
-            } else {
-                Some(user_targets.as_slice())
-            };
-            skillfile_deploy::install::cmd_install(&repo_root, dry_run, update, extra)?;
-        }
-        Command::Add { source } => {
-            handle_add(source, &repo_root)?;
-        }
-        Command::Remove { name } => {
-            commands::remove::cmd_remove(&name, &repo_root)?;
-        }
+        Command::Init => commands::init::cmd_init(repo_root),
+        Command::Install { dry_run, update } => run_install(repo_root, dry_run, update),
+        Command::Add { source } => handle_add(source, repo_root),
+        Command::Remove { name } => commands::remove::cmd_remove(&name, repo_root),
         Command::Search {
             query,
             limit,
@@ -419,38 +424,25 @@ fn run() -> Result<(), SkillfileError> {
             json,
             registry,
             no_interactive,
-        } => {
-            commands::search::cmd_search(&commands::search::SearchConfig {
-                query: &query,
-                limit,
-                min_score,
-                json,
-                registry: registry.as_deref(),
-                no_interactive,
-                repo_root: &repo_root,
-            })?;
-        }
-        Command::Validate => {
-            commands::validate::cmd_validate(&repo_root)?;
-        }
-        Command::Format { dry_run } => {
-            commands::format::cmd_format(&repo_root, dry_run)?;
-        }
-        Command::Pin { name, dry_run } => {
-            commands::pin::cmd_pin(&name, &repo_root, dry_run)?;
-        }
-        Command::Unpin { name } => {
-            commands::pin::cmd_unpin(&name, &repo_root)?;
-        }
-        Command::Diff { name } => {
-            commands::diff::cmd_diff(&name, &repo_root)?;
-        }
-        Command::Resolve { name, abort } => {
-            commands::resolve::cmd_resolve(name.as_deref(), abort, &repo_root)?;
-        }
+        } => commands::search::cmd_search(&commands::search::SearchConfig {
+            query: &query,
+            limit,
+            min_score,
+            json,
+            registry: registry.as_deref(),
+            no_interactive,
+            repo_root,
+        }),
+        _ => Ok(()), // covered by run_content_commands
     }
+}
 
-    Ok(())
+fn run() -> Result<(), SkillfileError> {
+    let cli = Cli::parse();
+    let quiet = cli.quiet || std::env::var("SKILLFILE_QUIET").is_ok_and(|v| !v.is_empty());
+    skillfile_core::output::set_quiet(quiet);
+    let repo_root = PathBuf::from(".");
+    run_content_commands(&repo_root, cli.command)
 }
 
 fn main() {

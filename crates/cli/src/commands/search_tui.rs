@@ -104,21 +104,7 @@ impl<'a> App<'a> {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| {
-                if query.is_empty() {
-                    return true;
-                }
-                let haystack = format!(
-                    "{} {} {} {}",
-                    item.name,
-                    item.owner,
-                    item.description.as_deref().unwrap_or(""),
-                    item.registry
-                )
-                .to_lowercase();
-                // Simple substring match — sufficient for a filter list.
-                query.split_whitespace().all(|w| haystack.contains(w))
-            })
+            .filter(|(_, item)| item_matches_query(item, &query))
             .map(|(i, _)| i)
             .collect();
 
@@ -138,25 +124,19 @@ impl<'a> App<'a> {
     /// Spawn background fetches for all visible skills.sh entries that
     /// don't have cached audit results yet.
     fn maybe_fetch_audits(&mut self) {
-        for &idx in &self.filtered {
-            let item = &self.items[idx];
-            if !item.registry.has_security_audits() {
-                continue;
-            }
-            if self.audit_cache.contains_key(&item.url) {
-                continue;
-            }
-            self.audit_cache
-                .insert(item.url.clone(), AuditState::Loading);
-            let url = item.url.clone();
-            let tx = self.audit_tx.clone();
-            std::thread::spawn(move || {
-                let state = match fetch_skillssh_audits(&url) {
-                    Ok(audits) => AuditState::Loaded(audits),
-                    Err(_) => AuditState::Failed,
-                };
-                let _ = tx.send((url, state));
-            });
+        let urls_to_fetch: Vec<String> = self
+            .filtered
+            .iter()
+            .map(|&idx| &self.items[idx])
+            .filter(|item| {
+                item.registry.has_security_audits() && !self.audit_cache.contains_key(&item.url)
+            })
+            .map(|item| item.url.clone())
+            .collect();
+
+        for url in urls_to_fetch {
+            self.audit_cache.insert(url.clone(), AuditState::Loading);
+            spawn_audit_fetch(url, self.audit_tx.clone());
         }
     }
 
@@ -168,6 +148,34 @@ impl<'a> App<'a> {
     }
 }
 
+/// Returns true if `item` matches `query` (empty query matches all).
+fn item_matches_query(item: &SearchResult, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let haystack = format!(
+        "{} {} {} {}",
+        item.name,
+        item.owner,
+        item.description.as_deref().unwrap_or(""),
+        item.registry
+    )
+    .to_lowercase();
+    // Simple substring match — sufficient for a filter list.
+    query.split_whitespace().all(|w| haystack.contains(w))
+}
+
+/// Spawn a background thread to fetch audit results for `url`.
+fn spawn_audit_fetch(url: String, tx: mpsc::Sender<(String, AuditState)>) {
+    std::thread::spawn(move || {
+        let state = match fetch_skillssh_audits(&url) {
+            Ok(audits) => AuditState::Loaded(audits),
+            Err(_) => AuditState::Failed,
+        };
+        let _ = tx.send((url, state));
+    });
+}
+
 // ===========================================================================
 // Update
 // ===========================================================================
@@ -175,21 +183,12 @@ impl<'a> App<'a> {
 /// Process a single key event and mutate app state.
 pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
     match key.code {
-        // Quit
         KeyCode::Esc => app.cancelled = true,
         KeyCode::Char('q') if app.filter.is_empty() => app.cancelled = true,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.cancelled = true;
         }
-
-        // Confirm selection
-        KeyCode::Enter => {
-            if app.selected().is_some() {
-                app.confirmed = true;
-            }
-        }
-
-        // Navigation
+        KeyCode::Enter => handle_key_enter(app),
         KeyCode::Up | KeyCode::Char('k') if app.filter.is_empty() => {
             move_selection(app, -1);
         }
@@ -197,17 +196,11 @@ pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
             move_selection(app, 1);
         }
         KeyCode::Home | KeyCode::Char('g') if app.filter.is_empty() => {
-            if !app.filtered.is_empty() {
-                app.list_state.select(Some(0));
-            }
+            handle_key_jump_top(app);
         }
         KeyCode::End | KeyCode::Char('G') if app.filter.is_empty() => {
-            if !app.filtered.is_empty() {
-                app.list_state.select(Some(app.filtered.len() - 1));
-            }
+            handle_key_jump_bottom(app);
         }
-
-        // Filter input
         KeyCode::Char(c) => {
             app.filter.push(c);
             app.refilter();
@@ -216,8 +209,28 @@ pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
             app.filter.pop();
             app.refilter();
         }
-
         _ => {}
+    }
+}
+
+/// Confirm the current selection (Enter key).
+fn handle_key_enter(app: &mut App<'_>) {
+    if app.selected().is_some() {
+        app.confirmed = true;
+    }
+}
+
+/// Jump to the first item (Home / g key).
+fn handle_key_jump_top(app: &mut App<'_>) {
+    if !app.filtered.is_empty() {
+        app.list_state.select(Some(0));
+    }
+}
+
+/// Jump to the last item (End / G key).
+fn handle_key_jump_bottom(app: &mut App<'_>) {
+    if !app.filtered.is_empty() {
+        app.list_state.select(Some(app.filtered.len() - 1));
     }
 }
 
@@ -227,8 +240,9 @@ fn move_selection(app: &mut App<'_>, delta: i32) {
     if len == 0 {
         return;
     }
-    let current = app.list_state.selected().unwrap_or(0) as i32;
-    let next = (current + delta).rem_euclid(len as i32) as usize;
+    let current = app.list_state.selected().unwrap_or(0);
+    #[allow(clippy::cast_possible_wrap)] // list length is always small
+    let next = (current as isize + delta as isize).rem_euclid(len as isize) as usize;
     app.list_state.select(Some(next));
 }
 
@@ -282,6 +296,45 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
     frame.render_widget(Paragraph::new(bar), area);
 }
 
+/// Build the spans for a single list item's audit/security indicator.
+fn build_list_item_audit_spans<'a>(
+    item: &'a SearchResult,
+    audit_cache: &HashMap<String, AuditState>,
+) -> Vec<Span<'a>> {
+    let mut spans = Vec::new();
+    if let Some(score) = item.security_score {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("\u{1f6e1} {score}"),
+            Style::default().fg(score_color(score)),
+        ));
+    } else if let Some(AuditState::Loaded(audits)) = audit_cache.get(&item.url) {
+        let all_pass = !audits.is_empty() && audits.iter().all(|a| a.passed);
+        let (icon, color) = audit_pass_fail_icon(all_pass);
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(icon, Style::default().fg(color)));
+    }
+    spans
+}
+
+/// Returns the icon and color for a pass/fail audit result (shield variant).
+fn audit_pass_fail_icon(passed: bool) -> (&'static str, Color) {
+    if passed {
+        ("\u{1f6e1} \u{2713}", Color::Green)
+    } else {
+        ("\u{1f6e1} \u{2717}", Color::Red)
+    }
+}
+
+/// Returns the icon and color for a per-provider audit result (check/cross variant).
+fn audit_provider_icon(passed: bool) -> (&'static str, Color) {
+    if passed {
+        ("\u{2713} ", Color::Green)
+    } else {
+        ("\u{2717} ", Color::Red)
+    }
+}
+
 /// Left pane: filterable list of results.
 fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
     let items: Vec<ListItem<'_>> = app
@@ -298,22 +351,7 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
                 Span::styled(&item.name, Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(stars_text, Style::default().fg(Color::Yellow)),
             ];
-            if let Some(score) = item.security_score {
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    format!("\u{1f6e1} {score}"),
-                    Style::default().fg(score_color(score)),
-                ));
-            } else if let Some(AuditState::Loaded(audits)) = app.audit_cache.get(&item.url) {
-                let all_pass = !audits.is_empty() && audits.iter().all(|a| a.passed);
-                let (icon, color) = if all_pass {
-                    ("\u{1f6e1} \u{2713}", Color::Green)
-                } else {
-                    ("\u{1f6e1} \u{2717}", Color::Red)
-                };
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(icon, Style::default().fg(color)));
-            }
+            spans.extend(build_list_item_audit_spans(item, &app.audit_cache));
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
                 item.registry.as_str(),
@@ -356,8 +394,26 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     frame.render_widget(para, area);
 }
 
+/// Build the spans for a single audit entry in the preview pane.
+fn build_single_audit_spans(
+    audit: &SecurityAudit,
+    label_style: Style,
+    is_first: bool,
+) -> Vec<Span<'_>> {
+    let mut spans = Vec::new();
+    if !is_first {
+        spans.push(Span::styled(" | ", label_style));
+    }
+    let (icon, color) = audit_provider_icon(audit.passed);
+    spans.push(Span::styled(
+        format!("{icon}{}", audit.provider),
+        Style::default().fg(color),
+    ));
+    spans
+}
+
 /// Render the security audit section for the preview.
-fn build_audit_lines<'a>(registry: RegistryId, audit_state: Option<&AuditState>) -> Vec<Line<'a>> {
+fn build_audit_lines(registry: RegistryId, audit_state: Option<&AuditState>) -> Vec<Line<'_>> {
     if !registry.has_security_audits() {
         return Vec::new();
     }
@@ -366,18 +422,7 @@ fn build_audit_lines<'a>(registry: RegistryId, audit_state: Option<&AuditState>)
         Some(AuditState::Loaded(audits)) if !audits.is_empty() => {
             let mut spans = vec![Span::styled("Audits:         ", label_style)];
             for (i, audit) in audits.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::styled(" | ", label_style));
-                }
-                let (icon, color) = if audit.passed {
-                    ("\u{2713} ", Color::Green)
-                } else {
-                    ("\u{2717} ", Color::Red)
-                };
-                spans.push(Span::styled(
-                    format!("{icon}{}", audit.provider),
-                    Style::default().fg(color),
-                ));
+                spans.extend(build_single_audit_spans(audit, label_style, i == 0));
             }
             vec![Line::from(spans)]
         }
@@ -424,7 +469,7 @@ fn build_description_lines<'a>(description: Option<&'a str>) -> Vec<Line<'a>> {
 /// Build the preview text for a single search result.
 fn build_preview_lines<'a>(
     item: &'a SearchResult,
-    audit_state: Option<&AuditState>,
+    audit_state: Option<&'a AuditState>,
 ) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(16);
 
@@ -577,6 +622,21 @@ fn score_color(score: u8) -> Color {
 // Terminal lifecycle
 // ===========================================================================
 
+/// Resolve the confirmed selection index from the app state.
+fn resolve_selection(app: &App<'_>) -> Option<usize> {
+    app.list_state
+        .selected()
+        .and_then(|i| app.filtered.get(i).copied())
+}
+
+/// Handle a single key event from the terminal.
+fn process_terminal_event(app: &mut App<'_>) -> Result<(), std::io::Error> {
+    if let Event::Key(key) = event::read()? {
+        handle_key(app, key);
+    }
+    Ok(())
+}
+
 /// Run the TUI event loop. Returns the selected SearchResult index (into the
 /// original `items` slice), or `None` if the user cancelled.
 pub fn run_tui(items: &[SearchResult], total: usize) -> Result<Option<usize>, std::io::Error> {
@@ -614,20 +674,12 @@ pub fn run_tui(items: &[SearchResult], total: usize) -> Result<Option<usize>, st
         terminal.draw(|f| draw(f, &mut app))?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key(&mut app, key);
-            }
+            process_terminal_event(&mut app)?;
         }
 
         if app.should_quit() {
-            break if app.confirmed {
-                // Map back to original index
-                app.list_state
-                    .selected()
-                    .and_then(|i| app.filtered.get(i).copied())
-            } else {
-                None
-            };
+            let selection = app.confirmed.then(|| resolve_selection(&app)).flatten();
+            break selection;
         }
     };
 
@@ -958,7 +1010,7 @@ mod tests {
         let lines = build_preview_lines(item, Option::<&AuditState>::None);
         let text: String = lines
             .iter()
-            .map(|l| l.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("code-reviewer"), "missing name");
@@ -976,7 +1028,7 @@ mod tests {
         let lines = build_preview_lines(item, Option::<&AuditState>::None);
         let text: String = lines
             .iter()
-            .map(|l| l.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("docker-helper"));
@@ -1044,7 +1096,7 @@ mod tests {
         let lines = build_preview_lines(item, Some(&audits));
         let text: String = lines
             .iter()
-            .map(|l| l.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Agent Trust Hub"), "missing provider");
@@ -1057,7 +1109,7 @@ mod tests {
         let lines = build_preview_lines(item, Some(&AuditState::Loading));
         let text: String = lines
             .iter()
-            .map(|l| l.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("loading"), "should show loading state");

@@ -92,9 +92,8 @@ fn diff_local_dir(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), Skil
             Some(f) => f.to_string(),
             None => continue,
         };
-        let inst_path = match installed.get(&filename) {
-            Some(p) => p,
-            None => continue,
+        let Some(inst_path) = installed.get(&filename) else {
+            continue;
         };
         if !inst_path.exists() {
             continue;
@@ -253,8 +252,12 @@ fn diff_conflict_dir(
     let mut any_diff = false;
 
     for filename in &all_filenames {
-        let old_content = old_files.get(filename).map(|s| s.as_str()).unwrap_or("");
-        let new_content = new_files.get(filename).map(|s| s.as_str()).unwrap_or("");
+        let old_content = old_files
+            .get(filename)
+            .map_or("", std::string::String::as_str);
+        let new_content = new_files
+            .get(filename)
+            .map_or("", std::string::String::as_str);
         let diff_text = similar::TextDiff::from_lines(old_content, new_content);
         let formatted = format!(
             "{}",
@@ -432,6 +435,7 @@ mod tests {
     }
 
     /// Create the vendor cache directory for a dir entry with two files.
+    #[allow(clippy::too_many_arguments)]
     fn setup_dir_cache(dir: &Path, name: &str, content1: &str, content2: &str) {
         let vdir = dir.join(format!(".skillfile/cache/skills/{name}"));
         std::fs::create_dir_all(&vdir).unwrap();
@@ -441,6 +445,7 @@ mod tests {
 
     /// Create the installed dir for a dir entry under .claude/skills/<name>/
     /// (claude-code + local scope + skill entity type → Nested mode).
+    #[allow(clippy::too_many_arguments)]
     fn setup_installed_dir(dir: &Path, name: &str, content1: &str, content2: &str) {
         let installed = dir.join(format!(".claude/skills/{name}"));
         std::fs::create_dir_all(&installed).unwrap();

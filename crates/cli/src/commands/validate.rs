@@ -3,9 +3,81 @@ use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
-use skillfile_core::models::{Scope, SourceFields};
+use skillfile_core::models::{Manifest, Scope, SourceFields};
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_deploy::adapter::adapters;
+
+fn check_duplicate_names(manifest: &Manifest, errors: &mut Vec<String>) {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for entry in &manifest.entries {
+        if let Some(existing_type) = seen.get(&entry.name) {
+            errors.push(format!(
+                "duplicate name '{}' ({} and {})",
+                entry.name,
+                existing_type,
+                entry.source_type()
+            ));
+        } else {
+            seen.insert(entry.name.clone(), entry.source_type().to_string());
+        }
+    }
+}
+
+fn check_local_paths(manifest: &Manifest, repo_root: &Path, errors: &mut Vec<String>) {
+    for entry in &manifest.entries {
+        let SourceFields::Local { path } = &entry.source else {
+            continue;
+        };
+        if !repo_root.join(path).exists() {
+            errors.push(format!(
+                "local path not found: '{}' (entry: {})",
+                path, entry.name
+            ));
+        }
+    }
+}
+
+fn check_platforms(manifest: &Manifest, errors: &mut Vec<String>) {
+    let all_adapters = adapters();
+    for target in &manifest.install_targets {
+        if !all_adapters.contains(&target.adapter) {
+            errors.push(format!("unknown platform: '{}'", target.adapter));
+        }
+    }
+}
+
+fn check_duplicate_targets(manifest: &Manifest, errors: &mut Vec<String>) {
+    let mut seen_targets: HashSet<(String, Scope)> = HashSet::new();
+    for target in &manifest.install_targets {
+        let key = (target.adapter.clone(), target.scope);
+        if seen_targets.contains(&key) {
+            errors.push(format!(
+                "duplicate install target: '{} {}'",
+                target.adapter, target.scope
+            ));
+        } else {
+            seen_targets.insert(key);
+        }
+    }
+}
+
+fn check_orphaned_locks(
+    manifest: &Manifest,
+    repo_root: &Path,
+    errors: &mut Vec<String>,
+) -> Result<(), SkillfileError> {
+    let locked = read_lock(repo_root)?;
+    let manifest_keys: HashSet<String> = manifest.entries.iter().map(lock_key).collect();
+    let mut orphaned: Vec<&String> = locked
+        .keys()
+        .filter(|k| !manifest_keys.contains(*k))
+        .collect();
+    orphaned.sort();
+    for key in orphaned {
+        errors.push(format!("orphaned lock entry: '{key}' (not in Skillfile)"));
+    }
+    Ok(())
+}
 
 pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
@@ -23,67 +95,11 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest = result.manifest;
     let mut errors: Vec<String> = Vec::new();
 
-    // Duplicate entry names.
-    let mut seen: HashMap<String, String> = HashMap::new();
-    for entry in &manifest.entries {
-        if let Some(existing_type) = seen.get(&entry.name) {
-            errors.push(format!(
-                "duplicate name '{}' ({} and {})",
-                entry.name,
-                existing_type,
-                entry.source_type()
-            ));
-        } else {
-            seen.insert(entry.name.clone(), entry.source_type().to_string());
-        }
-    }
-
-    // Missing local paths.
-    for entry in &manifest.entries {
-        if let SourceFields::Local { path } = &entry.source {
-            let p = repo_root.join(path);
-            if !p.exists() {
-                errors.push(format!(
-                    "local path not found: '{}' (entry: {})",
-                    path, entry.name
-                ));
-            }
-        }
-    }
-
-    // Unknown platforms.
-    let all_adapters = adapters();
-    for target in &manifest.install_targets {
-        if !all_adapters.contains(&target.adapter) {
-            errors.push(format!("unknown platform: '{}'", target.adapter));
-        }
-    }
-
-    // Duplicate install targets.
-    let mut seen_targets: HashSet<(String, Scope)> = HashSet::new();
-    for target in &manifest.install_targets {
-        let key = (target.adapter.clone(), target.scope);
-        if seen_targets.contains(&key) {
-            errors.push(format!(
-                "duplicate install target: '{} {}'",
-                target.adapter, target.scope
-            ));
-        } else {
-            seen_targets.insert(key);
-        }
-    }
-
-    // Orphaned lock entries.
-    let locked = read_lock(repo_root)?;
-    let manifest_keys: HashSet<String> = manifest.entries.iter().map(lock_key).collect();
-    let mut orphaned: Vec<&String> = locked
-        .keys()
-        .filter(|k| !manifest_keys.contains(*k))
-        .collect();
-    orphaned.sort();
-    for key in orphaned {
-        errors.push(format!("orphaned lock entry: '{key}' (not in Skillfile)"));
-    }
+    check_duplicate_names(&manifest, &mut errors);
+    check_local_paths(&manifest, repo_root, &mut errors);
+    check_platforms(&manifest, &mut errors);
+    check_duplicate_targets(&manifest, &mut errors);
+    check_orphaned_locks(&manifest, repo_root, &mut errors)?;
 
     if !errors.is_empty() {
         for msg in &errors {
@@ -95,7 +111,7 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     let n = manifest.entries.len();
     let t = manifest.install_targets.len();
     let entry_word = if n == 1 { "entry" } else { "entries" };
-    let target_word = if t != 1 { "targets" } else { "target" };
+    let target_word = if t == 1 { "target" } else { "targets" };
     println!("Skillfile OK — {n} {entry_word}, {t} install {target_word}");
 
     Ok(())

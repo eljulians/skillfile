@@ -214,17 +214,17 @@ impl Entry {
 
     #[cfg(test)]
     pub fn owner_repo(&self) -> &str {
-        self.source.as_github().map(|(or, _, _)| or).unwrap_or("")
+        self.source.as_github().map_or("", |(or, _, _)| or)
     }
 
     #[cfg(test)]
     pub fn path_in_repo(&self) -> &str {
-        self.source.as_github().map(|(_, pir, _)| pir).unwrap_or("")
+        self.source.as_github().map_or("", |(_, pir, _)| pir)
     }
 
     #[cfg(test)]
     pub fn ref_(&self) -> &str {
-        self.source.as_github().map(|(_, _, r)| r).unwrap_or("")
+        self.source.as_github().map_or("", |(_, _, r)| r)
     }
 
     #[cfg(test)]

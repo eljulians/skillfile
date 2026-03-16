@@ -93,18 +93,16 @@ pub fn config_path() -> Option<PathBuf> {
 /// Returns an empty `Vec` if the file doesn't exist, can't be parsed,
 /// or contains no valid `[[install]]` entries.
 pub fn read_user_targets_from(path: &Path) -> Vec<InstallTarget> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
     };
-    let config: Config = match toml::from_str(&content) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
+    let Ok(config): Result<Config, _> = toml::from_str(&content) else {
+        return Vec::new();
     };
     config
         .install
         .iter()
-        .filter_map(|e| e.to_install_target())
+        .filter_map(InstallEntry::to_install_target)
         .collect()
 }
 
