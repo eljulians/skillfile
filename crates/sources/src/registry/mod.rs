@@ -142,14 +142,14 @@ pub struct SearchResponse {
 // ===========================================================================
 
 /// Parameters for a registry search call.
-pub struct SearchQuery<'a> {
+pub(crate) struct SearchQuery<'a> {
     pub client: &'a dyn HttpClient,
     pub query: &'a str,
     pub opts: &'a SearchOptions,
 }
 
 /// A searchable registry backend.
-pub trait Registry: Send + Sync {
+pub(crate) trait Registry: Send + Sync {
     /// Human-readable name shown in output (e.g. "agentskill.sh").
     fn name(&self) -> &str;
 
@@ -158,7 +158,7 @@ pub trait Registry: Send + Sync {
 }
 
 /// Returns registries to query by default (public, no auth required).
-pub fn all_registries() -> Vec<Box<dyn Registry>> {
+pub(crate) fn all_registries() -> Vec<Box<dyn Registry>> {
     let mut regs: Vec<Box<dyn Registry>> = vec![Box::new(AgentskillSh), Box::new(SkillsSh)];
     // skillhub.club requires an API key — only include when configured.
     if std::env::var("SKILLHUB_API_KEY").is_ok_and(|k| !k.is_empty()) {
@@ -239,7 +239,7 @@ pub fn search_registry(
 }
 
 /// Search a single registry by name using an injected HTTP client (for testing).
-pub fn search_registry_with_client(
+pub(crate) fn search_registry_with_client(
     registry_name: &str,
     q: &SearchQuery<'_>,
 ) -> Result<SearchResponse, SkillfileError> {

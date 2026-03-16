@@ -87,14 +87,14 @@ pub fn resolve_github_sha(
 }
 
 /// Reference to a GitHub repo at a specific commit, bundling client + coordinates.
-pub struct GithubFetch<'a> {
+pub(crate) struct GithubFetch<'a> {
     pub client: &'a dyn HttpClient,
     pub owner_repo: &'a str,
     pub ref_: &'a str,
 }
 
 /// Fetch raw file bytes from `raw.githubusercontent.com`.
-pub fn fetch_github_file(
+pub(crate) fn fetch_github_file(
     gh: &GithubFetch<'_>,
     path_in_repo: &str,
 ) -> Result<Vec<u8>, SkillfileError> {
@@ -247,7 +247,7 @@ pub struct DirEntry {
 }
 
 /// List all files under `base_path` using the Git Trees API.
-pub fn list_github_dir_recursive(
+pub(crate) fn list_github_dir_recursive(
     gh: &GithubFetch<'_>,
     base_path: &str,
 ) -> Result<Vec<DirEntry>, SkillfileError> {
