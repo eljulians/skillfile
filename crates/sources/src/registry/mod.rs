@@ -141,19 +141,20 @@ pub struct SearchResponse {
 // Registry trait
 // ===========================================================================
 
+/// Parameters for a registry search call.
+pub struct SearchQuery<'a> {
+    pub client: &'a dyn HttpClient,
+    pub query: &'a str,
+    pub opts: &'a SearchOptions,
+}
+
 /// A searchable registry backend.
 pub trait Registry: Send + Sync {
     /// Human-readable name shown in output (e.g. "agentskill.sh").
     fn name(&self) -> &str;
 
     /// Search this registry. Returns a unified [`SearchResponse`].
-    #[allow(clippy::too_many_arguments)]
-    fn search(
-        &self,
-        client: &dyn HttpClient,
-        query: &str,
-        opts: &SearchOptions,
-    ) -> Result<SearchResponse, SkillfileError>;
+    fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError>;
 }
 
 /// Returns registries to query by default (public, no auth required).
@@ -194,7 +195,11 @@ pub fn search_all_with_client(
     let mut total = 0;
 
     for reg in &registries {
-        match reg.search(client, query, opts) {
+        match reg.search(&SearchQuery {
+            client,
+            query,
+            opts,
+        }) {
             Ok(resp) => {
                 total += resp.total;
                 all_items.extend(resp.items);
@@ -223,20 +228,20 @@ pub fn search_registry(
     opts: &SearchOptions,
 ) -> Result<SearchResponse, SkillfileError> {
     let client = UreqClient::new();
-    search_registry_with_client(&client, registry_name, query, opts)
+    search_registry_with_client(
+        registry_name,
+        &SearchQuery {
+            client: &client,
+            query,
+            opts,
+        },
+    )
 }
 
 /// Search a single registry by name using an injected HTTP client (for testing).
-///
-/// # Note
-/// The four parameters are all semantically required; bundling them would
-/// complicate the public API at every call site.
-#[allow(clippy::too_many_arguments)]
 pub fn search_registry_with_client(
-    client: &dyn HttpClient,
     registry_name: &str,
-    query: &str,
-    opts: &SearchOptions,
+    q: &SearchQuery<'_>,
 ) -> Result<SearchResponse, SkillfileError> {
     let reg: Box<dyn Registry> = match registry_name {
         "agentskill.sh" => Box::new(AgentskillSh),
@@ -250,8 +255,8 @@ pub fn search_registry_with_client(
         }
     };
 
-    let mut resp = reg.search(client, query, opts)?;
-    post_process(&mut resp, opts);
+    let mut resp = reg.search(q)?;
+    post_process(&mut resp, q.opts);
 
     Ok(resp)
 }
@@ -269,7 +274,11 @@ pub fn search_with_client(
     opts: &SearchOptions,
 ) -> Result<SearchResponse, SkillfileError> {
     let reg = AgentskillSh;
-    let mut resp = reg.search(client, query, opts)?;
+    let mut resp = reg.search(&SearchQuery {
+        client,
+        query,
+        opts,
+    })?;
     post_process(&mut resp, opts);
 
     Ok(resp)
@@ -517,9 +526,15 @@ mod tests {
     #[test]
     fn search_registry_filters_by_name() {
         let client = MockClient::new(vec![Ok(skillssh_mock_response())]);
-        let resp =
-            search_registry_with_client(&client, "skills.sh", "docker", &SearchOptions::default())
-                .unwrap();
+        let resp = search_registry_with_client(
+            "skills.sh",
+            &SearchQuery {
+                client: &client,
+                query: "docker",
+                opts: &SearchOptions::default(),
+            },
+        )
+        .unwrap();
         assert_eq!(resp.items.len(), 2);
         assert!(resp
             .items
@@ -531,10 +546,12 @@ mod tests {
     fn search_registry_rejects_unknown_name() {
         let client = MockClient::new(vec![]);
         let result = search_registry_with_client(
-            &client,
             "nonexistent.io",
-            "test",
-            &SearchOptions::default(),
+            &SearchQuery {
+                client: &client,
+                query: "test",
+                opts: &SearchOptions::default(),
+            },
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

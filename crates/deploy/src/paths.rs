@@ -2,24 +2,22 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use skillfile_core::error::SkillfileError;
-use skillfile_core::models::{EntityType, Entry, Manifest, Scope, SourceFields};
+use skillfile_core::models::{EntityType, Entry, Manifest, SourceFields};
 use skillfile_sources::strategy::{content_file, is_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
-use crate::adapter::{adapters, PlatformAdapter};
+use crate::adapter::{adapters, AdapterScope, PlatformAdapter};
 
 /// Resolve absolute deploy directory for (adapter, entity_type, scope).
-#[allow(clippy::too_many_arguments)]
 pub fn resolve_target_dir(
     adapter_name: &str,
     entity_type: EntityType,
-    scope: Scope,
-    repo_root: &Path,
+    ctx: &AdapterScope<'_>,
 ) -> Result<PathBuf, SkillfileError> {
     let a = adapters()
         .get(adapter_name)
         .ok_or_else(|| SkillfileError::Manifest(format!("unknown adapter '{adapter_name}'")))?;
-    Ok(a.target_dir(entity_type, scope, repo_root))
+    Ok(a.target_dir(entity_type, ctx))
 }
 
 /// Installed path for a single-file entry (first install target).
@@ -29,8 +27,11 @@ pub fn installed_path(
     repo_root: &Path,
 ) -> Result<PathBuf, SkillfileError> {
     let adapter = first_target(manifest)?;
-    let scope = manifest.install_targets[0].scope;
-    Ok(adapter.installed_path(entry, scope, repo_root))
+    let ctx = AdapterScope {
+        scope: manifest.install_targets[0].scope,
+        repo_root,
+    };
+    Ok(adapter.installed_path(entry, &ctx))
 }
 
 /// Installed files for a directory entry (first install target).
@@ -40,8 +41,11 @@ pub fn installed_dir_files(
     repo_root: &Path,
 ) -> Result<HashMap<String, PathBuf>, SkillfileError> {
     let adapter = first_target(manifest)?;
-    let scope = manifest.install_targets[0].scope;
-    Ok(adapter.installed_dir_files(entry, scope, repo_root))
+    let ctx = AdapterScope {
+        scope: manifest.install_targets[0].scope,
+        repo_root,
+    };
+    Ok(adapter.installed_dir_files(entry, &ctx))
 }
 
 /// Resolve the cache or local source path for an entry.
@@ -82,25 +86,27 @@ fn first_target(manifest: &Manifest) -> Result<&'static dyn PlatformAdapter, Ski
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skillfile_core::models::{EntityType, InstallTarget};
+    use crate::adapter::AdapterScope;
+    use skillfile_core::models::{EntityType, InstallTarget, Scope};
 
     #[test]
     fn resolve_target_dir_global() {
-        let result = resolve_target_dir(
-            "claude-code",
-            EntityType::Agent,
-            Scope::Global,
-            Path::new("/tmp"),
-        )
-        .unwrap();
+        let ctx = AdapterScope {
+            scope: Scope::Global,
+            repo_root: Path::new("/tmp"),
+        };
+        let result = resolve_target_dir("claude-code", EntityType::Agent, &ctx).unwrap();
         assert!(result.to_string_lossy().ends_with(".claude/agents"));
     }
 
     #[test]
     fn resolve_target_dir_local() {
         let tmp = tempfile::tempdir().unwrap();
-        let result =
-            resolve_target_dir("claude-code", EntityType::Agent, Scope::Local, tmp.path()).unwrap();
+        let ctx = AdapterScope {
+            scope: Scope::Local,
+            repo_root: tmp.path(),
+        };
+        let result = resolve_target_dir("claude-code", EntityType::Agent, &ctx).unwrap();
         assert_eq!(result, tmp.path().join(".claude/agents"));
     }
 

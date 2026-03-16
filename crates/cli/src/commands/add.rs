@@ -27,43 +27,53 @@ fn sync_and_install(
     repo_root: &Path,
     manifest: &skillfile_core::models::Manifest,
 ) -> Result<(), SkillfileError> {
-    let mut locked = read_lock(repo_root)?;
+    let locked = read_lock(repo_root)?;
     let client = skillfile_sources::http::UreqClient::new();
     let mut ctx = SyncContext {
         repo_root: repo_root.to_path_buf(),
         dry_run: false,
         update: false,
         sha_cache: std::collections::HashMap::new(),
+        locked,
     };
-    sync_entry(&client, entry, &mut ctx, &mut locked)?;
-    write_lock(repo_root, &locked)?;
+    sync_entry(&client, entry, &mut ctx)?;
+    write_lock(repo_root, &ctx.locked)?;
 
     let all_adapters = adapters();
     for target in &manifest.install_targets {
         if all_adapters.contains(&target.adapter) {
-            install_entry(entry, target, repo_root, None)?;
+            install_entry(
+                entry,
+                target,
+                &skillfile_deploy::install::InstallCtx {
+                    repo_root,
+                    opts: None,
+                },
+            )?;
         }
     }
     Ok(())
 }
 
+/// CLI arguments for building a GitHub entry.
+pub struct GithubEntryArgs<'a> {
+    pub entity_type: &'a str,
+    pub owner_repo: &'a str,
+    pub path: &'a str,
+    pub ref_: Option<&'a str>,
+    pub name: Option<&'a str>,
+}
+
 /// Build an Entry from CLI arguments for a github source.
-#[allow(clippy::too_many_arguments)]
-pub fn entry_from_github(
-    entity_type: &str,
-    owner_repo: &str,
-    path: &str,
-    ref_: Option<&str>,
-    name: Option<&str>,
-) -> Entry {
-    let inferred = infer_name(path);
+pub fn entry_from_github(args: &GithubEntryArgs<'_>) -> Entry {
+    let inferred = infer_name(args.path);
     Entry {
-        entity_type: EntityType::parse(entity_type).unwrap_or(EntityType::Skill),
-        name: name.unwrap_or(&inferred).to_string(),
+        entity_type: EntityType::parse(args.entity_type).unwrap_or(EntityType::Skill),
+        name: args.name.unwrap_or(&inferred).to_string(),
         source: SourceFields::Github {
-            owner_repo: owner_repo.to_string(),
-            path_in_repo: path.to_string(),
-            ref_: ref_.unwrap_or(DEFAULT_REF).to_string(),
+            owner_repo: args.owner_repo.to_string(),
+            path_in_repo: args.path.to_string(),
+            ref_: args.ref_.unwrap_or(DEFAULT_REF).to_string(),
         },
     }
 }
@@ -211,7 +221,13 @@ mod tests {
     fn add_github_entry_inferred_name() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
-        let entry = entry_from_github("agent", "owner/repo", "agents/agent.md", None, None);
+        let entry = entry_from_github(&GithubEntryArgs {
+            entity_type: "agent",
+            owner_repo: "owner/repo",
+            path: "agents/agent.md",
+            ref_: None,
+            name: None,
+        });
         cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
@@ -222,13 +238,13 @@ mod tests {
     fn add_github_entry_explicit_name_and_ref() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
-        let entry = entry_from_github(
-            "agent",
-            "owner/repo",
-            "agents/agent.md",
-            Some("v1.0"),
-            Some("my-agent"),
-        );
+        let entry = entry_from_github(&GithubEntryArgs {
+            entity_type: "agent",
+            owner_repo: "owner/repo",
+            path: "agents/agent.md",
+            ref_: Some("v1.0"),
+            name: Some("my-agent"),
+        });
         cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
@@ -283,7 +299,13 @@ mod tests {
     fn add_github_dir_entry() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
-        let entry = entry_from_github("agent", "owner/repo", "agents/core-dev", None, None);
+        let entry = entry_from_github(&GithubEntryArgs {
+            entity_type: "agent",
+            owner_repo: "owner/repo",
+            path: "agents/core-dev",
+            ref_: None,
+            name: None,
+        });
         cmd_add(&entry, dir.path()).unwrap();
 
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
@@ -320,13 +342,13 @@ mod tests {
 
     #[test]
     fn format_line_github() {
-        let entry = entry_from_github(
-            "agent",
-            "owner/repo",
-            "agents/tool.md",
-            Some("v2.0"),
-            Some("my-tool"),
-        );
+        let entry = entry_from_github(&GithubEntryArgs {
+            entity_type: "agent",
+            owner_repo: "owner/repo",
+            path: "agents/tool.md",
+            ref_: Some("v2.0"),
+            name: Some("my-tool"),
+        });
         let line = format_line(&entry);
         assert_eq!(
             line,
@@ -337,7 +359,13 @@ mod tests {
     #[test]
     fn format_line_github_default_ref_omitted() {
         // When ref is "main" (DEFAULT_REF) it must be omitted from the line.
-        let entry = entry_from_github("skill", "owner/repo", "skills/tool.md", None, Some("tool"));
+        let entry = entry_from_github(&GithubEntryArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            path: "skills/tool.md",
+            ref_: None,
+            name: Some("tool"),
+        });
         let line = format_line(&entry);
         assert_eq!(line, "github  skill  owner/repo  skills/tool.md");
     }
@@ -361,7 +389,13 @@ mod tests {
 
     #[test]
     fn entry_from_github_default_ref() {
-        let entry = entry_from_github("skill", "o/r", "path.md", None, None);
+        let entry = entry_from_github(&GithubEntryArgs {
+            entity_type: "skill",
+            owner_repo: "o/r",
+            path: "path.md",
+            ref_: None,
+            name: None,
+        });
         match &entry.source {
             SourceFields::Github { ref_, .. } => {
                 assert_eq!(
@@ -375,7 +409,13 @@ mod tests {
 
     #[test]
     fn entry_from_github_explicit_ref() {
-        let entry = entry_from_github("skill", "o/r", "path.md", Some("v1.2.3"), None);
+        let entry = entry_from_github(&GithubEntryArgs {
+            entity_type: "skill",
+            owner_repo: "o/r",
+            path: "path.md",
+            ref_: Some("v1.2.3"),
+            name: None,
+        });
         match &entry.source {
             SourceFields::Github { ref_, .. } => {
                 assert_eq!(ref_, "v1.2.3");

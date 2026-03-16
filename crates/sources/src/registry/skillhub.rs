@@ -2,10 +2,9 @@
 
 use serde::Deserialize;
 
-use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
-use super::{Registry, RegistryId, SearchOptions, SearchResponse, SearchResult};
+use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
 
 /// Base URL for the skillhub.club search API.
 const SKILLHUB_API: &str = "https://www.skillhub.club/api/v1/skills/search";
@@ -34,12 +33,8 @@ impl Registry for SkillhubClub {
         "skillhub.club"
     }
 
-    fn search(
-        &self,
-        client: &dyn HttpClient,
-        query: &str,
-        _opts: &SearchOptions,
-    ) -> Result<SearchResponse, SkillfileError> {
+    fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError> {
+        let (client, query) = (q.client, q.query);
         // Gracefully skip if no API key is configured
         let api_key = match std::env::var("SKILLHUB_API_KEY") {
             Ok(key) if !key.is_empty() => key,
@@ -58,7 +53,11 @@ impl Registry for SkillhubClub {
         .to_string();
 
         let bytes = client
-            .post_json_with_bearer(SKILLHUB_API, &body, &api_key)
+            .post_json_with_bearer(&crate::http::BearerPost {
+                url: SKILLHUB_API,
+                body: &body,
+                token: &api_key,
+            })
             .map_err(|e| SkillfileError::Network(format!("skillhub.club search failed: {e}")))?;
 
         let resp_body = String::from_utf8(bytes).map_err(|e| {
@@ -101,6 +100,7 @@ impl Registry for SkillhubClub {
 mod tests {
     use super::*;
     use crate::registry::test_support::MockClient;
+    use crate::registry::{SearchOptions, SearchQuery};
     use std::sync::Mutex;
 
     /// Serializes tests that manipulate the `SKILLHUB_API_KEY` env var.
@@ -130,7 +130,11 @@ mod tests {
         let client = MockClient::new(vec![]).with_post_responses(vec![Ok(mock_response())]);
         let reg = SkillhubClub;
         let resp = reg
-            .search(&client, "testing", &SearchOptions::default())
+            .search(&SearchQuery {
+                client: &client,
+                query: "testing",
+                opts: &SearchOptions::default(),
+            })
             .unwrap();
         assert_eq!(resp.items.len(), 1);
         assert_eq!(resp.items[0].name, "testing-pro");
@@ -153,7 +157,11 @@ mod tests {
         let client = MockClient::new(vec![]);
         let reg = SkillhubClub;
         let resp = reg
-            .search(&client, "testing", &SearchOptions::default())
+            .search(&SearchQuery {
+                client: &client,
+                query: "testing",
+                opts: &SearchOptions::default(),
+            })
             .unwrap();
         assert_eq!(resp.items.len(), 0);
         assert_eq!(resp.total, 0);

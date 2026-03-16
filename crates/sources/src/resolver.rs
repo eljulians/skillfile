@@ -86,21 +86,28 @@ pub fn resolve_github_sha(
     )))
 }
 
+/// Reference to a GitHub repo at a specific commit, bundling client + coordinates.
+pub struct GithubFetch<'a> {
+    pub client: &'a dyn HttpClient,
+    pub owner_repo: &'a str,
+    pub ref_: &'a str,
+}
+
 /// Fetch raw file bytes from `raw.githubusercontent.com`.
-#[allow(clippy::too_many_arguments)]
 pub fn fetch_github_file(
-    client: &dyn HttpClient,
-    owner_repo: &str,
+    gh: &GithubFetch<'_>,
     path_in_repo: &str,
-    sha: &str,
 ) -> Result<Vec<u8>, SkillfileError> {
     let effective_path = if path_in_repo == "." {
         "SKILL.md"
     } else {
         path_in_repo
     };
-    let url = format!("https://raw.githubusercontent.com/{owner_repo}/{sha}/{effective_path}");
-    http_get(client, &url)
+    let url = format!(
+        "https://raw.githubusercontent.com/{}/{}/{}",
+        gh.owner_repo, gh.ref_, effective_path
+    );
+    http_get(gh.client, &url)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,17 +247,18 @@ pub struct DirEntry {
 }
 
 /// List all files under `base_path` using the Git Trees API.
-#[allow(clippy::too_many_arguments)]
 pub fn list_github_dir_recursive(
-    client: &dyn HttpClient,
-    owner_repo: &str,
+    gh: &GithubFetch<'_>,
     base_path: &str,
-    ref_: &str,
 ) -> Result<Vec<DirEntry>, SkillfileError> {
-    let url = format!("https://api.github.com/repos/{owner_repo}/git/trees/{ref_}?recursive=1");
-    let text = client.get_json(&url)?.ok_or_else(|| {
+    let url = format!(
+        "https://api.github.com/repos/{}/git/trees/{}?recursive=1",
+        gh.owner_repo, gh.ref_
+    );
+    let text = gh.client.get_json(&url)?.ok_or_else(|| {
         SkillfileError::Network(format!(
-            "failed to list directory {owner_repo}/{base_path}: 4xx error"
+            "failed to list directory {}/{base_path}: 4xx error",
+            gh.owner_repo
         ))
     })?;
     let data: serde_json::Value = serde_json::from_str(&text)
@@ -271,8 +279,10 @@ pub fn list_github_dir_recursive(
         .filter_map(|item| {
             let path = item["path"].as_str()?;
             let relative_path = path.strip_prefix(&prefix)?.to_string();
-            let download_url =
-                format!("https://raw.githubusercontent.com/{owner_repo}/{ref_}/{path}");
+            let download_url = format!(
+                "https://raw.githubusercontent.com/{}/{}/{}",
+                gh.owner_repo, gh.ref_, path
+            );
             Some(DirEntry {
                 relative_path,
                 download_url,
@@ -745,7 +755,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_bytes(&url, b"# Git skill".to_vec());
 
-        let result = fetch_github_file(&client, "owner/repo", "skills/git.md", sha).unwrap();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo: "owner/repo",
+            ref_: sha,
+        };
+        let result = fetch_github_file(&gh, "skills/git.md").unwrap();
         assert_eq!(result, b"# Git skill");
     }
 
@@ -757,7 +772,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_bytes(&url, b"# Root skill".to_vec());
 
-        let result = fetch_github_file(&client, "org/repo", ".", sha).unwrap();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo: "org/repo",
+            ref_: sha,
+        };
+        let result = fetch_github_file(&gh, ".").unwrap();
         assert_eq!(result, b"# Root skill");
     }
 
@@ -768,7 +788,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_bytes_err(&url, "HTTP 404: not found");
 
-        let err = fetch_github_file(&client, "org/repo", "missing.md", sha).unwrap_err();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo: "org/repo",
+            ref_: sha,
+        };
+        let err = fetch_github_file(&gh, "missing.md").unwrap_err();
         assert!(err.to_string().contains("HTTP 404: not found"));
     }
 
@@ -801,7 +826,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json(&url, &json);
 
-        let entries = list_github_dir_recursive(&client, owner_repo, "agents/dir", ref_).unwrap();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+        };
+        let entries = list_github_dir_recursive(&gh, "agents/dir").unwrap();
 
         assert_eq!(entries.len(), 2);
 
@@ -821,8 +851,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json(&url, &json);
 
-        let entries =
-            list_github_dir_recursive(&client, owner_repo, "skills/python", ref_).unwrap();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+        };
+        let entries = list_github_dir_recursive(&gh, "skills/python").unwrap();
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].relative_path, "SKILL.md");
@@ -846,8 +880,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json(&url, &json);
 
-        let entries =
-            list_github_dir_recursive(&client, owner_repo, "agents/data-analyst", ref_).unwrap();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+        };
+        let entries = list_github_dir_recursive(&gh, "agents/data-analyst").unwrap();
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].relative_path, "agent.md");
@@ -862,7 +900,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json(&url, r#"{"tree": []}"#);
 
-        let entries = list_github_dir_recursive(&client, owner_repo, "agents/dir", ref_).unwrap();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+        };
+        let entries = list_github_dir_recursive(&gh, "agents/dir").unwrap();
         assert!(entries.is_empty());
     }
 
@@ -875,7 +918,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json_none(&url);
 
-        let err = list_github_dir_recursive(&client, owner_repo, "agents/dir", ref_).unwrap_err();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+        };
+        let err = list_github_dir_recursive(&gh, "agents/dir").unwrap_err();
         assert!(err.to_string().contains("failed to list directory"));
     }
 
@@ -888,7 +936,12 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json(&url, "not valid json");
 
-        let err = list_github_dir_recursive(&client, owner_repo, "agents/dir", ref_).unwrap_err();
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+        };
+        let err = list_github_dir_recursive(&gh, "agents/dir").unwrap_err();
         assert!(err.to_string().contains("invalid tree JSON"));
     }
 

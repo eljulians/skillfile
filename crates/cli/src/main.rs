@@ -356,13 +356,13 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             path,
             ref_,
             name,
-        } => commands::add::entry_from_github(
-            &entity_type,
-            &owner_repo,
-            &path,
-            ref_.as_deref(),
-            name.as_deref(),
-        ),
+        } => commands::add::entry_from_github(&commands::add::GithubEntryArgs {
+            entity_type: &entity_type,
+            owner_repo: &owner_repo,
+            path: &path,
+            ref_: ref_.as_deref(),
+            name: name.as_deref(),
+        }),
         AddSource::Local {
             entity_type,
             path,
@@ -384,7 +384,14 @@ fn run_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), Skil
     } else {
         Some(user_targets.as_slice())
     };
-    skillfile_deploy::install::cmd_install(repo_root, dry_run, update, extra)
+    skillfile_deploy::install::cmd_install(
+        repo_root,
+        &skillfile_deploy::install::CmdInstallOpts {
+            dry_run,
+            update,
+            extra_targets: extra,
+        },
+    )
 }
 
 /// Dispatch content-management commands (validate through resolve).
@@ -409,7 +416,12 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
             dry_run,
             entry,
             update,
-        } => skillfile_sources::sync::cmd_sync(repo_root, dry_run, entry.as_deref(), update),
+        } => skillfile_sources::sync::cmd_sync(&skillfile_sources::sync::SyncCmdOpts {
+            repo_root,
+            dry_run,
+            entry_filter: entry.as_deref(),
+            update,
+        }),
         Command::Status { check_upstream } => {
             commands::status::cmd_status(repo_root, check_upstream)
         }

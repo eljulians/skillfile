@@ -2,10 +2,9 @@
 
 use serde::Deserialize;
 
-use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
-use super::{urlencoded, Registry, RegistryId, SearchOptions, SearchResponse, SearchResult};
+use super::{urlencoded, Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
 
 /// Base URL for the skills.sh search API.
 const SKILLSSH_API: &str = "https://skills.sh/api/search";
@@ -34,12 +33,8 @@ impl Registry for SkillsSh {
         "skills.sh"
     }
 
-    fn search(
-        &self,
-        client: &dyn HttpClient,
-        query: &str,
-        _opts: &SearchOptions,
-    ) -> Result<SearchResponse, SkillfileError> {
+    fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError> {
+        let (client, query) = (q.client, q.query);
         let url = format!("{SKILLSSH_API}?q={}", urlencoded(query));
 
         let bytes = client
@@ -96,6 +91,7 @@ impl Registry for SkillsSh {
 mod tests {
     use super::*;
     use crate::registry::test_support::MockClient;
+    use crate::registry::{SearchOptions, SearchQuery};
 
     fn mock_response() -> String {
         r#"{
@@ -128,7 +124,11 @@ mod tests {
         let client = MockClient::new(vec![Ok(mock_response())]);
         let reg = SkillsSh;
         let resp = reg
-            .search(&client, "docker", &SearchOptions::default())
+            .search(&SearchQuery {
+                client: &client,
+                query: "docker",
+                opts: &SearchOptions::default(),
+            })
             .unwrap();
         assert_eq!(resp.items.len(), 2);
         assert_eq!(resp.total, 2);
@@ -156,7 +156,13 @@ mod tests {
             min_score: None,
         };
         // Per-registry search returns all results; limit is applied globally by post_process.
-        let resp = reg.search(&client, "docker", &opts).unwrap();
+        let resp = reg
+            .search(&SearchQuery {
+                client: &client,
+                query: "docker",
+                opts: &opts,
+            })
+            .unwrap();
         assert_eq!(resp.items.len(), 2);
     }
 
@@ -166,7 +172,11 @@ mod tests {
         let client = MockClient::new(vec![Ok(json.to_string())]);
         let reg = SkillsSh;
         let resp = reg
-            .search(&client, "nonexistent", &SearchOptions::default())
+            .search(&SearchQuery {
+                client: &client,
+                query: "nonexistent",
+                opts: &SearchOptions::default(),
+            })
             .unwrap();
         assert_eq!(resp.items.len(), 0);
         assert_eq!(resp.total, 0);

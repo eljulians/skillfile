@@ -10,7 +10,7 @@ use skillfile_core::progress;
 use crate::http::{HttpClient, UreqClient};
 use crate::resolver::{
     fetch_files_parallel, fetch_github_file, http_get, list_github_dir_recursive,
-    resolve_github_sha,
+    resolve_github_sha, GithubFetch,
 };
 use crate::strategy::{content_file, is_dir_entry, meta_sha};
 
@@ -22,6 +22,7 @@ pub struct SyncContext {
     pub dry_run: bool,
     pub update: bool,
     pub sha_cache: HashMap<(String, String), String>,
+    pub locked: BTreeMap<String, LockEntry>,
 }
 
 /// Compute the vendor cache directory for an entry.
@@ -79,13 +80,11 @@ fn cache_github_sha(ctx: &mut SyncContext, entry: &Entry, sha: &str) {
         .or_insert_with(|| sha.to_owned());
 }
 
-/// Sync a single entry. Returns updated lock map.
-#[allow(clippy::too_many_arguments)]
+/// Sync a single entry. Updates `ctx.locked` in place.
 pub fn sync_entry(
     client: &dyn HttpClient,
     entry: &Entry,
     ctx: &mut SyncContext,
-    locked: &mut BTreeMap<String, LockEntry>,
 ) -> Result<(), SkillfileError> {
     match &entry.source {
         SourceFields::Local { .. } => {
@@ -98,11 +97,11 @@ pub fn sync_entry(
                 dry_run: ctx.dry_run,
                 update: ctx.update,
                 sha_cache: &ctx.sha_cache,
-                locked,
+                locked: &ctx.locked,
             };
             if let Some((key, le)) = sync_github_core(client, entry, &params)? {
                 cache_github_sha(ctx, entry, &le.sha);
-                locked.insert(key, le);
+                ctx.locked.insert(key, le);
             }
             Ok(())
         }
@@ -155,7 +154,12 @@ fn write_github_dir(op: &FetchOp<'_>) -> Result<String, SkillfileError> {
         vdir,
         label,
     } = op;
-    let dir_entries = list_github_dir_recursive(*client, owner_repo, path_in_repo, sha)?;
+    let ghf = GithubFetch {
+        client: *client,
+        owner_repo,
+        ref_: sha,
+    };
+    let dir_entries = list_github_dir_recursive(&ghf, path_in_repo)?;
     let fetched = fetch_files_parallel(*client, &dir_entries)?;
     for (relative_path, content) in &fetched {
         let dest = vdir.join(relative_path);
@@ -187,7 +191,12 @@ fn write_github_file(op: &FetchOp<'_>) -> Result<String, SkillfileError> {
         vdir,
         label,
     } = op;
-    let content = fetch_github_file(*client, owner_repo, path_in_repo, sha)?;
+    let ghf = GithubFetch {
+        client: *client,
+        owner_repo,
+        ref_: sha,
+    };
+    let content = fetch_github_file(&ghf, path_in_repo)?;
     let effective_path = if *path_in_repo == "." {
         "SKILL.md"
     } else {
@@ -614,14 +623,20 @@ struct SyncJob<'a> {
     locked: BTreeMap<String, LockEntry>,
 }
 
+/// Options for the `sync` command.
+pub struct SyncCmdOpts<'a> {
+    pub repo_root: &'a Path,
+    pub dry_run: bool,
+    pub entry_filter: Option<&'a str>,
+    pub update: bool,
+}
+
 /// Run the `sync` command.
-#[allow(clippy::too_many_arguments)]
-pub fn cmd_sync(
-    repo_root: &Path,
-    dry_run: bool,
-    entry_filter: Option<&str>,
-    update: bool,
-) -> Result<(), SkillfileError> {
+pub fn cmd_sync(opts: &SyncCmdOpts<'_>) -> Result<(), SkillfileError> {
+    let repo_root = opts.repo_root;
+    let dry_run = opts.dry_run;
+    let entry_filter = opts.entry_filter;
+    let update = opts.update;
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
         return Err(SkillfileError::Manifest(format!(
@@ -684,19 +699,20 @@ fn run_sequential_sync(job: SyncJob<'_>) -> Result<(), SkillfileError> {
         entries,
         dry_run,
         update,
-        mut locked,
+        locked,
     } = job;
     let mut ctx = SyncContext {
         repo_root: repo_root.to_path_buf(),
         dry_run,
         update,
         sha_cache: HashMap::new(),
+        locked,
     };
     for entry in entries {
-        sync_entry(client, entry, &mut ctx, &mut locked)?;
+        sync_entry(client, entry, &mut ctx)?;
     }
     if !dry_run {
-        write_lock(repo_root, &locked)?;
+        write_lock(repo_root, &ctx.locked)?;
         progress!("Done.");
     }
     Ok(())
@@ -775,7 +791,12 @@ pub fn fetch_file_at_sha(
             "fetch_file_at_sha only supports github entries".into(),
         ));
     };
-    let bytes = crate::resolver::fetch_github_file(client, owner_repo, path_in_repo, sha)?;
+    let ghf = GithubFetch {
+        client,
+        owner_repo,
+        ref_: sha,
+    };
+    let bytes = crate::resolver::fetch_github_file(&ghf, path_in_repo)?;
     crate::resolver::decode_safe(bytes)
         .map_err(|_| SkillfileError::Network(format!("binary file at sha {sha}")))
 }
@@ -799,8 +820,12 @@ pub fn fetch_dir_at_sha(
             "fetch_dir_at_sha only supports github entries".into(),
         ));
     };
-    let dir_entries =
-        crate::resolver::list_github_dir_recursive(client, owner_repo, path_in_repo, sha)?;
+    let ghf = GithubFetch {
+        client,
+        owner_repo,
+        ref_: sha,
+    };
+    let dir_entries = crate::resolver::list_github_dir_recursive(&ghf, path_in_repo)?;
     let fetched = crate::resolver::fetch_files_parallel(client, &dir_entries)?;
     let mut result = HashMap::new();
     for (path, content) in fetched {
@@ -935,6 +960,7 @@ mod tests {
             dry_run: false,
             update: false,
             sha_cache: HashMap::new(),
+            locked: BTreeMap::new(),
         }
     }
 
@@ -1091,12 +1117,10 @@ mod tests {
         let entry = local_entry("git-commit", "skills/git/commit.md");
         let client = MockClient::new(); // no responses needed
         let mut ctx = make_sync_ctx(dir.path());
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-
-        let result = sync_entry(&client, &entry, &mut ctx, &mut locked);
+        let result = sync_entry(&client, &entry, &mut ctx);
         assert!(result.is_ok());
         // Lock must not have been modified for a local entry
-        assert!(locked.is_empty());
+        assert!(ctx.locked.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1112,12 +1136,10 @@ mod tests {
         let client = MockClient::new();
         let mut ctx = make_sync_ctx(dir.path());
         ctx.dry_run = true;
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-
-        let result = sync_entry(&client, &entry, &mut ctx, &mut locked);
+        let result = sync_entry(&client, &entry, &mut ctx);
         assert!(result.is_ok());
         // Dry-run must not persist any lock entry
-        assert!(locked.is_empty());
+        assert!(ctx.locked.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1149,9 +1171,11 @@ mod tests {
         // Write the content file so content_exists returns true
         std::fs::write(vdir.join("my-skill.md"), b"# skill").unwrap();
 
+        // MockClient has no responses: if any HTTP call is made, the test fails
+        let client = MockClient::new();
+        let mut ctx = make_sync_ctx(dir.path());
         // Populate lock with the same SHA
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-        locked.insert(
+        ctx.locked.insert(
             "github/skill/my-skill".to_string(),
             LockEntry {
                 sha: sha.to_string(),
@@ -1160,14 +1184,10 @@ mod tests {
             },
         );
 
-        // MockClient has no responses: if any HTTP call is made, the test fails
-        let client = MockClient::new();
-        let mut ctx = make_sync_ctx(dir.path());
-
-        let result = sync_entry(&client, &entry, &mut ctx, &mut locked);
+        let result = sync_entry(&client, &entry, &mut ctx);
         assert!(result.is_ok(), "unexpected error: {result:?}");
         // Lock entry must remain unchanged
-        assert_eq!(locked["github/skill/my-skill"].sha, sha);
+        assert_eq!(ctx.locked["github/skill/my-skill"].sha, sha);
     }
 
     // -----------------------------------------------------------------------
@@ -1193,13 +1213,12 @@ mod tests {
             .with_bytes(raw_url.clone(), b"# My Skill\nContent here.".to_vec());
 
         let mut ctx = make_sync_ctx(dir.path());
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-
-        let result = sync_entry(&client, &entry, &mut ctx, &mut locked);
+        let result = sync_entry(&client, &entry, &mut ctx);
         assert!(result.is_ok(), "sync_entry failed: {result:?}");
 
         // Lock must be updated with the resolved SHA
-        let lock_entry = locked
+        let lock_entry = ctx
+            .locked
             .get("github/skill/my-skill")
             .expect("lock entry missing");
         assert_eq!(lock_entry.sha, sha);
@@ -1240,19 +1259,18 @@ mod tests {
             .with_bytes(raw_url2, b"# Two".to_vec());
 
         let mut ctx = make_sync_ctx(dir.path());
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
 
-        sync_entry(&client, &entry1, &mut ctx, &mut locked).unwrap();
+        sync_entry(&client, &entry1, &mut ctx).unwrap();
         // After the first call the SHA must be in the cache
         assert!(ctx
             .sha_cache
             .contains_key(&("owner/repo".to_string(), "main".to_string())));
 
         // The second call must succeed using the cached SHA (no second get_json call)
-        sync_entry(&client, &entry2, &mut ctx, &mut locked).unwrap();
+        sync_entry(&client, &entry2, &mut ctx).unwrap();
 
-        assert!(locked.contains_key("github/skill/skill-one"));
-        assert!(locked.contains_key("github/skill/skill-two"));
+        assert!(ctx.locked.contains_key("github/skill/skill-one"));
+        assert!(ctx.locked.contains_key("github/skill/skill-two"));
     }
 
     // -----------------------------------------------------------------------
@@ -1282,9 +1300,8 @@ mod tests {
             .with_bytes(raw_url, b"# Root Skill".to_vec());
 
         let mut ctx = make_sync_ctx(dir.path());
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
 
-        sync_entry(&client, &entry, &mut ctx, &mut locked).unwrap();
+        sync_entry(&client, &entry, &mut ctx).unwrap();
 
         let vdir = vendor_dir_for(&entry, dir.path());
         assert!(vdir.join("SKILL.md").exists());
@@ -1304,9 +1321,7 @@ mod tests {
             MockClient::new().with_bytes(url, b"# Example Skill\nFetched content.".to_vec());
 
         let mut ctx = make_sync_ctx(dir.path());
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-
-        let result = sync_entry(&client, &entry, &mut ctx, &mut locked);
+        let result = sync_entry(&client, &entry, &mut ctx);
         assert!(result.is_ok(), "sync_url failed: {result:?}");
 
         let vdir = vendor_dir_for(&entry, dir.path());
@@ -1331,9 +1346,7 @@ mod tests {
         let client = MockClient::new();
         let mut ctx = make_sync_ctx(dir.path());
         ctx.dry_run = true;
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-
-        let result = sync_entry(&client, &entry, &mut ctx, &mut locked);
+        let result = sync_entry(&client, &entry, &mut ctx);
         assert!(result.is_ok());
 
         // Nothing must have been written
@@ -1359,7 +1372,12 @@ mod tests {
         std::fs::create_dir_all(&skills_dir).unwrap();
         std::fs::write(skills_dir.join("commit.md"), b"# git commit").unwrap();
 
-        let result = super::cmd_sync(dir.path(), false, None, false);
+        let result = super::cmd_sync(&super::SyncCmdOpts {
+            repo_root: dir.path(),
+            dry_run: false,
+            entry_filter: None,
+            update: false,
+        });
         assert!(result.is_ok(), "cmd_sync failed: {result:?}");
     }
 
@@ -1372,7 +1390,12 @@ mod tests {
         )
         .unwrap();
 
-        let result = super::cmd_sync(dir.path(), false, None, false);
+        let result = super::cmd_sync(&super::SyncCmdOpts {
+            repo_root: dir.path(),
+            dry_run: false,
+            entry_filter: None,
+            update: false,
+        });
         assert!(result.is_ok());
     }
 
@@ -1381,7 +1404,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No Skillfile written
 
-        let result = super::cmd_sync(dir.path(), false, None, false);
+        let result = super::cmd_sync(&super::SyncCmdOpts {
+            repo_root: dir.path(),
+            dry_run: false,
+            entry_filter: None,
+            update: false,
+        });
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1402,7 +1430,12 @@ mod tests {
         .unwrap();
 
         // Filter to only 'alpha' -- must succeed
-        let result = super::cmd_sync(dir.path(), false, Some("alpha"), false);
+        let result = super::cmd_sync(&super::SyncCmdOpts {
+            repo_root: dir.path(),
+            dry_run: false,
+            entry_filter: Some("alpha"),
+            update: false,
+        });
         assert!(result.is_ok(), "cmd_sync with filter failed: {result:?}");
     }
 
@@ -1416,7 +1449,12 @@ mod tests {
         )
         .unwrap();
 
-        let result = super::cmd_sync(dir.path(), false, Some("nonexistent"), false);
+        let result = super::cmd_sync(&super::SyncCmdOpts {
+            repo_root: dir.path(),
+            dry_run: false,
+            entry_filter: Some("nonexistent"),
+            update: false,
+        });
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1435,7 +1473,12 @@ mod tests {
         )
         .unwrap();
 
-        let result = super::cmd_sync(dir.path(), true, None, false);
+        let result = super::cmd_sync(&super::SyncCmdOpts {
+            repo_root: dir.path(),
+            dry_run: true,
+            entry_filter: None,
+            update: false,
+        });
         assert!(result.is_ok(), "cmd_sync dry-run failed: {result:?}");
 
         // No Skillfile.lock must have been written

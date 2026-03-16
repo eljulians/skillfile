@@ -17,7 +17,7 @@ use skillfile_sources::registry::{
 };
 use skillfile_sources::resolver::list_repo_skill_entries;
 
-use super::add::{cmd_add, entry_from_github};
+use super::add::{cmd_add, entry_from_github, GithubEntryArgs};
 
 /// Configuration for the `skillfile search` command.
 ///
@@ -172,7 +172,13 @@ fn interactive_select(resp: &SearchResponse, repo_root: &Path) -> Result<(), Ski
         p
     };
 
-    let entry = entry_from_github(entity_type, &owner_repo, &path, None, None);
+    let entry = entry_from_github(&GithubEntryArgs {
+        entity_type,
+        owner_repo: &owner_repo,
+        path: &path,
+        ref_: None,
+        name: None,
+    });
     cmd_add(&entry, repo_root)
 }
 

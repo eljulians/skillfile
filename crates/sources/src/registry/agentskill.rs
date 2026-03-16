@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
-use super::{urlencoded, Registry, RegistryId, SearchOptions, SearchResponse, SearchResult};
+use super::{urlencoded, Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
 
 /// Base URL for the agentskill.sh search API.
 const AGENTSKILL_API: &str = "https://agentskill.sh/api/agent/search";
@@ -64,12 +64,8 @@ impl Registry for AgentskillSh {
         "agentskill.sh"
     }
 
-    fn search(
-        &self,
-        client: &dyn HttpClient,
-        query: &str,
-        _opts: &SearchOptions,
-    ) -> Result<SearchResponse, SkillfileError> {
+    fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError> {
+        let (client, query) = (q.client, q.query);
         let url = format!("{AGENTSKILL_API}?q={}&limit=100", urlencoded(query));
 
         let bytes = client
@@ -168,6 +164,7 @@ pub fn fetch_agentskill_github_meta(
 mod tests {
     use super::*;
     use crate::registry::test_support::MockClient;
+    use crate::registry::SearchOptions;
 
     fn mock_response() -> String {
         r#"{

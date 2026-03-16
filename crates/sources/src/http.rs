@@ -42,6 +42,13 @@ fn discover_github_token() -> Option<String> {
 // HttpClient trait — abstraction over HTTP GET for testability
 // ---------------------------------------------------------------------------
 
+/// Parameters for a POST request with a Bearer token.
+pub struct BearerPost<'a> {
+    pub url: &'a str,
+    pub body: &'a str,
+    pub token: &'a str,
+}
+
 /// Contract for HTTP GET requests used by the fetcher/resolver layer.
 ///
 /// Implementations are responsible for:
@@ -79,15 +86,8 @@ pub trait HttpClient: Send + Sync {
     /// # Note
     /// The extra `token` parameter is required by non-GitHub registry APIs (e.g.
     /// skillhub.club).
-    #[allow(clippy::too_many_arguments)]
-    fn post_json_with_bearer(
-        &self,
-        url: &str,
-        body: &str,
-        token: &str,
-    ) -> Result<Vec<u8>, SkillfileError> {
-        let _ = token;
-        self.post_json(url, body)
+    fn post_json_with_bearer(&self, req: &BearerPost<'_>) -> Result<Vec<u8>, SkillfileError> {
+        self.post_json(req.url, req.body)
     }
 }
 
@@ -192,19 +192,15 @@ impl HttpClient for UreqClient {
         })
     }
 
-    fn post_json_with_bearer(
-        &self,
-        url: &str,
-        body: &str,
-        token: &str,
-    ) -> Result<Vec<u8>, SkillfileError> {
+    fn post_json_with_bearer(&self, req: &BearerPost<'_>) -> Result<Vec<u8>, SkillfileError> {
+        let (url, token) = (req.url, req.token);
         let mut response = self
             .agent
             .post(url)
             .header("User-Agent", "skillfile/1.0")
             .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {token}"))
-            .send(body.as_bytes())
+            .send(req.body.as_bytes())
             .map_err(|e| match &e {
                 ureq::Error::StatusCode(code) => {
                     SkillfileError::Network(format!("HTTP {code} posting to {url}"))

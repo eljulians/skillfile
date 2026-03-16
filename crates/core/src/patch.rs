@@ -93,22 +93,13 @@ pub fn has_dir_patch(entry: &Entry, repo_root: &Path) -> bool {
 ///
 /// # Arguments
 ///
-/// * `entry` - The directory entry this patch belongs to.
-/// * `filename` - Relative filename within the entry (e.g. `"python.md"`).
+/// * `patch_path` - Destination path (from [`dir_patch_path`]).
 /// * `patch_text` - Unified diff text to persist.
-/// * `repo_root` - Repository root used to locate `.skillfile/patches/`.
-#[allow(clippy::too_many_arguments)]
-pub fn write_dir_patch(
-    entry: &Entry,
-    filename: &str,
-    patch_text: &str,
-    repo_root: &Path,
-) -> Result<(), SkillfileError> {
-    let p = dir_patch_path(entry, filename, repo_root);
-    if let Some(parent) = p.parent() {
+pub fn write_dir_patch(patch_path: &Path, patch_text: &str) -> Result<(), SkillfileError> {
+    if let Some(parent) = patch_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&p, patch_text)?;
+    std::fs::write(patch_path, patch_text)?;
     Ok(())
 }
 
@@ -633,7 +624,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let entry = github_entry("lang-pro", EntityType::Skill);
         assert!(!has_dir_patch(&entry, dir.path()));
-        write_dir_patch(&entry, "python.md", "patch content", dir.path()).unwrap();
+        write_dir_patch(
+            &dir_patch_path(&entry, "python.md", dir.path()),
+            "patch content",
+        )
+        .unwrap();
         assert!(has_dir_patch(&entry, dir.path()));
     }
 
@@ -641,8 +636,8 @@ mod tests {
     fn remove_all_dir_patches_clears_dir() {
         let dir = tempfile::tempdir().unwrap();
         let entry = github_entry("lang-pro", EntityType::Skill);
-        write_dir_patch(&entry, "python.md", "p1", dir.path()).unwrap();
-        write_dir_patch(&entry, "typescript.md", "p2", dir.path()).unwrap();
+        write_dir_patch(&dir_patch_path(&entry, "python.md", dir.path()), "p1").unwrap();
+        write_dir_patch(&dir_patch_path(&entry, "typescript.md", dir.path()), "p2").unwrap();
         assert!(has_dir_patch(&entry, dir.path()));
         remove_all_dir_patches(&entry, dir.path()).unwrap();
         assert!(!has_dir_patch(&entry, dir.path()));
@@ -722,7 +717,11 @@ mod tests {
     fn remove_dir_patch_cleans_up_empty_entry_dir() {
         let dir = tempfile::tempdir().unwrap();
         let entry = github_entry("lang-pro", EntityType::Skill);
-        write_dir_patch(&entry, "python.md", "patch text\n", dir.path()).unwrap();
+        write_dir_patch(
+            &dir_patch_path(&entry, "python.md", dir.path()),
+            "patch text\n",
+        )
+        .unwrap();
 
         // The entry-specific directory (.skillfile/patches/skills/lang-pro/) should exist.
         let entry_dir = patches_root(dir.path()).join("skills").join("lang-pro");
@@ -746,8 +745,8 @@ mod tests {
     fn remove_dir_patch_keeps_entry_dir_when_nonempty() {
         let dir = tempfile::tempdir().unwrap();
         let entry = github_entry("lang-pro", EntityType::Skill);
-        write_dir_patch(&entry, "python.md", "p1\n", dir.path()).unwrap();
-        write_dir_patch(&entry, "typescript.md", "p2\n", dir.path()).unwrap();
+        write_dir_patch(&dir_patch_path(&entry, "python.md", dir.path()), "p1\n").unwrap();
+        write_dir_patch(&dir_patch_path(&entry, "typescript.md", dir.path()), "p2\n").unwrap();
 
         let entry_dir = patches_root(dir.path()).join("skills").join("lang-pro");
         remove_dir_patch(&entry, "python.md", dir.path()).unwrap();

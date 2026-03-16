@@ -434,23 +434,27 @@ mod tests {
         )
     }
 
+    struct DirContents<'a> {
+        name: &'a str,
+        file1: &'a str,
+        file2: &'a str,
+    }
+
     /// Create the vendor cache directory for a dir entry with two files.
-    #[allow(clippy::too_many_arguments)]
-    fn setup_dir_cache(dir: &Path, name: &str, content1: &str, content2: &str) {
-        let vdir = dir.join(format!(".skillfile/cache/skills/{name}"));
+    fn setup_dir_cache(dir: &Path, c: &DirContents<'_>) {
+        let vdir = dir.join(format!(".skillfile/cache/skills/{}", c.name));
         std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(vdir.join("file1.md"), content1).unwrap();
-        std::fs::write(vdir.join("file2.md"), content2).unwrap();
+        std::fs::write(vdir.join("file1.md"), c.file1).unwrap();
+        std::fs::write(vdir.join("file2.md"), c.file2).unwrap();
     }
 
     /// Create the installed dir for a dir entry under .claude/skills/<name>/
     /// (claude-code + local scope + skill entity type → Nested mode).
-    #[allow(clippy::too_many_arguments)]
-    fn setup_installed_dir(dir: &Path, name: &str, content1: &str, content2: &str) {
-        let installed = dir.join(format!(".claude/skills/{name}"));
+    fn setup_installed_dir(dir: &Path, c: &DirContents<'_>) {
+        let installed = dir.join(format!(".claude/skills/{}", c.name));
         std::fs::create_dir_all(&installed).unwrap();
-        std::fs::write(installed.join("file1.md"), content1).unwrap();
-        std::fs::write(installed.join("file2.md"), content2).unwrap();
+        std::fs::write(installed.join("file1.md"), c.file1).unwrap();
+        std::fs::write(installed.join("file2.md"), c.file2).unwrap();
     }
 
     // -----------------------------------------------------------------------
@@ -514,7 +518,14 @@ mod tests {
         write_lock_file(dir.path(), &make_dir_lock_json("my-dir", "skill"));
 
         // Vendor cache exists with content
-        setup_dir_cache(dir.path(), "my-dir", "content1\n", "content2\n");
+        setup_dir_cache(
+            dir.path(),
+            &DirContents {
+                name: "my-dir",
+                file1: "content1\n",
+                file2: "content2\n",
+            },
+        );
         // But no installed dir → installed_dir_files returns empty map
 
         let result = cmd_diff("my-dir", dir.path());
@@ -540,8 +551,13 @@ mod tests {
         write_lock_file(dir.path(), &make_dir_lock_json("my-dir", "skill"));
 
         let content = "# Skill content\n\nSame in both places.\n";
-        setup_dir_cache(dir.path(), "my-dir", content, content);
-        setup_installed_dir(dir.path(), "my-dir", content, content);
+        let dc = DirContents {
+            name: "my-dir",
+            file1: content,
+            file2: content,
+        };
+        setup_dir_cache(dir.path(), &dc);
+        setup_installed_dir(dir.path(), &dc);
 
         // Should succeed: both cache and installed are identical → prints "is clean"
         let result = cmd_diff("my-dir", dir.path());
@@ -562,8 +578,22 @@ mod tests {
         write_lock_file(dir.path(), &make_dir_lock_json("my-dir", "skill"));
 
         // Cache has original content; installed has modified content for file1
-        setup_dir_cache(dir.path(), "my-dir", "original line\n", "unchanged\n");
-        setup_installed_dir(dir.path(), "my-dir", "modified line\n", "unchanged\n");
+        setup_dir_cache(
+            dir.path(),
+            &DirContents {
+                name: "my-dir",
+                file1: "original line\n",
+                file2: "unchanged\n",
+            },
+        );
+        setup_installed_dir(
+            dir.path(),
+            &DirContents {
+                name: "my-dir",
+                file1: "modified line\n",
+                file2: "unchanged\n",
+            },
+        );
 
         // Should succeed: diff output is written to stdout (we just verify no error)
         let result = cmd_diff("my-dir", dir.path());
@@ -586,8 +616,13 @@ mod tests {
 
         // Set up cache and installed with matching content so the dir path succeeds
         let content = "# Dir skill\n";
-        setup_dir_cache(dir.path(), "my-dir", content, content);
-        setup_installed_dir(dir.path(), "my-dir", content, content);
+        let dc = DirContents {
+            name: "my-dir",
+            file1: content,
+            file2: content,
+        };
+        setup_dir_cache(dir.path(), &dc);
+        setup_installed_dir(dir.path(), &dc);
 
         // cmd_diff must route to diff_local_dir (not diff_local_single)
         // and succeed without error

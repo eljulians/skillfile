@@ -18,13 +18,33 @@ use crate::patch::{
 /// Map of filename to file content used during dir-entry merge operations.
 type FileMap = std::collections::HashMap<String, String>;
 
-#[allow(clippy::too_many_arguments)]
-fn three_way_merge(
-    base: &str,
-    theirs: &str,
-    yours: &str,
-    filename: &str,
-) -> Result<(String, bool), SkillfileError> {
+/// Three versions to merge.
+struct MergeInput<'a> {
+    base: &'a str,
+    theirs: &'a str,
+    yours: &'a str,
+}
+
+/// Result of a three-way merge.
+struct MergeResult {
+    merged: String,
+    has_conflicts: bool,
+}
+
+/// Bundles entry + repo root for single-file resolve operations.
+struct ResolveEntryCtx<'a> {
+    entry: &'a skillfile_core::models::Entry,
+    repo_root: &'a Path,
+}
+
+/// Context for dir-entry merge and write-back operations.
+struct DirMergeCtx<'a> {
+    entry: &'a skillfile_core::models::Entry,
+    installed: &'a std::collections::HashMap<String, std::path::PathBuf>,
+    repo_root: &'a Path,
+}
+
+fn three_way_merge(input: &MergeInput<'_>, filename: &str) -> Result<MergeResult, SkillfileError> {
     use std::io::Write;
 
     let tmpdir = tempfile::tempdir()
@@ -35,13 +55,13 @@ fn three_way_merge(
     let yours_f = tmpdir.path().join(format!("yours_{filename}"));
 
     std::fs::File::create(&base_f)
-        .and_then(|mut f| f.write_all(base.as_bytes()))
+        .and_then(|mut f| f.write_all(input.base.as_bytes()))
         .map_err(|e| SkillfileError::Manifest(format!("failed to write temp file: {e}")))?;
     std::fs::File::create(&theirs_f)
-        .and_then(|mut f| f.write_all(theirs.as_bytes()))
+        .and_then(|mut f| f.write_all(input.theirs.as_bytes()))
         .map_err(|e| SkillfileError::Manifest(format!("failed to write temp file: {e}")))?;
     std::fs::File::create(&yours_f)
-        .and_then(|mut f| f.write_all(yours.as_bytes()))
+        .and_then(|mut f| f.write_all(input.yours.as_bytes()))
         .map_err(|e| SkillfileError::Manifest(format!("failed to write temp file: {e}")))?;
 
     let output = Command::new("git")
@@ -67,7 +87,10 @@ fn three_way_merge(
     // exit 0 = clean merge, >0 = conflicts, <0 = error (would be negative but Command uses i32)
     let has_conflicts = !output.status.success();
     let merged = String::from_utf8_lossy(&output.stdout).into_owned();
-    Ok((merged, has_conflicts))
+    Ok(MergeResult {
+        merged,
+        has_conflicts,
+    })
 }
 
 fn open_in_editor(content: &str, filename: &str) -> Result<String, SkillfileError> {
@@ -99,21 +122,19 @@ fn open_in_editor(content: &str, filename: &str) -> Result<String, SkillfileErro
 }
 
 /// Reconstruct the user's version ("yours") for a single-file entry.
-#[allow(clippy::too_many_arguments)]
 fn reconstruct_yours_single(
-    entry: &skillfile_core::models::Entry,
+    ctx: &ResolveEntryCtx<'_>,
     base: &str,
     installed: &std::path::Path,
-    repo_root: &Path,
 ) -> Result<String, SkillfileError> {
-    if has_patch(entry, repo_root) {
-        let patch_text = read_patch(entry, repo_root)?;
+    if has_patch(ctx.entry, ctx.repo_root) {
+        let patch_text = read_patch(ctx.entry, ctx.repo_root)?;
         return apply_patch_pure(base, &patch_text);
     }
     if !installed.exists() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed at {}",
-            entry.name,
+            ctx.entry.name,
             installed.display()
         )));
     }
@@ -122,21 +143,19 @@ fn reconstruct_yours_single(
 
 /// Apply conflict resolution: open editor when needed, return resolved text.
 /// Returns `Ok(None)` when conflict markers remain after editing.
-#[allow(clippy::too_many_arguments)]
 fn resolve_conflicts_or_clean(
-    merged: String,
-    has_conflicts: bool,
+    result: MergeResult,
     entry_name: &str,
     filename: &str,
 ) -> Result<Option<String>, SkillfileError> {
-    if !has_conflicts {
+    if !result.has_conflicts {
         progress!("  clean merge — no conflicts in '{entry_name}'");
-        return Ok(Some(merged));
+        return Ok(Some(result.merged));
     }
     eprintln!(
         "\nConflicts detected in '{entry_name}'. Opening in editor to resolve...\n  Save and close when done."
     );
-    let resolved = open_in_editor(&merged, filename)?;
+    let resolved = open_in_editor(&result.merged, filename)?;
     if resolved.contains("<<<<<<<") {
         eprintln!("error: conflict markers still present — resolve all conflicts and try again");
         return Ok(None);
@@ -168,13 +187,17 @@ fn resolve_single_file(
 
     let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
     let installed = installed_path(entry, &manifest, repo_root)?;
-    let yours = reconstruct_yours_single(entry, &base, &installed, repo_root)?;
+    let ctx = ResolveEntryCtx { entry, repo_root };
+    let yours = reconstruct_yours_single(&ctx, &base, &installed)?;
 
     progress!("  merging ...");
-    let (merged_raw, has_conflicts) = three_way_merge(&base, &theirs, &yours, &filename)?;
-    let Some(merged) =
-        resolve_conflicts_or_clean(merged_raw, has_conflicts, &entry.name, &filename)?
-    else {
+    let input = MergeInput {
+        base: &base,
+        theirs: &theirs,
+        yours: &yours,
+    };
+    let result = three_way_merge(&input, &filename)?;
+    let Some(merged) = resolve_conflicts_or_clean(result, &entry.name, &filename)? else {
         return Ok(());
     };
 
@@ -200,49 +223,56 @@ fn resolve_single_file(
     Ok(())
 }
 
+/// Upstream base and new versions for dir-entry merge.
+struct UpstreamVersions<'a> {
+    filenames: &'a [String],
+    base: &'a FileMap,
+    theirs: &'a FileMap,
+}
+
 /// Merge each file using three-way merge. Returns the merged results and whether
 /// any file had conflicts requiring manual resolution. Returns `Ok(None)` when
 /// conflict markers remain after editor interaction (signals early exit to caller).
-#[allow(clippy::too_many_arguments)]
 fn merge_all_files(
-    all_filenames: &[String],
-    base_files: &FileMap,
-    theirs_files: &FileMap,
-    entry: &skillfile_core::models::Entry,
-    installed: &std::collections::HashMap<String, std::path::PathBuf>,
-    repo_root: &Path,
+    upstream: &UpstreamVersions<'_>,
+    ctx: &DirMergeCtx<'_>,
 ) -> Result<Option<(FileMap, bool)>, SkillfileError> {
     let mut merged_results = FileMap::new();
     let mut any_conflict = false;
 
-    for filename in all_filenames {
-        let base = base_files
+    for filename in upstream.filenames {
+        let base = upstream
+            .base
             .get(filename)
             .map_or("", std::string::String::as_str);
-        let theirs = theirs_files
+        let theirs = upstream
+            .theirs
             .get(filename)
             .map_or("", std::string::String::as_str);
 
         // Reconstruct "yours" from stored patch + base
-        let p = dir_patch_path(entry, filename, repo_root);
+        let p = dir_patch_path(ctx.entry, filename, ctx.repo_root);
         let yours = if p.exists() {
             let patch_text = std::fs::read_to_string(&p)?;
             apply_patch_pure(base, &patch_text)?
         } else {
-            match installed.get(filename) {
+            match ctx.installed.get(filename) {
                 Some(inst_path) if inst_path.exists() => std::fs::read_to_string(inst_path)?,
                 _ => base.to_string(),
             }
         };
 
-        let (merged_raw, has_conflicts) = three_way_merge(base, theirs, &yours, filename)?;
-        if has_conflicts {
+        let input = MergeInput {
+            base,
+            theirs,
+            yours: &yours,
+        };
+        let result = three_way_merge(&input, filename)?;
+        if result.has_conflicts {
             any_conflict = true;
             eprintln!("\n  Conflicts in '{filename}'. Opening in editor...");
         }
-        let Some(merged) =
-            resolve_conflicts_or_clean(merged_raw, has_conflicts, filename, filename)?
-        else {
+        let Some(merged) = resolve_conflicts_or_clean(result, filename, filename)? else {
             return Ok(None);
         };
 
@@ -253,26 +283,26 @@ fn merge_all_files(
 }
 
 /// Write merged results to installed paths and update patch files.
-#[allow(clippy::too_many_arguments)]
 fn write_merged_results(
     merged_results: &FileMap,
     theirs_files: &FileMap,
-    entry: &skillfile_core::models::Entry,
-    installed: &std::collections::HashMap<String, std::path::PathBuf>,
-    repo_root: &Path,
+    ctx: &DirMergeCtx<'_>,
 ) -> Result<(), SkillfileError> {
-    remove_all_dir_patches(entry, repo_root)?;
+    remove_all_dir_patches(ctx.entry, ctx.repo_root)?;
     let mut pinned: Vec<String> = Vec::new();
     for (filename, merged_text) in merged_results {
         let theirs = theirs_files
             .get(filename)
             .map_or("", std::string::String::as_str);
-        if let Some(inst_path) = installed.get(filename) {
+        if let Some(inst_path) = ctx.installed.get(filename) {
             std::fs::write(inst_path, merged_text)?;
         }
         let patch_text = generate_patch(theirs, merged_text, filename);
         if !patch_text.is_empty() {
-            write_dir_patch(entry, filename, &patch_text, repo_root)?;
+            write_dir_patch(
+                &dir_patch_path(ctx.entry, filename, ctx.repo_root),
+                &patch_text,
+            )?;
             pinned.push(filename.clone());
         }
     }
@@ -280,12 +310,12 @@ fn write_merged_results(
     if pinned.is_empty() {
         progress!(
             "  merged result matches upstream — no pin needed for '{}'",
-            entry.name
+            ctx.entry.name
         );
     } else {
         progress!(
             "  updated .skillfile/patches/ for '{}' ({})",
-            entry.name,
+            ctx.entry.name,
             pinned.join(", ")
         );
     }
@@ -331,15 +361,18 @@ fn resolve_dir_entry(
         .collect();
     all_filenames.sort();
 
-    let Some((merged_results, any_conflict)) = merge_all_files(
-        &all_filenames,
-        &base_files,
-        &theirs_files,
+    let dir_ctx = DirMergeCtx {
         entry,
-        &installed,
+        installed: &installed,
         repo_root,
-    )?
-    else {
+    };
+
+    let upstream = UpstreamVersions {
+        filenames: &all_filenames,
+        base: &base_files,
+        theirs: &theirs_files,
+    };
+    let Some((merged_results, any_conflict)) = merge_all_files(&upstream, &dir_ctx)? else {
         return Ok(());
     };
 
@@ -347,7 +380,7 @@ fn resolve_dir_entry(
         progress!("  all files merged cleanly in '{}'", entry.name);
     }
 
-    write_merged_results(&merged_results, &theirs_files, entry, &installed, repo_root)?;
+    write_merged_results(&merged_results, &theirs_files, &dir_ctx)?;
 
     clear_conflict(repo_root)?;
     println!(
@@ -488,17 +521,19 @@ mod tests {
     #[test]
     fn three_way_merge_clean() {
         // Simple clean merge: base->theirs adds a line, base->yours adds different line
-        let base = "line1\nline2\n";
-        let theirs = "line1\nline2\nline3-theirs\n";
-        let yours = "line0-yours\nline1\nline2\n";
-        let (merged, has_conflicts) = three_way_merge(base, theirs, yours, "test.md").unwrap();
-        assert!(!has_conflicts, "expected clean merge");
+        let input = MergeInput {
+            base: "line1\nline2\n",
+            theirs: "line1\nline2\nline3-theirs\n",
+            yours: "line0-yours\nline1\nline2\n",
+        };
+        let result = three_way_merge(&input, "test.md").unwrap();
+        assert!(!result.has_conflicts, "expected clean merge");
         assert!(
-            merged.contains("line3-theirs"),
+            result.merged.contains("line3-theirs"),
             "merged missing theirs change"
         );
         assert!(
-            merged.contains("line0-yours"),
+            result.merged.contains("line0-yours"),
             "merged missing yours change"
         );
     }
@@ -506,12 +541,17 @@ mod tests {
     #[test]
     fn three_way_merge_conflict() {
         // Both sides modify the same line — conflict expected
-        let base = "line1\n";
-        let theirs = "THEIRS\n";
-        let yours = "YOURS\n";
-        let (merged, has_conflicts) = three_way_merge(base, theirs, yours, "test.md").unwrap();
-        assert!(has_conflicts, "expected conflict");
-        assert!(merged.contains("<<<<<<<"), "expected conflict markers");
+        let input = MergeInput {
+            base: "line1\n",
+            theirs: "THEIRS\n",
+            yours: "YOURS\n",
+        };
+        let result = three_way_merge(&input, "test.md").unwrap();
+        assert!(result.has_conflicts, "expected conflict");
+        assert!(
+            result.merged.contains("<<<<<<<"),
+            "expected conflict markers"
+        );
     }
 
     #[test]
@@ -524,10 +564,14 @@ mod tests {
         let patch = crate::patch::generate_patch(base, yours, "test.md");
         let reconstructed = apply_patch_pure(base, &patch).unwrap();
         assert_eq!(reconstructed, yours);
-        let (merged, has_conflicts) =
-            three_way_merge(base, theirs, &reconstructed, "test.md").unwrap();
-        assert!(!has_conflicts);
-        assert_eq!(merged, yours);
+        let input = MergeInput {
+            base,
+            theirs,
+            yours: &reconstructed,
+        };
+        let result = three_way_merge(&input, "test.md").unwrap();
+        assert!(!result.has_conflicts);
+        assert_eq!(result.merged, yours);
     }
 
     #[test]

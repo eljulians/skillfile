@@ -10,35 +10,45 @@ use skillfile_sources::strategy::{content_file, is_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
 use crate::patch::{
-    generate_patch, has_dir_patch, has_patch, remove_all_dir_patches, remove_dir_patch,
-    remove_patch, walkdir, write_dir_patch, write_patch,
+    dir_patch_path, generate_patch, has_dir_patch, has_patch, remove_all_dir_patches,
+    remove_dir_patch, remove_patch, walkdir, write_dir_patch, write_patch,
 };
+
+struct PinCtx<'a> {
+    entry: &'a Entry,
+    repo_root: &'a Path,
+    dry_run: bool,
+}
+
+struct DirFileRef<'a> {
+    cache: &'a std::path::Path,
+    installed: &'a std::path::Path,
+    filename: &'a str,
+}
 
 /// Process a single file in a dir entry: generate a patch and write or remove it.
 /// Returns the filename if the file was pinned (patch is non-empty), or `None`.
-#[allow(clippy::too_many_arguments)]
 fn process_dir_file(
-    entry: &Entry,
-    cache_file: &std::path::Path,
-    inst_path: &std::path::Path,
-    filename: &str,
-    repo_root: &Path,
-    dry_run: bool,
+    ctx: &PinCtx<'_>,
+    file: &DirFileRef<'_>,
 ) -> Result<Option<String>, SkillfileError> {
-    let original_text = std::fs::read_to_string(cache_file)?;
-    let inst_text = std::fs::read_to_string(inst_path)?;
-    let patch_text = generate_patch(&original_text, &inst_text, filename);
+    let original_text = std::fs::read_to_string(file.cache)?;
+    let inst_text = std::fs::read_to_string(file.installed)?;
+    let patch_text = generate_patch(&original_text, &inst_text, file.filename);
 
     if patch_text.is_empty() {
-        if !dry_run {
-            remove_dir_patch(entry, filename, repo_root)?;
+        if !ctx.dry_run {
+            remove_dir_patch(ctx.entry, file.filename, ctx.repo_root)?;
         }
         return Ok(None);
     }
-    if !dry_run {
-        write_dir_patch(entry, filename, &patch_text, repo_root)?;
+    if !ctx.dry_run {
+        write_dir_patch(
+            &dir_patch_path(ctx.entry, file.filename, ctx.repo_root),
+            &patch_text,
+        )?;
     }
-    Ok(Some(filename.to_string()))
+    Ok(Some(file.filename.to_string()))
 }
 
 fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<String, SkillfileError> {
@@ -59,6 +69,11 @@ fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<Strin
         )));
     }
 
+    let pin_ctx = PinCtx {
+        entry,
+        repo_root,
+        dry_run,
+    };
     let mut pinned: Vec<String> = Vec::new();
 
     for cache_file in walkdir(&vdir) {
@@ -80,9 +95,14 @@ fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<Strin
         if !inst_path.exists() {
             continue;
         }
-        if let Some(f) =
-            process_dir_file(entry, &cache_file, inst_path, &filename, repo_root, dry_run)?
-        {
+        if let Some(f) = process_dir_file(
+            &pin_ctx,
+            &DirFileRef {
+                cache: &cache_file,
+                installed: inst_path,
+                filename: &filename,
+            },
+        )? {
             pinned.push(f);
         }
     }
@@ -202,7 +222,14 @@ pub fn cmd_unpin(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
 
     // Restore pristine upstream from vendor cache immediately.
     for target in &manifest.install_targets {
-        install_entry(entry, target, repo_root, None)?;
+        install_entry(
+            entry,
+            target,
+            &skillfile_deploy::install::InstallCtx {
+                repo_root,
+                opts: None,
+            },
+        )?;
     }
 
     println!("Unpinned '{name}' — restored to upstream version");
@@ -922,7 +949,7 @@ mod tests {
             },
         };
         let patch_text = crate::patch::generate_patch(upstream_skill, modified_skill, "SKILL.md");
-        write_dir_patch(&entry, "SKILL.md", &patch_text, dir.path()).unwrap();
+        write_dir_patch(&dir_patch_path(&entry, "SKILL.md", dir.path()), &patch_text).unwrap();
         assert!(
             has_dir_patch(&entry, dir.path()),
             "dir patch must exist before unpin"

@@ -251,12 +251,16 @@ mod tests {
         .unwrap();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn write_meta(dir: &Path, entity_type: &str, name: &str, sha: &str) {
+    struct VendorEntry<'a> {
+        entity_type: &'a str,
+        name: &'a str,
+    }
+
+    fn write_meta(dir: &Path, ve: &VendorEntry<'_>, sha: &str) {
         let vdir = dir
             .join(".skillfile/cache")
-            .join(format!("{entity_type}s"))
-            .join(name);
+            .join(format!("{}s", ve.entity_type))
+            .join(ve.name);
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(
             vdir.join(".meta"),
@@ -265,25 +269,27 @@ mod tests {
         .unwrap();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn write_vendor_content(
-        dir: &Path,
-        entity_type: &str,
-        name: &str,
-        filename: &str,
-        content: &str,
-    ) {
+    struct VendorFile<'a> {
+        entry: &'a VendorEntry<'a>,
+        filename: &'a str,
+    }
+
+    fn write_vendor_content(dir: &Path, vf: &VendorFile<'_>, content: &str) {
         let vdir = dir
             .join(".skillfile/cache")
-            .join(format!("{entity_type}s"))
-            .join(name);
+            .join(format!("{}s", vf.entry.entity_type))
+            .join(vf.entry.name);
         std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(vdir.join(filename), content).unwrap();
+        std::fs::write(vdir.join(vf.filename), content).unwrap();
     }
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const ORIGINAL: &str = "# Agent\n\nUpstream content.\n";
     const MODIFIED: &str = "# Agent\n\nUpstream content.\n\n## Custom Section\n\nAdded by user.\n";
+    const VE_AGENT: VendorEntry<'_> = VendorEntry {
+        entity_type: "agent",
+        name: "my-agent",
+    };
 
     #[test]
     fn no_manifest() {
@@ -323,7 +329,7 @@ mod tests {
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
         );
-        write_meta(dir.path(), "agent", "my-agent", sha);
+        write_meta(dir.path(), &VE_AGENT, sha);
         cmd_status(dir.path(), false).unwrap();
     }
 
@@ -354,8 +360,15 @@ mod tests {
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
         );
-        write_meta(dir.path(), "agent", "my-agent", SHA);
-        write_vendor_content(dir.path(), "agent", "my-agent", "agent.md", ORIGINAL);
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
         let installed = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&installed).unwrap();
         std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
@@ -378,8 +391,15 @@ mod tests {
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
         );
-        write_meta(dir.path(), "agent", "my-agent", SHA);
-        write_vendor_content(dir.path(), "agent", "my-agent", "agent.md", ORIGINAL);
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
         let installed = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&installed).unwrap();
         std::fs::write(installed.join("my-agent.md"), ORIGINAL).unwrap();
@@ -401,8 +421,15 @@ mod tests {
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
         );
-        write_meta(dir.path(), "agent", "my-agent", SHA);
-        write_vendor_content(dir.path(), "agent", "my-agent", "agent.md", ORIGINAL);
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
         // No installed file
 
         let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
@@ -422,7 +449,7 @@ mod tests {
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
         );
-        write_meta(dir.path(), "agent", "my-agent", SHA);
+        write_meta(dir.path(), &VE_AGENT, SHA);
         // No vendor cache content file
         let installed = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&installed).unwrap();
@@ -554,8 +581,15 @@ mod tests {
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
         );
-        write_meta(dir.path(), "agent", "my-agent", SHA);
-        write_vendor_content(dir.path(), "agent", "my-agent", "agent.md", ORIGINAL);
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
         let installed = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&installed).unwrap();
         std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();

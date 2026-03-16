@@ -30,6 +30,21 @@ pub enum DirInstallMode {
 /// - Directory entries: keys are paths relative to the source directory
 pub type DeployResult = HashMap<String, PathBuf>;
 
+/// Bundles scope and repo root for adapter operations.
+pub struct AdapterScope<'a> {
+    pub scope: Scope,
+    pub repo_root: &'a Path,
+}
+
+/// All parameters needed to deploy a single entry.
+pub struct DeployRequest<'a> {
+    pub entry: &'a Entry,
+    pub source: &'a Path,
+    pub scope: Scope,
+    pub repo_root: &'a Path,
+    pub opts: &'a InstallOptions,
+}
+
 /// Contract for deploying skill/agent files to a specific AI tool's directory.
 ///
 /// Each AI tool (Claude Code, Gemini CLI, Codex, etc.) has its own convention
@@ -45,8 +60,7 @@ pub trait PlatformAdapter: Send + Sync + fmt::Debug {
     fn supports(&self, entity_type: EntityType) -> bool;
 
     /// Resolve the absolute target directory for an entity type + scope.
-    #[allow(clippy::too_many_arguments)]
-    fn target_dir(&self, entity_type: EntityType, scope: Scope, repo_root: &Path) -> PathBuf;
+    fn target_dir(&self, entity_type: EntityType, ctx: &AdapterScope<'_>) -> PathBuf;
 
     /// The install mode for directory entries of this entity type.
     fn dir_mode(&self, entity_type: EntityType) -> Option<DirInstallMode>;
@@ -55,27 +69,16 @@ pub trait PlatformAdapter: Send + Sync + fmt::Debug {
     ///
     /// Returns `{patch_key: installed_path}` for every file that was placed.
     /// Returns an empty map for dry-run or when deployment is skipped.
-    #[allow(clippy::too_many_arguments)]
-    fn deploy_entry(
-        &self,
-        entry: &Entry,
-        source: &Path,
-        scope: Scope,
-        repo_root: &Path,
-        opts: &InstallOptions,
-    ) -> DeployResult;
+    fn deploy_entry(&self, req: &DeployRequest<'_>) -> DeployResult;
 
     /// The installed path for a single-file entry.
-    #[allow(clippy::too_many_arguments)]
-    fn installed_path(&self, entry: &Entry, scope: Scope, repo_root: &Path) -> PathBuf;
+    fn installed_path(&self, entry: &Entry, ctx: &AdapterScope<'_>) -> PathBuf;
 
     /// Map of `{relative_path: absolute_path}` for all installed files of a directory entry.
-    #[allow(clippy::too_many_arguments)]
     fn installed_dir_files(
         &self,
         entry: &Entry,
-        scope: Scope,
-        repo_root: &Path,
+        ctx: &AdapterScope<'_>,
     ) -> HashMap<String, PathBuf>;
 }
 
@@ -125,7 +128,7 @@ impl PlatformAdapter for FileSystemAdapter {
         self.entities.contains_key(&entity_type)
     }
 
-    fn target_dir(&self, entity_type: EntityType, scope: Scope, repo_root: &Path) -> PathBuf {
+    fn target_dir(&self, entity_type: EntityType, ctx: &AdapterScope<'_>) -> PathBuf {
         let config = self.entities.get(&entity_type).unwrap_or_else(|| {
             panic!(
                 "BUG: target_dir called for unsupported entity type '{entity_type}' on adapter '{}'. \
@@ -133,7 +136,7 @@ impl PlatformAdapter for FileSystemAdapter {
                 self.name
             )
         });
-        let raw = match scope {
+        let raw = match ctx.scope {
             Scope::Global => &config.global_path,
             Scope::Local => &config.local_path,
         };
@@ -141,7 +144,7 @@ impl PlatformAdapter for FileSystemAdapter {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
             home.join(raw.strip_prefix("~/").unwrap_or(raw))
         } else {
-            repo_root.join(raw)
+            ctx.repo_root.join(raw)
         }
     }
 
@@ -149,57 +152,61 @@ impl PlatformAdapter for FileSystemAdapter {
         self.entities.get(&entity_type).map(|c| c.dir_mode)
     }
 
-    fn deploy_entry(
-        &self,
-        entry: &Entry,
-        source: &Path,
-        scope: Scope,
-        repo_root: &Path,
-        opts: &InstallOptions,
-    ) -> DeployResult {
-        let target_dir = self.target_dir(entry.entity_type, scope, repo_root);
+    fn deploy_entry(&self, req: &DeployRequest<'_>) -> DeployResult {
+        let ctx = AdapterScope {
+            scope: req.scope,
+            repo_root: req.repo_root,
+        };
+        let target_dir = self.target_dir(req.entry.entity_type, &ctx);
         // Use filesystem truth: source.is_dir() catches local directory entries
         // that is_dir_entry() misses (it only inspects GitHub path_in_repo).
-        let is_dir = is_dir_entry(entry) || source.is_dir();
+        let is_dir = is_dir_entry(req.entry) || req.source.is_dir();
 
         if is_dir
             && self
                 .entities
-                .get(&entry.entity_type)
+                .get(&req.entry.entity_type)
                 .is_some_and(|c| c.dir_mode == DirInstallMode::Flat)
         {
-            return deploy_flat(source, &target_dir, opts);
+            return deploy_flat(req.source, &target_dir, req.opts);
         }
 
         let dest = if is_dir {
-            target_dir.join(&entry.name)
+            target_dir.join(&req.entry.name)
         } else {
-            target_dir.join(format!("{}.md", entry.name))
+            target_dir.join(format!("{}.md", req.entry.name))
         };
 
-        if !place_file(source, &dest, is_dir, opts) || opts.dry_run {
+        if !place_file(
+            &PlaceOp {
+                source: req.source,
+                dest: &dest,
+                is_dir,
+            },
+            req.opts,
+        ) || req.opts.dry_run
+        {
             return HashMap::new();
         }
 
         if is_dir {
-            collect_dir_deploy_result(source, &dest)
+            collect_dir_deploy_result(req.source, &dest)
         } else {
-            HashMap::from([(format!("{}.md", entry.name), dest)])
+            HashMap::from([(format!("{}.md", req.entry.name), dest)])
         }
     }
 
-    fn installed_path(&self, entry: &Entry, scope: Scope, repo_root: &Path) -> PathBuf {
-        self.target_dir(entry.entity_type, scope, repo_root)
+    fn installed_path(&self, entry: &Entry, ctx: &AdapterScope<'_>) -> PathBuf {
+        self.target_dir(entry.entity_type, ctx)
             .join(format!("{}.md", entry.name))
     }
 
     fn installed_dir_files(
         &self,
         entry: &Entry,
-        scope: Scope,
-        repo_root: &Path,
+        ctx: &AdapterScope<'_>,
     ) -> HashMap<String, PathBuf> {
-        let target_dir = self.target_dir(entry.entity_type, scope, repo_root);
+        let target_dir = self.target_dir(entry.entity_type, ctx);
         let mode = self
             .entities
             .get(&entry.entity_type)
@@ -209,7 +216,7 @@ impl PlatformAdapter for FileSystemAdapter {
             collect_nested_installed(entry, &target_dir)
         } else {
             // Flat: keys are relative-from-vdir so they match patch lookup keys
-            let vdir = skillfile_sources::sync::vendor_dir_for(entry, repo_root);
+            let vdir = skillfile_sources::sync::vendor_dir_for(entry, ctx.repo_root);
             collect_flat_installed_checked(&vdir, &target_dir)
         }
     }
@@ -320,43 +327,38 @@ fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> D
         if dest.exists() {
             std::fs::remove_file(&dest).ok();
         }
-        if std::fs::copy(src, &dest).is_ok() {
-            progress!("  {} -> {}", name.to_string_lossy(), dest.display());
-            deploy_flat_insert_result(&mut result, src, source_dir, dest);
+        if std::fs::copy(src, &dest).is_err() {
+            continue;
+        }
+        progress!("  {} -> {}", name.to_string_lossy(), dest.display());
+        if let Ok(rel) = src.strip_prefix(source_dir) {
+            result.insert(rel.to_string_lossy().to_string(), dest);
         }
     }
     result
 }
 
-/// Insert `{relative_path: dest}` into `result` if `src` is within `source_dir`.
-#[allow(clippy::too_many_arguments)]
-fn deploy_flat_insert_result(
-    result: &mut DeployResult,
-    src: &Path,
-    source_dir: &Path,
-    dest: PathBuf,
-) {
-    if let Ok(rel) = src.strip_prefix(source_dir) {
-        result.insert(rel.to_string_lossy().to_string(), dest);
-    }
+struct PlaceOp<'a> {
+    source: &'a Path,
+    dest: &'a Path,
+    is_dir: bool,
 }
 
 /// Copy `source` to `dest`. Returns `true` if placed, `false` if skipped.
-#[allow(clippy::too_many_arguments)]
-fn place_file(source: &Path, dest: &Path, is_dir: bool, opts: &InstallOptions) -> bool {
+fn place_file(op: &PlaceOp<'_>, opts: &InstallOptions) -> bool {
     if !opts.overwrite && !opts.dry_run {
-        if is_dir && dest.is_dir() {
+        if op.is_dir && op.dest.is_dir() {
             return false;
         }
-        if !is_dir && dest.is_file() {
+        if !op.is_dir && op.dest.is_file() {
             return false;
         }
     }
 
     let label = format!(
         "  {} -> {}",
-        source.file_name().unwrap_or_default().to_string_lossy(),
-        dest.display()
+        op.source.file_name().unwrap_or_default().to_string_lossy(),
+        op.dest.display()
     );
 
     if opts.dry_run {
@@ -364,23 +366,23 @@ fn place_file(source: &Path, dest: &Path, is_dir: bool, opts: &InstallOptions) -
         return true;
     }
 
-    if let Some(parent) = dest.parent() {
+    if let Some(parent) = op.dest.parent() {
         std::fs::create_dir_all(parent).ok();
     }
 
     // Remove existing
-    if dest.exists() || dest.is_symlink() {
-        if dest.is_dir() {
-            std::fs::remove_dir_all(dest).ok();
+    if op.dest.exists() || op.dest.is_symlink() {
+        if op.dest.is_dir() {
+            std::fs::remove_dir_all(op.dest).ok();
         } else {
-            std::fs::remove_file(dest).ok();
+            std::fs::remove_file(op.dest).ok();
         }
     }
 
-    if is_dir {
-        copy_dir_recursive(source, dest).ok();
+    if op.is_dir {
+        copy_dir_recursive(op.source, op.dest).ok();
     } else {
-        std::fs::copy(source, dest).ok();
+        std::fs::copy(op.source, op.dest).ok();
     }
 
     progress!("{label}");
@@ -648,6 +650,20 @@ pub fn known_adapters() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    fn local(root: &Path) -> AdapterScope<'_> {
+        AdapterScope {
+            scope: Scope::Local,
+            repo_root: root,
+        }
+    }
+
+    fn global(root: &Path) -> AdapterScope<'_> {
+        AdapterScope {
+            scope: Scope::Global,
+            repo_root: root,
+        }
+    }
+
     // -- Trait compliance: every registered adapter satisfies PlatformAdapter --
 
     #[test]
@@ -720,11 +736,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("claude-code").unwrap();
         assert_eq!(
-            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, &local(&tmp)),
             tmp.join(".claude/agents")
         );
         assert_eq!(
-            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, &local(&tmp)),
             tmp.join(".claude/skills")
         );
     }
@@ -734,11 +750,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("gemini-cli").unwrap();
         assert_eq!(
-            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, &local(&tmp)),
             tmp.join(".gemini/agents")
         );
         assert_eq!(
-            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, &local(&tmp)),
             tmp.join(".gemini/skills")
         );
     }
@@ -748,7 +764,7 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("codex").unwrap();
         assert_eq!(
-            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, &local(&tmp)),
             tmp.join(".codex/skills")
         );
     }
@@ -756,7 +772,7 @@ mod tests {
     #[test]
     fn global_target_dir_is_absolute() {
         let a = adapters().get("claude-code").unwrap();
-        let result = a.target_dir(EntityType::Agent, Scope::Global, Path::new("/tmp"));
+        let result = a.target_dir(EntityType::Agent, &global(Path::new("/tmp")));
         assert!(result.is_absolute());
         assert!(result.to_string_lossy().ends_with(".claude/agents"));
     }
@@ -764,7 +780,7 @@ mod tests {
     #[test]
     fn global_target_dir_gemini_cli_skill() {
         let a = adapters().get("gemini-cli").unwrap();
-        let result = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
+        let result = a.target_dir(EntityType::Skill, &global(Path::new("/tmp")));
         assert!(result.is_absolute());
         assert!(result.to_string_lossy().ends_with(".gemini/skills"));
     }
@@ -772,7 +788,7 @@ mod tests {
     #[test]
     fn global_target_dir_codex_skill() {
         let a = adapters().get("codex").unwrap();
-        let result = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
+        let result = a.target_dir(EntityType::Skill, &global(Path::new("/tmp")));
         assert!(result.is_absolute());
         assert!(result.to_string_lossy().ends_with(".codex/skills"));
     }
@@ -817,11 +833,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("cursor").unwrap();
         assert_eq!(
-            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, &local(&tmp)),
             tmp.join(".cursor/agents")
         );
         assert_eq!(
-            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, &local(&tmp)),
             tmp.join(".cursor/skills")
         );
     }
@@ -831,7 +847,7 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("windsurf").unwrap();
         assert_eq!(
-            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, &local(&tmp)),
             tmp.join(".windsurf/skills")
         );
     }
@@ -841,11 +857,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("opencode").unwrap();
         assert_eq!(
-            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, &local(&tmp)),
             tmp.join(".opencode/agents")
         );
         assert_eq!(
-            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, &local(&tmp)),
             tmp.join(".opencode/skills")
         );
     }
@@ -855,11 +871,11 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("copilot").unwrap();
         assert_eq!(
-            a.target_dir(EntityType::Agent, Scope::Local, &tmp),
+            a.target_dir(EntityType::Agent, &local(&tmp)),
             tmp.join(".github/agents")
         );
         assert_eq!(
-            a.target_dir(EntityType::Skill, Scope::Local, &tmp),
+            a.target_dir(EntityType::Skill, &local(&tmp)),
             tmp.join(".github/skills")
         );
     }
@@ -867,10 +883,10 @@ mod tests {
     #[test]
     fn global_target_dir_cursor() {
         let a = adapters().get("cursor").unwrap();
-        let skill = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
+        let skill = a.target_dir(EntityType::Skill, &global(Path::new("/tmp")));
         assert!(skill.is_absolute());
         assert!(skill.to_string_lossy().ends_with(".cursor/skills"));
-        let agent = a.target_dir(EntityType::Agent, Scope::Global, Path::new("/tmp"));
+        let agent = a.target_dir(EntityType::Agent, &global(Path::new("/tmp")));
         assert!(agent.is_absolute());
         assert!(agent.to_string_lossy().ends_with(".cursor/agents"));
     }
@@ -878,7 +894,7 @@ mod tests {
     #[test]
     fn global_target_dir_windsurf() {
         let a = adapters().get("windsurf").unwrap();
-        let result = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
+        let result = a.target_dir(EntityType::Skill, &global(Path::new("/tmp")));
         assert!(result.is_absolute());
         assert!(
             result.to_string_lossy().ends_with("windsurf/skills"),
@@ -889,13 +905,13 @@ mod tests {
     #[test]
     fn global_target_dir_opencode() {
         let a = adapters().get("opencode").unwrap();
-        let skill = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
+        let skill = a.target_dir(EntityType::Skill, &global(Path::new("/tmp")));
         assert!(skill.is_absolute());
         assert!(
             skill.to_string_lossy().ends_with("opencode/skills"),
             "unexpected: {skill:?}"
         );
-        let agent = a.target_dir(EntityType::Agent, Scope::Global, Path::new("/tmp"));
+        let agent = a.target_dir(EntityType::Agent, &global(Path::new("/tmp")));
         assert!(agent.is_absolute());
         assert!(
             agent.to_string_lossy().ends_with("opencode/agents"),
@@ -906,10 +922,10 @@ mod tests {
     #[test]
     fn global_target_dir_copilot() {
         let a = adapters().get("copilot").unwrap();
-        let skill = a.target_dir(EntityType::Skill, Scope::Global, Path::new("/tmp"));
+        let skill = a.target_dir(EntityType::Skill, &global(Path::new("/tmp")));
         assert!(skill.is_absolute());
         assert!(skill.to_string_lossy().ends_with(".copilot/skills"));
-        let agent = a.target_dir(EntityType::Agent, Scope::Global, Path::new("/tmp"));
+        let agent = a.target_dir(EntityType::Agent, &global(Path::new("/tmp")));
         assert!(agent.is_absolute());
         assert!(agent.to_string_lossy().ends_with(".copilot/agents"));
     }
@@ -1010,13 +1026,13 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let result = a.deploy_entry(
-            &entry,
-            &source,
-            Scope::Local,
-            dir.path(),
-            &InstallOptions::default(),
-        );
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions::default(),
+        });
         assert!(
             result.contains_key("test.md"),
             "Single-file key must be 'test.md', got {:?}",
@@ -1048,16 +1064,16 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let result = a.deploy_entry(
-            &entry,
-            &source_dir,
-            Scope::Local,
-            dir.path(),
-            &InstallOptions {
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source_dir,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions {
                 dry_run: false,
                 overwrite: true,
             },
-        );
+        });
         // Flat mode: keys are relative paths from source dir
         assert!(result.contains_key("backend.md"));
         assert!(result.contains_key("frontend.md"));
@@ -1087,16 +1103,16 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let result = a.deploy_entry(
-            &entry,
-            &source_dir,
-            Scope::Local,
-            dir.path(),
-            &InstallOptions {
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source_dir,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions {
                 dry_run: true,
                 overwrite: false,
             },
-        );
+        });
         assert!(result.is_empty());
         assert!(!dir.path().join(".claude/agents/backend.md").exists());
     }
@@ -1125,16 +1141,16 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let result = a.deploy_entry(
-            &entry,
-            &source_dir,
-            Scope::Local,
-            dir.path(),
-            &InstallOptions {
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source_dir,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions {
                 dry_run: false,
                 overwrite: false,
             },
-        );
+        });
         // Should skip the existing file
         assert!(result.is_empty());
         // Original content preserved
@@ -1167,16 +1183,16 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let result = a.deploy_entry(
-            &entry,
-            &source_dir,
-            Scope::Local,
-            dir.path(),
-            &InstallOptions {
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source_dir,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions {
                 dry_run: false,
                 overwrite: true,
             },
-        );
+        });
         assert!(result.contains_key("backend.md"));
         assert_eq!(
             std::fs::read_to_string(target.join("backend.md")).unwrap(),
@@ -1210,16 +1226,16 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let result = a.deploy_entry(
-            &entry,
-            &source_dir,
-            Scope::Local,
-            dir.path(),
-            &InstallOptions {
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source_dir,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions {
                 dry_run: false,
                 overwrite: false,
             },
-        );
+        });
         // Should skip — dir already exists
         assert!(result.is_empty());
         // Old file still there
@@ -1247,16 +1263,16 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let result = a.deploy_entry(
-            &entry,
-            &source_file,
-            Scope::Local,
-            dir.path(),
-            &InstallOptions {
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source_file,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions {
                 dry_run: false,
                 overwrite: false,
             },
-        );
+        });
         assert!(result.is_empty());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# Old");
     }
@@ -1291,7 +1307,7 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let files = a.installed_dir_files(&entry, Scope::Local, dir.path());
+        let files = a.installed_dir_files(&entry, &local(dir.path()));
         assert!(files.contains_key("backend.md"));
         assert!(files.contains_key("frontend.md"));
         assert!(!files.contains_key(".meta"));
@@ -1313,7 +1329,7 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let files = a.installed_dir_files(&entry, Scope::Local, dir.path());
+        let files = a.installed_dir_files(&entry, &local(dir.path()));
         assert!(files.is_empty());
     }
 
@@ -1343,7 +1359,7 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let files = a.installed_dir_files(&entry, Scope::Local, dir.path());
+        let files = a.installed_dir_files(&entry, &local(dir.path()));
         assert!(files.contains_key("backend.md"));
         assert!(!files.contains_key("frontend.md"));
     }
@@ -1368,13 +1384,13 @@ mod tests {
             },
         };
         let a = adapters().get("claude-code").unwrap();
-        let result = a.deploy_entry(
-            &entry,
-            &source_dir,
-            Scope::Local,
-            dir.path(),
-            &InstallOptions::default(),
-        );
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source_dir,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions::default(),
+        });
         assert!(result.contains_key("SKILL.md"));
         assert!(result.contains_key("examples.md"));
     }
