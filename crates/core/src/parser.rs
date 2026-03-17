@@ -147,10 +147,7 @@ fn parse_github_entry(
 }
 
 /// Parse a local entry line.
-fn parse_local_entry(
-    parts: &[String],
-    entity_type: EntityType,
-) -> (Option<Entry>, Vec<String>) {
+fn parse_local_entry(parts: &[String], entity_type: EntityType) -> (Option<Entry>, Vec<String>) {
     let warnings = Vec::new();
 
     // Detection: if parts[2] ends in ".md" or contains '/' → path (inferred name).
@@ -469,7 +466,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "local  skill  bash-craftsman");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.warnings.is_empty(), "unexpected warnings: {:?}", r.warnings);
+        assert!(
+            r.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            r.warnings
+        );
         assert_eq!(r.manifest.entries.len(), 1);
         let e = &r.manifest.entries[0];
         assert_eq!(e.source_type(), "local");
