@@ -9,7 +9,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Source fetching and caching for skillfile: resolver, strategies, sync"
-publish = false
+publish = true
 
 [dependencies]
 skillfile-core = { workspace = true }

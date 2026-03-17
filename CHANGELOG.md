@@ -4,6 +4,19 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.2.2 - 17-03-2026
+
+### Changed
+
+- **`EntityType` is now a proper enum** - entity types (`skill`, `agent`) were stringly-typed `&str` values throughout the codebase. Now a dedicated `EntityType` enum with `parse()` and `as_str()`, making illegal states unrepresentable.
+
+### Fixed
+
+- **Local entries with bare directory names** - `local skill bash-craftsman` produced a spurious "local entry needs: name path" warning because the parser only recognized paths ending in `.md` or containing `/`. Bare directory names are now correctly treated as paths when no explicit name is given.
+- **GitHub API 403 no longer disguised as "repo not found"** - HTTP 403 (rate limit) and 401 (bad credentials) were silently treated the same as 404, producing a misleading "could not resolve owner/repo@main" error. Now surfaces a clear message pointing to `GITHUB_TOKEN` or `gh auth login`.
+
+---
+
 ## v1.2.1 - 14-03-2026
 
 ### Added

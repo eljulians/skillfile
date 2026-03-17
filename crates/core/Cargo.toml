@@ -9,7 +9,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Core domain logic for skillfile: models, parser, lock, conflict, patch"
-publish = false
+publish = true
 
 [dependencies]
 thiserror = { workspace = true }

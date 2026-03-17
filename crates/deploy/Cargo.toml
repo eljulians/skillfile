@@ -9,7 +9,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Platform adapters and installation for skillfile"
-publish = false
+publish = true
 
 [dependencies]
 skillfile-core = { workspace = true }
