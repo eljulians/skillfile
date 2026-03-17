@@ -171,7 +171,13 @@ impl HttpClient for UreqClient {
 
         match result {
             Ok(mut response) => read_response_text(response.body_mut(), url).map(Some),
-            Err(ureq::Error::StatusCode(code)) if (400..500).contains(&code) => Ok(None),
+            // 404/422 = ref or repo doesn't exist (tentative lookup, not fatal).
+            // 403 = rate-limited or forbidden; 401 = bad token — surface these.
+            Err(ureq::Error::StatusCode(code)) if code == 404 || code == 422 => Ok(None),
+            Err(ureq::Error::StatusCode(403)) => Err(SkillfileError::Network(format!(
+                "HTTP 403 fetching {url} — you may be rate-limited. \
+                 Set GITHUB_TOKEN or run `gh auth login` to authenticate."
+            ))),
             Err(e) => Err(SkillfileError::Network(format!("{e} fetching {url}"))),
         }
     }

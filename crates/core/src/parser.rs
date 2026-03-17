@@ -150,16 +150,18 @@ fn parse_github_entry(
 fn parse_local_entry(
     parts: &[String],
     entity_type: EntityType,
-    lineno: usize,
 ) -> (Option<Entry>, Vec<String>) {
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
 
-    // Detection: if parts[2] ends in ".md" or contains '/' → path (inferred name)
-    if Path::new(&parts[2])
+    // Detection: if parts[2] ends in ".md" or contains '/' → path (inferred name).
+    // With 4+ parts, parts[2] is always the explicit name and parts[3] the path.
+    // With exactly 3 parts, parts[2] is always the path (even bare directory names
+    // like "commit" that don't contain '/' or end in '.md').
+    let looks_like_path = Path::new(&parts[2])
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("md"))
-        || parts[2].contains('/')
-    {
+        || parts[2].contains('/');
+    if looks_like_path || parts.len() < 4 {
         let local_path = &parts[2];
         let name = infer_name(local_path);
         (
@@ -173,12 +175,6 @@ fn parse_local_entry(
             warnings,
         )
     } else {
-        if parts.len() < 4 {
-            warnings.push(format!(
-                "warning: line {lineno}: local entry needs: name path"
-            ));
-            return (None, warnings);
-        }
         let name = &parts[2];
         let local_path = &parts[3];
         (
@@ -310,7 +306,7 @@ fn parse_source_entry(
     };
     match source_type {
         "github" => parse_github_entry(parts, entity_type, lineno),
-        "local" => parse_local_entry(parts, entity_type, lineno),
+        "local" => parse_local_entry(parts, entity_type),
         "url" => parse_url_entry(parts, entity_type, lineno),
         _ => (None, vec![]),
     }
@@ -396,7 +392,7 @@ pub fn parse_manifest_line(line: &str) -> Option<Entry> {
     let entity_type = EntityType::parse(&parts[1])?;
     let (entry_opt, _) = match source_type {
         "github" => parse_github_entry(&parts, entity_type, 0),
-        "local" => parse_local_entry(&parts, entity_type, 0),
+        "local" => parse_local_entry(&parts, entity_type),
         "url" => parse_url_entry(&parts, entity_type, 0),
         _ => return None,
     };
@@ -466,6 +462,20 @@ mod tests {
         assert_eq!(e.owner_repo(), "owner/repo");
         assert_eq!(e.path_in_repo(), "path/to/agent.md");
         assert_eq!(e.ref_(), "main");
+    }
+
+    #[test]
+    fn local_entry_bare_dir_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(dir.path(), "local  skill  bash-craftsman");
+        let r = parse_manifest(&p).unwrap();
+        assert!(r.warnings.is_empty(), "unexpected warnings: {:?}", r.warnings);
+        assert_eq!(r.manifest.entries.len(), 1);
+        let e = &r.manifest.entries[0];
+        assert_eq!(e.source_type(), "local");
+        assert_eq!(e.entity_type, EntityType::Skill);
+        assert_eq!(e.name, "bash-craftsman");
+        assert_eq!(e.local_path(), "bash-craftsman");
     }
 
     #[test]
