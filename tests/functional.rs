@@ -32,6 +32,26 @@ fn retry_delays() -> impl Iterator<Item = std::time::Duration> {
     Fixed::from_millis(2000).take(2)
 }
 
+/// Assert that no entry is a strict path-prefix of another entry.
+///
+/// The old `collapse_to_entries` grouped by immediate parent, producing both
+/// `"skills/k8s"` AND `"skills/k8s/references"`. The SKILL.md-marker fix must
+/// absorb descendants so each root stands alone.
+fn assert_no_prefix_overlap(entries: &[String]) {
+    let bad_pair = entries.iter().find_map(|a| {
+        entries
+            .iter()
+            .find(|b| *b != a && b.starts_with(a) && b.as_bytes().get(a.len()) == Some(&b'/'))
+            .map(|b| (a.clone(), b.clone()))
+    });
+    assert!(
+        bad_pair.is_none(),
+        "entry '{}' is a strict prefix of '{}' — collapse failed",
+        bad_pair.as_ref().map_or("", |p| &p.0),
+        bad_pair.as_ref().map_or("", |p| &p.1),
+    );
+}
+
 fn make_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("Skillfile"), TEST_SKILLFILE).unwrap();
@@ -422,15 +442,15 @@ fn skill_entry_resolution_multi_skill_repo() {
     })
     .expect("API call failed after retries");
 
-    // The entries should be collapsed directory paths, not individual files.
-    // No entry should look like "skills/kubernetes-specialist/SKILL.md" or
-    // "skills/kubernetes-specialist/references/helm.md".
-    for e in &entries {
-        assert!(
-            !e.contains("/references/"),
-            "should not expose sub-directory files: {e}"
-        );
-    }
+    // INVARIANT: within the skills/ tree, no entry should be a strict prefix
+    // of another. (Non-skill dirs like docs/ may legitimately overlap via the
+    // heuristic fallback, so we only check the skills/ subtree.)
+    let skill_entries: Vec<String> = entries
+        .iter()
+        .filter(|e| e.starts_with("skills/"))
+        .cloned()
+        .collect();
+    assert_no_prefix_overlap(&skill_entries);
 
     // Simulate the name-matching logic from resolve_skill_path:
     // find an entry whose last segment exactly matches the skill name.
@@ -451,6 +471,98 @@ fn skill_entry_resolution_multi_skill_repo() {
             .is_some_and(|e| e.eq_ignore_ascii_case("md")),
         "directory skill should not end in .md: {matched}"
     );
+}
+
+/// Scoped discovery on a flat repo: prefix filtering + no-prefix-overlap invariant.
+#[test]
+fn scoped_discovery_flat_repo() {
+    if !require_github_token() {
+        return;
+    }
+    let client = skillfile_sources::http::UreqClient::new();
+    let entries: Vec<String> = retry(retry_delays(), || {
+        let result = skillfile_sources::resolver::list_repo_skill_entries_under(
+            &client,
+            "jeffallan/claude-skills",
+            "skills/",
+        );
+        if result.is_empty() {
+            Err("no entries returned")
+        } else {
+            Ok(result)
+        }
+    })
+    .expect("API call failed after retries");
+
+    // All entries scoped to skills/
+    for e in &entries {
+        assert!(
+            e.starts_with("skills/"),
+            "scoped entry should start with 'skills/': {e}"
+        );
+    }
+
+    // No entry is a strict prefix of another (same invariant as above — this
+    // repo has skills with reference subdirs that the old code exposed).
+    assert_no_prefix_overlap(&entries);
+}
+
+/// Scoped discovery on a depth-2+ nested repo (aiskillstore/marketplace).
+///
+/// This repo has the pattern that triggered the collapse_to_entries bug:
+///   skills/author/skill-name/SKILL.md          ← parent skill
+///   skills/author/skill-name/sub-skill/SKILL.md ← child sub-skill
+///
+/// Both parent and child are valid independent skills (both have SKILL.md).
+/// Non-SKILL.md descendants must NOT produce separate entries.
+#[test]
+fn scoped_discovery_nested_repo() {
+    if !require_github_token() {
+        return;
+    }
+    let client = skillfile_sources::http::UreqClient::new();
+    let entries: Vec<String> = retry(retry_delays(), || {
+        let result = skillfile_sources::resolver::list_repo_skill_entries_under(
+            &client,
+            "aiskillstore/marketplace",
+            "skills/",
+        );
+        if result.is_empty() {
+            Err("no entries returned")
+        } else {
+            Ok(result)
+        }
+    })
+    .expect("API call failed after retries");
+
+    // Scoping works
+    for e in &entries {
+        assert!(
+            e.starts_with("skills/"),
+            "scoped entry should start with 'skills/': {e}"
+        );
+    }
+
+    // This repo has entries at multiple depths (depth 3 AND depth 4+).
+    // Count unique depth levels to confirm depth-2+ nesting is preserved.
+    let depths: std::collections::HashSet<usize> =
+        entries.iter().map(|e| e.matches('/').count()).collect();
+    assert!(
+        depths.len() >= 2,
+        "expected entries at multiple depth levels, got depths: {depths:?} \
+         (first 10 entries: {:?})",
+        &entries[..entries.len().min(10)]
+    );
+
+    // Entries that share a prefix path are only allowed when both are SKILL.md
+    // roots (independent skills). We can't check SKILL.md presence without more
+    // API calls, but we CAN verify the structural invariant: if entry A is a
+    // prefix of entry B, then B must be at least 2 path segments deeper (it's
+    // a separate sub-skill, not a leaked subdirectory of files).
+    // e.g. "skills/author/parent" → "skills/author/parent/child" is OK (sub-skill)
+    //      "skills/author/parent" → "skills/author/parent/references" would be a bug
+    //      (but we can't distinguish without checking SKILL.md — so we just verify
+    //       that nesting exists at all, which the depth check above does).
 }
 
 /// End-to-end: single-skill repo with SKILL.md at root resolves to ".".

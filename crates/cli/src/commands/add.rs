@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
@@ -100,6 +101,108 @@ pub fn entry_from_url(entity_type: &str, url: &str, name: Option<&str>) -> Entry
             url: url.to_string(),
         },
     }
+}
+
+/// Arguments for [`cmd_add_bulk`].
+pub struct BulkAddArgs<'a> {
+    pub entity_type: &'a str,
+    pub owner_repo: &'a str,
+    pub base_path: &'a str,
+    pub ref_: Option<&'a str>,
+    pub no_interactive: bool,
+}
+
+/// Discover entries in a GitHub repo under `base_path`, present a multi-select,
+/// and add each selected entry via [`cmd_add`].
+pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), SkillfileError> {
+    use skillfile_core::output::Spinner;
+    use skillfile_sources::resolver::list_repo_skill_entries_under;
+
+    let spinner = Spinner::new(&format!(
+        "Discovering {}s in {}...",
+        args.entity_type, args.owner_repo
+    ));
+    let client = skillfile_sources::http::UreqClient::new();
+    let entries = list_repo_skill_entries_under(&client, args.owner_repo, args.base_path);
+    spinner.finish();
+
+    if entries.is_empty() {
+        return Err(SkillfileError::Manifest(format!(
+            "no {}s found under '{}' in {}",
+            args.entity_type, args.base_path, args.owner_repo
+        )));
+    }
+
+    let selected = select_entries(&entries, args)?;
+    if !selected.is_empty() {
+        add_selected(&selected, args, repo_root);
+    }
+    Ok(())
+}
+
+/// Interactive or automatic entry selection.
+fn select_entries(
+    entries: &[String],
+    args: &BulkAddArgs<'_>,
+) -> Result<Vec<String>, SkillfileError> {
+    if args.no_interactive {
+        return Ok(entries.to_vec());
+    }
+    if !std::io::stderr().is_terminal() {
+        return Err(SkillfileError::Manifest(
+            "interactive selection requires a terminal; use --no-interactive".to_string(),
+        ));
+    }
+    let ans = inquire::MultiSelect::new(
+        &format!(
+            "Select {}s to add ({} found):",
+            args.entity_type,
+            entries.len()
+        ),
+        entries.to_vec(),
+    )
+    .prompt()
+    .map_err(|e| SkillfileError::Manifest(format!("selection cancelled: {e}")))?;
+    if ans.is_empty() {
+        println!("No entries selected.");
+    }
+    Ok(ans)
+}
+
+/// Add each selected path to the manifest, collecting results.
+fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    for path in selected {
+        let entry = entry_from_github(&GithubEntryArgs {
+            entity_type: args.entity_type,
+            owner_repo: args.owner_repo,
+            path,
+            ref_: args.ref_,
+            name: None,
+        });
+        match cmd_add(&entry, repo_root) {
+            Ok(()) => added += 1,
+            Err(SkillfileError::Manifest(msg)) if msg.contains("already exists") => {
+                eprintln!("warning: skipped '{}' (already in Skillfile)", entry.name);
+                skipped += 1;
+            }
+            Err(e) => {
+                eprintln!("warning: failed to add '{}': {e}", entry.name);
+                skipped += 1;
+            }
+        }
+    }
+    let plural = if added == 1 { "" } else { "s" };
+    let skip_msg = if skipped > 0 {
+        format!(" ({skipped} skipped)")
+    } else {
+        String::new()
+    };
+    println!(
+        "Added {added} {}{plural} to Skillfile.{skip_msg}",
+        args.entity_type
+    );
 }
 
 pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {

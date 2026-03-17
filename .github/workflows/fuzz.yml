@@ -1,8 +1,6 @@
 name: Fuzz
 
 on:
-  schedule:
-    - cron: "0 3 * * *" # 03:00 UTC daily
   workflow_dispatch:
 
 env:

@@ -162,17 +162,80 @@ fn single_file_dir_entry(dir: &str, file_path: &str) -> String {
 /// - `SKILL.md` at repo root → `.`
 /// - `dir/SKILL.md` (or multiple `.md` files in a dir) → `dir` (directory entry)
 /// - `path/to/file.md` (only `.md` file in its dir) → `path/to/file.md` (single file)
+///
+/// SKILL.md markers act as boundary detectors: a directory containing SKILL.md
+/// "claims" all descendant `.md` files, preventing them from producing separate
+/// entries. This handles arbitrarily nested repos (e.g. `skills/alice/python-pro/`
+/// with `SKILL.md` + `resources/playbook.md` produces ONE entry, not two).
 fn collapse_to_entries(md_files: &[String]) -> Vec<String> {
+    let skill_roots = find_skill_roots(md_files);
+    let unclaimed = find_unclaimed_files(md_files, &skill_roots);
+
+    let mut entries: Vec<String> = skill_roots
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    entries.extend(collapse_by_heuristic(&unclaimed));
+    entries
+}
+
+/// Find directories containing SKILL.md (case-insensitive).
+fn find_skill_roots(md_files: &[String]) -> std::collections::BTreeSet<&str> {
+    let mut roots = std::collections::BTreeSet::new();
+    for path in md_files {
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        let is_nested_marker = filename.eq_ignore_ascii_case("SKILL.md") && path.contains('/');
+        if is_nested_marker {
+            // unwrap safe: we checked contains('/')
+            let pos = path.rfind('/').unwrap();
+            roots.insert(&path[..pos]);
+        }
+    }
+    roots
+}
+
+/// Return `true` if `path` is a descendant of (or the marker file at) any skill root.
+fn is_claimed_by_root(path: &str, skill_roots: &std::collections::BTreeSet<&str>) -> bool {
+    skill_roots.iter().any(|root| {
+        path.starts_with(root) && path.as_bytes().get(root.len()).copied() == Some(b'/')
+    })
+}
+
+/// Collect files not claimed by any SKILL.md root (and not markers themselves).
+fn find_unclaimed_files<'a>(
+    md_files: &'a [String],
+    skill_roots: &std::collections::BTreeSet<&str>,
+) -> Vec<&'a str> {
+    md_files
+        .iter()
+        .filter(|path| {
+            // Root-level files are never claimed.
+            if !path.contains('/') {
+                return true;
+            }
+            // SKILL.md at a skill root is claimed (the root is the entry).
+            let filename = path.rsplit('/').next().unwrap_or(path);
+            if filename.eq_ignore_ascii_case("SKILL.md") {
+                let is_root_marker = path
+                    .rfind('/')
+                    .is_some_and(|pos| skill_roots.contains(&path[..pos]));
+                return !is_root_marker;
+            }
+            !is_claimed_by_root(path, skill_roots)
+        })
+        .map(String::as_str)
+        .collect()
+}
+
+/// Group unclaimed files by parent dir and collapse per the original heuristic.
+fn collapse_by_heuristic(unclaimed: &[&str]) -> Vec<String> {
     use std::collections::BTreeMap;
 
-    // Group files by their parent directory.
     let mut dirs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for path in md_files {
+    for path in unclaimed {
         if let Some(pos) = path.rfind('/') {
-            let dir = &path[..pos];
-            dirs.entry(dir).or_default().push(path);
+            dirs.entry(&path[..pos]).or_default().push(path);
         } else {
-            // Root-level file.
             dirs.entry("").or_default().push(path);
         }
     }
@@ -180,10 +243,8 @@ fn collapse_to_entries(md_files: &[String]) -> Vec<String> {
     let mut entries = Vec::new();
     for (dir, files) in &dirs {
         if dir.is_empty() {
-            // Root level: a root SKILL.md becomes "."; other files stay as-is.
             entries.extend(files.iter().map(|f| root_entry_path(f)));
         } else if files.len() > 1 {
-            // Multiple .md files in one dir → directory entry.
             entries.push(dir.to_string());
         } else if files.len() == 1 {
             entries.push(single_file_dir_entry(dir, files[0]));
@@ -205,6 +266,37 @@ pub fn list_repo_skill_entries(client: &dyn HttpClient, owner_repo: &str) -> Vec
         .or_else(|| list_md_files_with_ref(client, owner_repo, "master"))
         .map(|files| collapse_to_entries(&files))
         .unwrap_or_default()
+}
+
+/// Discover skill entry paths under a specific directory in a GitHub repo.
+///
+/// Like [`list_repo_skill_entries`] but scoped to `base_path`. Pass `"."` to
+/// search the entire repo (equivalent to `list_repo_skill_entries`).
+///
+/// The returned paths are repo-relative (e.g. `skills/browser`, not `browser`).
+pub fn list_repo_skill_entries_under(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    base_path: &str,
+) -> Vec<String> {
+    let all_files = list_md_files_with_ref(client, owner_repo, "main")
+        .or_else(|| list_md_files_with_ref(client, owner_repo, "master"));
+
+    let Some(files) = all_files else {
+        return Vec::new();
+    };
+
+    if base_path == "." {
+        return collapse_to_entries(&files);
+    }
+
+    let prefix = base_path.trim_end_matches('/');
+    let filtered: Vec<String> = files
+        .into_iter()
+        .filter(|p| p.starts_with(prefix) && p.as_bytes().get(prefix.len()).copied() == Some(b'/'))
+        .collect();
+
+    collapse_to_entries(&filtered)
 }
 
 /// Try to list `.md` files for a specific ref. Returns `None` on failure.
@@ -1205,10 +1297,9 @@ mod tests {
             "skills/k8s/references/config.md",
         ]);
         let entries = collapse_to_entries(&files);
-        // "skills/k8s" has SKILL.md → dir entry.
-        // "skills/k8s/references" has 2 files → dir entry.
+        // "skills/k8s" has SKILL.md → dir entry; descendants are claimed.
         assert!(entries.contains(&"skills/k8s".to_string()));
-        assert!(entries.contains(&"skills/k8s/references".to_string()));
+        assert_eq!(entries.len(), 1, "references/ must be absorbed by k8s root");
     }
 
     #[test]
@@ -1258,9 +1349,88 @@ mod tests {
         ]);
         let entries = collapse_to_entries(&files);
         assert!(entries.contains(&"skills/kubernetes-specialist".to_string()));
-        assert!(entries.contains(&"skills/kubernetes-specialist/references".to_string()));
         assert!(entries.contains(&"skills/docker-helper".to_string()));
         assert!(entries.contains(&"skills/python-pro".to_string()));
+        assert_eq!(
+            entries.len(),
+            3,
+            "descendants must be absorbed by SKILL.md roots"
+        );
+    }
+
+    #[test]
+    fn collapse_depth2_skill_with_resources() {
+        // openclaw-style: skills/alice/python-pro/SKILL.md + resources subdir
+        let files = strs(&[
+            "skills/alice/python-pro/SKILL.md",
+            "skills/alice/python-pro/resources/playbook.md",
+        ]);
+        let entries = collapse_to_entries(&files);
+        assert_eq!(entries, vec!["skills/alice/python-pro"]);
+    }
+
+    #[test]
+    fn collapse_depth2_multiple_authors() {
+        // openclaw-style tree with multiple authors
+        let files = strs(&[
+            "skills/alice/python-pro/SKILL.md",
+            "skills/alice/python-pro/resources/playbook.md",
+            "skills/bob/docker-helper/SKILL.md",
+            "skills/bob/docker-helper/examples/compose.md",
+            "skills/bob/docker-helper/examples/swarm.md",
+        ]);
+        let entries = collapse_to_entries(&files);
+        assert!(entries.contains(&"skills/alice/python-pro".to_string()));
+        assert!(entries.contains(&"skills/bob/docker-helper".to_string()));
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn collapse_skill_root_claims_all_descendants() {
+        // Deeply nested files under a SKILL.md root must not produce entries.
+        let files = strs(&[
+            "skills/k8s/SKILL.md",
+            "skills/k8s/refs/helm.md",
+            "skills/k8s/refs/deep/nested/config.md",
+            "skills/k8s/examples/deploy.md",
+        ]);
+        let entries = collapse_to_entries(&files);
+        assert_eq!(entries, vec!["skills/k8s"]);
+    }
+
+    #[test]
+    fn collapse_no_marker_heuristic_fallback() {
+        // Files without SKILL.md markers still use the old heuristic.
+        let files = strs(&["agents/reviewer.md", "agents/planner.md", "tools/linter.md"]);
+        let entries = collapse_to_entries(&files);
+        // agents/ has 2 files → dir entry; tools/ has 1 → file entry.
+        assert!(entries.contains(&"agents".to_string()));
+        assert!(entries.contains(&"tools/linter.md".to_string()));
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn collapse_mixed_markers_and_heuristic() {
+        let files = strs(&[
+            "skills/browser/SKILL.md",
+            "skills/browser/refs/config.md",
+            "agents/reviewer.md",
+            "agents/planner.md",
+        ]);
+        let entries = collapse_to_entries(&files);
+        assert!(entries.contains(&"skills/browser".to_string()));
+        assert!(entries.contains(&"agents".to_string()));
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn collapse_skill_root_does_not_claim_sibling() {
+        // A SKILL.md root should not claim siblings in a different directory.
+        let files = strs(&["skills/docker/SKILL.md", "skills/git/commit.md"]);
+        let entries = collapse_to_entries(&files);
+        assert!(entries.contains(&"skills/docker".to_string()));
+        assert!(entries.contains(&"skills/git/commit.md".to_string()));
+        assert_eq!(entries.len(), 2);
     }
 
     // -----------------------------------------------------------------------
@@ -1357,7 +1527,7 @@ mod tests {
 
         let entries = list_repo_skill_entries(&client, "org/repo");
         assert!(entries.contains(&"skills/k8s".to_string()));
-        assert!(entries.contains(&"skills/k8s/references".to_string()));
+        assert_eq!(entries.len(), 1, "descendants absorbed by SKILL.md root");
     }
 
     #[test]
@@ -1446,5 +1616,74 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json(&tree_url("org/repo", "main"), r#"{"tree": []}"#);
         assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // list_repo_skill_entries_under — scoped discovery
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn skill_entries_under_scoped_to_skills() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[
+            ("skills/browser/SKILL.md", "blob"),
+            ("skills/git.md", "blob"),
+            ("agents/reviewer.md", "blob"),
+        ]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
+        assert!(entries.contains(&"skills/browser".to_string()));
+        assert!(entries.contains(&"skills/git.md".to_string()));
+        assert!(!entries.contains(&"agents/reviewer.md".to_string()));
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn skill_entries_under_dot_returns_everything() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("skills/git.md", "blob"), ("agents/reviewer.md", "blob")]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+
+        let entries = list_repo_skill_entries_under(&client, "org/repo", ".");
+        assert!(entries.contains(&"skills/git.md".to_string()));
+        assert!(entries.contains(&"agents/reviewer.md".to_string()));
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn skill_entries_under_nonexistent_path_returns_empty() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("skills/git.md", "blob")]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "nonexistent/");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn skill_entries_under_network_failure_returns_empty() {
+        let mut client = MockClient::new();
+        client.add_json_err(&tree_url("org/repo", "main"), "timeout");
+        client.add_json_err(&tree_url("org/repo", "master"), "timeout");
+
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn skill_entries_under_no_trailing_slash() {
+        // base_path without trailing slash should still work
+        let mut client = MockClient::new();
+        let json = tree_json(&[
+            ("skills/browser/SKILL.md", "blob"),
+            ("skills/git.md", "blob"),
+        ]);
+        client.add_json(&tree_url("org/repo", "main"), &json);
+
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills");
+        assert!(entries.contains(&"skills/browser".to_string()));
+        assert!(entries.contains(&"skills/git.md".to_string()));
+        assert_eq!(entries.len(), 2);
     }
 }

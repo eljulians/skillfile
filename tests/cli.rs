@@ -193,6 +193,60 @@ fn second_run_no_platform_hint() {
         .stderr(predicate::str::contains("Configured platforms:").not());
 }
 
+// ---------------------------------------------------------------------------
+// add github bulk: CLI flag parsing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn add_github_bulk_no_interactive_flag_accepted() {
+    // Verify the --no-interactive flag is parsed without error.
+    // The actual discovery will fail (no network), but the flag should be accepted.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    let output = sf(dir.path())
+        .args([
+            "add",
+            "github",
+            "skill",
+            "owner/repo",
+            "skills/",
+            "--no-interactive",
+        ])
+        .timeout(std::time::Duration::from_secs(10))
+        .output()
+        .expect("failed to execute");
+
+    // The command will fail because there's no network/mock, but the flag
+    // should be accepted (no "unrecognized option" error).
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--no-interactive should be accepted, got: {stderr}"
+    );
+}
+
+#[test]
+fn add_github_normal_path_no_bulk() {
+    // A path NOT ending with / should route to normal add (not bulk discovery).
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    // This will fail at sync (no network), but should NOT try to discover.
+    let output = sf(dir.path())
+        .args(["add", "github", "skill", "owner/repo", "skills/SKILL.md"])
+        .timeout(std::time::Duration::from_secs(10))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Normal add prints "Added: github  skill  ..." before attempting sync.
+    assert!(
+        stdout.contains("Added:"),
+        "normal add path should print 'Added:' line, got: {stdout}"
+    );
+}
+
 /// Local directory entries must be deployed as directories, not empty .md files.
 ///
 /// Regression test: is_dir_entry() only inspected GitHub path_in_repo and

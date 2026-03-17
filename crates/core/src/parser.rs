@@ -89,33 +89,15 @@ fn parse_github_entry(
     let mut warnings = Vec::new();
 
     // Detection: if parts[2] contains '/' → it's owner/repo (inferred name)
-    if parts[2].contains('/') {
+    let (name, owner_repo, path_in_repo, ref_) = if parts[2].contains('/') {
         if parts.len() < 4 {
             warnings.push(format!(
                 "warning: line {lineno}: github entry needs at least: owner/repo path"
             ));
             return (None, warnings);
         }
-        let owner_repo = &parts[2];
-        let path_in_repo = &parts[3];
-        let ref_ = if parts.len() > 4 {
-            &parts[4]
-        } else {
-            DEFAULT_REF
-        };
-        let name = infer_name(path_in_repo);
-        (
-            Some(Entry {
-                entity_type,
-                name,
-                source: SourceFields::Github {
-                    owner_repo: owner_repo.clone(),
-                    path_in_repo: path_in_repo.clone(),
-                    ref_: ref_.to_string(),
-                },
-            }),
-            warnings,
-        )
+        let ref_ = parts.get(4).map_or(DEFAULT_REF, String::as_str);
+        (infer_name(&parts[3]), &parts[2], &parts[3], ref_)
     } else {
         if parts.len() < 5 {
             warnings.push(format!(
@@ -123,27 +105,28 @@ fn parse_github_entry(
             ));
             return (None, warnings);
         }
-        let name = &parts[2];
-        let owner_repo = &parts[3];
-        let path_in_repo = &parts[4];
-        let ref_ = if parts.len() > 5 {
-            &parts[5]
-        } else {
-            DEFAULT_REF
-        };
-        (
-            Some(Entry {
-                entity_type,
-                name: name.clone(),
-                source: SourceFields::Github {
-                    owner_repo: owner_repo.clone(),
-                    path_in_repo: path_in_repo.clone(),
-                    ref_: ref_.to_string(),
-                },
-            }),
-            warnings,
-        )
-    }
+        if !parts[3].contains('/') {
+            warnings.push(format!(
+                "warning: line {lineno}: invalid owner/repo '{}' \
+                 — expected 'owner/repo' format",
+                parts[3],
+            ));
+            return (None, warnings);
+        }
+        let ref_ = parts.get(5).map_or(DEFAULT_REF, String::as_str);
+        (parts[2].clone(), &parts[3], &parts[4], ref_)
+    };
+
+    let entry = Entry {
+        entity_type,
+        name,
+        source: SourceFields::Github {
+            owner_repo: owner_repo.clone(),
+            path_in_repo: path_in_repo.clone(),
+            ref_: ref_.to_owned(),
+        },
+    };
+    (Some(entry), warnings)
 }
 
 /// Parse a local entry line.
@@ -858,6 +841,19 @@ mod tests {
         let r = parse_manifest(&p).unwrap();
         assert!(r.manifest.entries.is_empty());
         assert!(r.warnings.iter().any(|w| w.contains("unknown entity type")));
+    }
+
+    #[test]
+    fn github_invalid_owner_repo_skipped_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        // Explicit-name form: name is "my-skill", owner_repo is "noslash"
+        let p = write_manifest(dir.path(), "github  skill  my-skill  noslash  path.md");
+        let r = parse_manifest(&p).unwrap();
+        assert!(
+            r.manifest.entries.is_empty(),
+            "entry with invalid owner/repo should be skipped"
+        );
+        assert!(r.warnings.iter().any(|w| w.contains("owner/repo")));
     }
 
     // -------------------------------------------------------------------

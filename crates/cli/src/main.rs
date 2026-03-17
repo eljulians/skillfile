@@ -304,7 +304,7 @@ Examples:
 
 #[derive(Subcommand)]
 enum AddSource {
-    /// Add a GitHub-hosted entry
+    /// Add a GitHub-hosted entry (use trailing / to discover and bulk-add)
     Github {
         /// Entity type: skill or agent
         #[arg(value_name = "TYPE", value_parser = parse_entity_type)]
@@ -312,7 +312,7 @@ enum AddSource {
         /// GitHub repository (e.g. owner/repo)
         #[arg(value_name = "OWNER/REPO")]
         owner_repo: String,
-        /// Path to the .md file within the repo
+        /// Path to the .md file within the repo (end with / to discover all entries)
         #[arg(value_name = "PATH")]
         path: String,
         /// Branch, tag, or SHA (default: main)
@@ -321,6 +321,9 @@ enum AddSource {
         /// Override name (default: filename stem)
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Add all discovered entries without interactive selection
+        #[arg(long)]
+        no_interactive: bool,
     },
     /// Add a local file entry
     Local {
@@ -348,6 +351,12 @@ enum AddSource {
     },
 }
 
+/// Returns `true` if `path` looks like a directory discovery request rather
+/// than a single-file add. Trailing `/` or bare `.` indicate bulk discovery.
+fn is_discovery_path(path: &str) -> bool {
+    path.ends_with('/') || path == "."
+}
+
 fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), SkillfileError> {
     let entry = match source {
         AddSource::Github {
@@ -355,7 +364,27 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             owner_repo,
             path,
             ref_,
+            name: _,
+            no_interactive,
+        } if is_discovery_path(&path) => {
+            return commands::add::cmd_add_bulk(
+                &commands::add::BulkAddArgs {
+                    entity_type: &entity_type,
+                    owner_repo: &owner_repo,
+                    base_path: &path,
+                    ref_: ref_.as_deref(),
+                    no_interactive,
+                },
+                repo_root,
+            );
+        }
+        AddSource::Github {
+            entity_type,
+            owner_repo,
+            path,
+            ref_,
             name,
+            no_interactive: _,
         } => commands::add::entry_from_github(&commands::add::GithubEntryArgs {
             entity_type: &entity_type,
             owner_repo: &owner_repo,
