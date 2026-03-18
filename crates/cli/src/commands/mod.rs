@@ -1,4 +1,5 @@
 pub mod add;
+pub mod add_tui;
 pub mod diff;
 pub mod format;
 pub mod init;
