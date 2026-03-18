@@ -9,11 +9,11 @@
 
 **Track AI skills and agents declaratively, like dependencies. Pin them. Patch them. Deploy everywhere.**
 
-Declare everything in one file. Lock to exact commits. Sync across 8 agentic coding platforms. Customize without losing upstream updates. And even browse for 110K+ community skills without leaving the CLI!
+Declare your skills in a manifest. Pinned to exact commits. Deploys to Claude Code, Cursor, Gemini, and 5 more. Customize without losing upstream updates. Search 110K+ skills from the terminal.
 
 ![demo](https://github.com/eljulians/skillfile/raw/master/docs/demo.gif)
 
-You found a great skill on GitHub and copied the markdown into `.claude/skills/`. Or maybe you found one on [agentskill.sh](https://agentskill.sh) and used their installer. Either way:
+You found a great skill on GitHub and copied the markdown into `.claude/skills/`. Maybe you grabbed one from [agentskill.sh](https://agentskill.sh). So what now?
 
 - Each hub has its own install tool
 - Nothing tracks what you installed
@@ -42,15 +42,30 @@ Single binary, 3.5 MB, no runtime dependencies.
 ## Quick Start
 
 ```bash
-skillfile init                          # pick your platforms
-skillfile search "code review"          # browse 110K+ community skills
-skillfile add                           # wizard to add skills from GitHub/URLs/local/other registries
-skillfile add github skill anthropics/skills skills/slack-gif-creator # Or add a specific skill from github
+skillfile init                                           # pick your platforms
+skillfile add                                            # guided wizard
+skillfile add github skill anthropics/courses skills/    # or add directly
 ```
 
-On a fresh clone, `skillfile install` reads `Skillfile.lock` and reproduces the exact same install, every file pinned to its commit SHA.
+That's it. Skills are fetched, locked to exact SHAs, and deployed. On a fresh clone, `skillfile install` reproduces the exact same setup.
 
-## Search 110K+ community skills
+> Looking for skills to install? See [awesome-agents-and-skills](https://github.com/eljulians/awesome-agents-and-skills) for a curated collection with a ready-to-use Skillfile.
+
+## Add skills from anywhere
+
+Run `skillfile add` for a guided wizard, or use the explicit CLI for any source:
+
+```bash
+skillfile add                                            # wizard: GitHub, search, local, URL
+skillfile add github skill anthropics/courses            # discover all skills in a repo
+skillfile add github skill anthropics/courses skills/research  # add one specific skill
+skillfile add local skill skills/my-custom/SKILL.md      # track a local file
+skillfile add url skill https://example.com/skill.md     # add from a URL
+```
+
+When discovering from a GitHub repo, skillfile opens a split-pane TUI where you can browse entries, preview SKILL.md content, and multi-select what to install. Each selected skill becomes an independent manifest line you can pin, update, or remove individually.
+
+## Search community registries
 
 Browse [agentskill.sh](https://agentskill.sh/), [skills.sh](https://skills.sh/), and [skillhub.club](https://skillhub.club/) without leaving the terminal. Results are sorted by popularity, deduplicated, and include security scores.
 
@@ -58,33 +73,7 @@ Browse [agentskill.sh](https://agentskill.sh/), [skills.sh](https://skills.sh/),
 skillfile search "code review"                    # interactive TUI with preview
 skillfile search docker --min-score 80            # only high-trust results
 skillfile search testing --registry agentskill.sh # target a single registry
-skillfile search testing --json                   # machine-readable output
 ```
-
-Select a result and skillfile walks you through adding it to your manifest.
-
-## Bulk-add from any repo
-
-Point at a directory in a GitHub repo and skillfile discovers every skill inside it, even in deeply nested author-namespaced structures. Pick what you want from a split-pane TUI with SKILL.md preview, and all selected entries get added and installed in one shot.
-
-```bash
-# Discover all skills under skills/ in a repo (note the trailing /)
-skillfile add github skill anthropics/courses skills/
-
-#   Found 12 skills under skills/
-#   ┌──────────────────────────────────────────────────┐
-#   │ Select skills          │ SKILL.md preview         │
-#   │ [x] browser            │ # Browser Skill          │
-#   │ [x] code-review        │ Expert code review...    │
-#   │ [ ] commit             │                          │
-#   │ [ ] debugging          │                          │
-#   └──────────────────────────────────────────────────┘
-#   Added 2 entries to Skillfile.
-```
-
-Or just run `skillfile add` with no arguments for a guided wizard that walks you through every source type.
-
-Each discovered skill becomes a normal, independent manifest line. No magic expansion, no hidden state. Pin, update, and remove them individually.
 
 ## Customize without losing upstream updates
 
@@ -215,7 +204,7 @@ The lock file pins entries to exact commit SHAs. The same SHA always produces th
 
 Review what you install. The risk profile is the same as `git clone`.
 
-## Contributing
+## Development
 
 ```bash
 cargo test --workspace                     # unit + integration tests
@@ -224,6 +213,4 @@ cargo clippy --all-targets -- -D warnings  # lint
 cargo fmt --check                          # format check
 ```
 
-## License
-
-[Apache 2.0](LICENSE)
+PRs are very welcome!
