@@ -75,8 +75,8 @@ pub struct App<'a> {
     ref_: String,
     /// Vertical scroll offset for the preview pane.
     preview_scroll: u16,
-    /// Previously highlighted path — used to reset scroll on highlight change.
-    last_highlighted: Option<String>,
+    /// Previously highlighted index — used to reset scroll on highlight change.
+    last_highlighted_idx: Option<usize>,
 }
 
 impl<'a> App<'a> {
@@ -102,7 +102,7 @@ impl<'a> App<'a> {
             owner_repo: owner_repo.to_string(),
             ref_: ref_.to_string(),
             preview_scroll: 0,
-            last_highlighted: None,
+            last_highlighted_idx: None,
         }
     }
 
@@ -176,10 +176,10 @@ impl<'a> App<'a> {
 
     /// Reset preview scroll when the highlighted item changes.
     fn reset_scroll_if_changed(&mut self) {
-        let current = self.highlighted_path().map(str::to_string);
-        if current != self.last_highlighted {
+        let current = self.highlighted_index();
+        if current != self.last_highlighted_idx {
             self.preview_scroll = 0;
-            self.last_highlighted = current;
+            self.last_highlighted_idx = current;
         }
     }
 }
@@ -229,33 +229,29 @@ fn fetch_preview(owner_repo: &str, ref_: &str, path: &str) -> PreviewState {
     }
 }
 
-/// Parse key-value pairs from frontmatter text (between `---` markers).
-fn parse_frontmatter_fields(
-    frontmatter: &str,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
-    let mut name = None;
-    let mut description = None;
-    let mut risk = None;
-    let mut source = None;
+/// Parse key-value pairs from frontmatter text into a `PreviewContent` (no body).
+fn parse_frontmatter_fields(frontmatter: &str) -> PreviewContent {
+    let mut content = PreviewContent {
+        name: None,
+        description: None,
+        risk: None,
+        source: None,
+        body_excerpt: None,
+    };
     for line in frontmatter.lines() {
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
         let value = value.trim().to_string();
         match key.trim().to_lowercase().as_str() {
-            "name" => name = Some(value),
-            "description" => description = Some(value),
-            "risk" => risk = Some(value),
-            "source" => source = Some(value),
+            "name" => content.name = Some(value),
+            "description" => content.description = Some(value),
+            "risk" => content.risk = Some(value),
+            "source" => content.source = Some(value),
             _ => {}
         }
     }
-    (name, description, risk, source)
+    content
 }
 
 /// Extract a body excerpt (first 20 lines) from content after frontmatter.
@@ -277,16 +273,10 @@ pub fn parse_skill_frontmatter(content: &str) -> PreviewContent {
     if let Some(after_opening) = trimmed.strip_prefix("---") {
         if let Some(end) = after_opening.find("\n---") {
             let frontmatter = &after_opening[..end];
-            let (name, description, risk, source) = parse_frontmatter_fields(frontmatter);
+            let mut content = parse_frontmatter_fields(frontmatter);
             let body_start = end + 4; // skip \n---
-            let body_excerpt = extract_body_excerpt(&after_opening[body_start..]);
-            return PreviewContent {
-                name,
-                description,
-                risk,
-                source,
-                body_excerpt,
-            };
+            content.body_excerpt = extract_body_excerpt(&after_opening[body_start..]);
+            return content;
         }
     }
 
@@ -541,7 +531,7 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
     let title = Line::from(vec![
         Span::raw(" "),
         Span::styled(
-            app.owner_repo.clone(),
+            app.owner_repo.as_str(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -688,6 +678,9 @@ fn style_body_line(line: String) -> Line<'static> {
 
 /// Build a GitHub URL for the entry.
 fn build_github_url(owner_repo: &str, ref_: &str, path: &str) -> String {
+    if path == "." {
+        return format!("https://github.com/{owner_repo}/tree/{ref_}");
+    }
     let kind = if is_dir_entry(path) { "tree" } else { "blob" };
     format!("https://github.com/{owner_repo}/{kind}/{ref_}/{path}")
 }
@@ -1407,6 +1400,14 @@ Some body text.
         );
     }
 
+    #[test]
+    fn github_url_root_path() {
+        assert_eq!(
+            build_github_url("owner/repo", "main", "."),
+            "https://github.com/owner/repo/tree/main"
+        );
+    }
+
     // -- Scroll tests ----------------------------------------------------------
 
     #[test]
@@ -1444,7 +1445,7 @@ Some body text.
     fn scroll_resets_on_highlight_change() {
         let items = sample_items();
         let mut app = App::new(&items, "owner/repo", "main");
-        app.last_highlighted = Some("skills/browser".to_string());
+        app.last_highlighted_idx = Some(0);
         app.preview_scroll = 10;
 
         // Move to next item
@@ -1457,7 +1458,7 @@ Some body text.
     fn scroll_persists_when_highlight_unchanged() {
         let items = sample_items();
         let mut app = App::new(&items, "owner/repo", "main");
-        app.last_highlighted = Some("skills/browser".to_string());
+        app.last_highlighted_idx = Some(0);
         app.preview_scroll = 10;
 
         app.reset_scroll_if_changed();

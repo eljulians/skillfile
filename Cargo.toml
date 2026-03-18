@@ -93,6 +93,19 @@ map_unwrap_or = "deny"
 unnested_or_patterns = "deny"
 manual_string_new = "deny"
 
+# ── Restriction lints (opt-in, high signal) ──────────────────────
+empty_structs_with_brackets = "deny"  # use `struct Foo;` not `struct Foo {}`
+rest_pat_in_fully_bound_structs = "deny" # don't `..` when all fields are bound
+format_push_string = "deny"           # use write!() instead of push_str(&format!())
+needless_raw_strings = "deny"         # don't use r"" when no escapes needed
+verbose_file_reads = "deny"           # use fs::read_to_string not open+read
+string_lit_chars_any = "deny"         # use .contains('x') not .chars().any(|c| c == 'x')
+
+# ── Aspirational (enable after cleanup sprint) ───────────────────
+# str_to_string = "deny"             # 266 hits: .to_string() on &str -> .to_owned()
+# redundant_clone = "deny"           # 5 hits in tests (nursery, may false-positive)
+# option_if_let_else = "deny"        # 12 hits: if-let -> map_or/map_or_else
+
 [profile.release]
 opt-level = "s"
 lto = true
