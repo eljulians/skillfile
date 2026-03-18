@@ -1,11 +1,11 @@
 # skillfile
 
-[![CI](https://github.com/eljulians/skillfile/actions/workflows/ci.yml/badge.svg)](https://github.com/eljulians/skillfile/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/skillfile)](https://crates.io/crates/skillfile)
-[![Latest Release](https://img.shields.io/github/v/release/eljulians/skillfile)](https://github.com/eljulians/skillfile/releases/latest)
-[![MSRV](https://img.shields.io/badge/MSRV-1.82-blue)](https://github.com/eljulians/skillfile)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey.svg)]()
+[![CI](https://img.shields.io/github/actions/workflow/status/eljulians/skillfile/ci.yml?style=flat-square&label=CI)](https://github.com/eljulians/skillfile/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/skillfile?style=flat-square)](https://crates.io/crates/skillfile)
+[![Latest Release](https://img.shields.io/github/v/release/eljulians/skillfile?style=flat-square)](https://github.com/eljulians/skillfile/releases/latest)
+[![MSRV](https://img.shields.io/badge/MSRV-1.82-blue?style=flat-square)](https://github.com/eljulians/skillfile)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
+[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey?style=flat-square)]()
 
 **Track AI skills and agents declaratively, like dependencies. Pin them. Patch them. Deploy everywhere.**
 
