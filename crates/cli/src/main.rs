@@ -312,9 +312,9 @@ enum AddSource {
         /// GitHub repository (e.g. owner/repo)
         #[arg(value_name = "OWNER/REPO")]
         owner_repo: String,
-        /// Path to the .md file within the repo (end with / to discover all entries)
+        /// Path within the repo (omit to discover all entries)
         #[arg(value_name = "PATH")]
-        path: String,
+        path: Option<String>,
         /// Branch, tag, or SHA (default: main)
         #[arg(value_name = "REF")]
         ref_: Option<String>,
@@ -369,12 +369,13 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             ref_,
             name: _,
             no_interactive,
-        } if is_discovery_path(&path) => {
+        } if is_discovery_path(path.as_deref().unwrap_or(".")) => {
+            let base_path = path.as_deref().unwrap_or(".");
             return commands::add::cmd_add_bulk(
                 &commands::add::BulkAddArgs {
                     entity_type: &entity_type,
                     owner_repo: &owner_repo,
-                    base_path: &path,
+                    base_path,
                     ref_: ref_.as_deref(),
                     no_interactive,
                 },
@@ -391,7 +392,7 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
         } => commands::add::entry_from_github(&commands::add::GithubEntryArgs {
             entity_type: &entity_type,
             owner_repo: &owner_repo,
-            path: &path,
+            path: path.as_deref().unwrap_or("."),
             ref_: ref_.as_deref(),
             name: name.as_deref(),
         }),

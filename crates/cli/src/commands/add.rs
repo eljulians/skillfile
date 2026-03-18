@@ -118,6 +118,9 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
     use skillfile_core::output::Spinner;
     use skillfile_sources::resolver::list_repo_skill_entries_under;
 
+    // Validate repo exists before spending time on Tree API discovery.
+    validate_github_repo(args.owner_repo)?;
+
     let spinner = Spinner::new(&format!(
         "Discovering {}s in {}...",
         args.entity_type, args.owner_repo
@@ -131,6 +134,12 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
             "no {}s found under '{}' in {}",
             args.entity_type, args.base_path, args.owner_repo
         )));
+    }
+
+    // Single entry discovered — skip TUI, add directly.
+    if entries.len() == 1 {
+        add_selected(&entries, args, repo_root);
+        return Ok(());
     }
 
     let selected = select_entries(&entries, args)?;
