@@ -313,10 +313,39 @@ pub fn cmd_add_interactive(repo_root: &Path) -> Result<(), SkillfileError> {
     }
 }
 
-/// GitHub wizard flow: owner/repo → entity type → optional path/ref → discovery TUI.
+/// Validate that a GitHub repo exists. Returns `Ok(())` or a user-facing error.
+fn validate_github_repo(owner_repo: &str) -> Result<(), SkillfileError> {
+    use skillfile_sources::http::HttpClient;
+    let client = skillfile_sources::http::UreqClient::new();
+    let url = format!("https://api.github.com/repos/{owner_repo}");
+    match client.get_json(&url)? {
+        Some(_) => Ok(()),
+        None => Err(SkillfileError::Network(format!(
+            "repository '{owner_repo}' not found on GitHub"
+        ))),
+    }
+}
+
+/// Discover top-level directories in a repo for path hint display.
+fn discover_top_level_dirs(owner_repo: &str) -> Vec<String> {
+    use skillfile_sources::resolver::list_repo_skill_entries_under;
+    let client = skillfile_sources::http::UreqClient::new();
+    let entries = list_repo_skill_entries_under(&client, owner_repo, ".");
+    let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for entry in &entries {
+        if let Some(first_seg) = entry.split('/').next() {
+            dirs.insert(first_seg.to_owned());
+        }
+    }
+    dirs.into_iter().collect()
+}
+
+/// GitHub wizard flow: owner/repo → validate → entity type → path with hints → discovery TUI.
 fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
+    use skillfile_core::output::Spinner;
+
     let owner_repo: String = cliclack::input("GitHub repository (owner/repo)")
-        .placeholder("aiskillstore/marketplace")
+        .placeholder("e.g. anthropics/skills")
         .validate(|v: &String| {
             if v.contains('/') && v.len() > 2 {
                 Ok(())
@@ -326,13 +355,29 @@ fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
         })
         .interact()?;
 
-    let entity_type: &str = cliclack::select("What are you adding?")
-        .item("skill", "Skills", "")
-        .item("agent", "Agents", "")
-        .interact()?;
+    // Validate repo exists before asking more questions.
+    let spinner = Spinner::new(&format!("Checking {owner_repo}..."));
+    let valid = validate_github_repo(&owner_repo);
+    spinner.finish();
+    valid?;
 
-    let base_path: String = cliclack::input("Path within repo (or . for all)")
-        .placeholder(".")
+    // Default to "skill" — agents are rare and structurally identical.
+    // Users adding agents can use `skillfile add github agent ...` directly.
+    let entity_type = "skill";
+
+    // Discover top-level dirs for the path hint.
+    let spinner = Spinner::new("Scanning repository...");
+    let top_dirs = discover_top_level_dirs(&owner_repo);
+    spinner.finish();
+
+    let path_hint = if top_dirs.is_empty() {
+        "press Enter to scan the entire repo".to_owned()
+    } else {
+        format!("found: {}  (or . for all)", top_dirs.join(", "))
+    };
+
+    let base_path: String = cliclack::input("Path within repo")
+        .placeholder(&path_hint)
         .default_input(".")
         .interact()?;
 
