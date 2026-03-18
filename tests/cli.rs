@@ -248,6 +248,51 @@ fn add_github_normal_path_no_bulk() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// add wizard: CLI routing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bare_add_without_tty_fails_with_helpful_message() {
+    // `skillfile add` with no subcommand and no TTY should fail
+    // with a message pointing the user to explicit subcommands.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("interactive wizard requires a terminal")
+            || stderr.contains("skillfile add github|local|url"),
+        "bare `add` without TTY should give guidance, got: {stderr}"
+    );
+}
+
+#[test]
+fn explicit_add_subcommands_still_work() {
+    // `skillfile add github ...` should still route to the explicit handler,
+    // not the wizard. Regression check for the Option<AddSource> change.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "skill", "skills/test.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Added:"),
+        "explicit add local should still work, got: {stdout}"
+    );
+}
+
 /// Local directory entries must be deployed as directories, not empty .md files.
 ///
 /// Regression test: is_dir_entry() only inspected GitHub path_in_repo and

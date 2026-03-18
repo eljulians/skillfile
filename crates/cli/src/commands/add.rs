@@ -274,6 +274,138 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
     Ok(())
 }
 
+/// Interactive add wizard — launched by bare `skillfile add` with no subcommand.
+///
+/// Guides the user through source selection and delegates to existing
+/// add functions. Each flow terminates in a function that is already
+/// tested independently.
+pub fn cmd_add_interactive(repo_root: &Path) -> Result<(), SkillfileError> {
+    if !std::io::stderr().is_terminal() {
+        return Err(SkillfileError::Manifest(
+            "interactive wizard requires a terminal; use `skillfile add github|local|url` directly"
+                .to_owned(),
+        ));
+    }
+
+    cliclack::intro(console::style(" skillfile add ").on_cyan().black())?;
+
+    let source: &str = cliclack::select("How do you want to add a skill or agent?")
+        .item(
+            "github",
+            "GitHub repository",
+            "Browse and pick from any repo",
+        )
+        .item(
+            "search",
+            "Search registries",
+            "Find on agentskill.sh, skills.sh",
+        )
+        .item("local", "Local file", "A .md file already in this repo")
+        .item("url", "URL", "Direct link to a .md file")
+        .interact()?;
+
+    match source {
+        "github" => wizard_github(repo_root),
+        "search" => wizard_search(repo_root),
+        "local" => wizard_local(repo_root),
+        "url" => wizard_url(repo_root),
+        _ => unreachable!(),
+    }
+}
+
+/// GitHub wizard flow: owner/repo → entity type → optional path/ref → discovery TUI.
+fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
+    let owner_repo: String = cliclack::input("GitHub repository (owner/repo)")
+        .placeholder("aiskillstore/marketplace")
+        .validate(|v: &String| {
+            if v.contains('/') && v.len() > 2 {
+                Ok(())
+            } else {
+                Err("Expected format: owner/repo")
+            }
+        })
+        .interact()?;
+
+    let entity_type: &str = cliclack::select("What are you adding?")
+        .item("skill", "Skills", "")
+        .item("agent", "Agents", "")
+        .interact()?;
+
+    let base_path: String = cliclack::input("Path within repo (or . for all)")
+        .placeholder(".")
+        .default_input(".")
+        .interact()?;
+
+    cmd_add_bulk(
+        &BulkAddArgs {
+            entity_type,
+            owner_repo: &owner_repo,
+            base_path: &base_path,
+            ref_: None,
+            no_interactive: false,
+        },
+        repo_root,
+    )
+}
+
+/// Search wizard flow: query → delegates to `cmd_search`.
+fn wizard_search(repo_root: &Path) -> Result<(), SkillfileError> {
+    let query: String = cliclack::input("Search query")
+        .placeholder("code review")
+        .interact()?;
+
+    cliclack::outro("Launching search...")?;
+
+    super::search::cmd_search(&super::search::SearchConfig {
+        query: &query,
+        limit: 50,
+        min_score: None,
+        json: false,
+        registry: None,
+        no_interactive: false,
+        repo_root,
+    })
+}
+
+/// Local file wizard flow: entity type → path → `cmd_add`.
+fn wizard_local(repo_root: &Path) -> Result<(), SkillfileError> {
+    let entity_type: &str = cliclack::select("What are you adding?")
+        .item("skill", "Skill", "")
+        .item("agent", "Agent", "")
+        .interact()?;
+
+    let path: String = cliclack::input("Path to .md file")
+        .placeholder("skills/my-skill/SKILL.md")
+        .interact()?;
+
+    let entry = entry_from_local(entity_type, &path, None);
+    cmd_add(&entry, repo_root)
+}
+
+/// URL wizard flow: entity type → URL → optional name → `cmd_add`.
+fn wizard_url(repo_root: &Path) -> Result<(), SkillfileError> {
+    let entity_type: &str = cliclack::select("What are you adding?")
+        .item("skill", "Skill", "")
+        .item("agent", "Agent", "")
+        .interact()?;
+
+    let url: String = cliclack::input("URL to .md file")
+        .placeholder("https://example.com/skill.md")
+        .interact()?;
+
+    let name: String = cliclack::input("Name override (leave empty to infer from URL)")
+        .default_input("")
+        .interact()?;
+
+    let name_opt = if name.is_empty() {
+        None
+    } else {
+        Some(name.as_str())
+    };
+    let entry = entry_from_url(entity_type, &url, name_opt);
+    cmd_add(&entry, repo_root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
