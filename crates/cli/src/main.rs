@@ -81,7 +81,7 @@ Examples:
   skillfile add url agent https://example.com/agent.md --name my-agent")]
     Add {
         #[command(subcommand)]
-        source: AddSource,
+        source: Option<AddSource>,
     },
 
     /// Remove an entry from the Skillfile
@@ -459,7 +459,10 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
         }
         Command::Init => commands::init::cmd_init(repo_root),
         Command::Install { dry_run, update } => run_install(repo_root, dry_run, update),
-        Command::Add { source } => handle_add(source, repo_root),
+        Command::Add {
+            source: Some(source),
+        } => handle_add(source, repo_root),
+        Command::Add { source: None } => commands::add::cmd_add_interactive(repo_root),
         Command::Remove { name } => commands::remove::cmd_remove(&name, repo_root),
         Command::Search {
             query,
