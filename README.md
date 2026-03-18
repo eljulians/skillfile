@@ -9,7 +9,7 @@
 
 **Track AI skills and agents declaratively, like dependencies. Pin them. Patch them. Deploy everywhere.**
 
-Declare everything in one file. Lock to exact commits. Sync across 8 agentic coding platforms. Customize without losing upstream updates. And even browse for +110k community skills without leaving the CLI!
+Declare everything in one file. Lock to exact commits. Sync across 8 agentic coding platforms. Customize without losing upstream updates. And even browse for 110K+ community skills without leaving the CLI!
 
 ![demo](https://github.com/eljulians/skillfile/raw/master/docs/demo.gif)
 
@@ -44,8 +44,8 @@ Single binary, 3.5 MB, no runtime dependencies.
 ```bash
 skillfile init                          # pick your platforms
 skillfile search "code review"          # browse 110K+ community skills
-skillfile add github skill owner/repo skills/my-skill/SKILL.md
-skillfile install                       # fetch + deploy everywhere
+skillfile add                           # wizard to add skills from GitHub/URLs/local/other registries
+skillfile add github skill anthropics/skills skills/slack-gif-creator # Or add a specific skill from github
 ```
 
 On a fresh clone, `skillfile install` reads `Skillfile.lock` and reproduces the exact same install, every file pinned to its commit SHA.
@@ -69,9 +69,9 @@ Point at a directory in a GitHub repo and skillfile discovers every skill inside
 
 ```bash
 # Discover all skills under skills/ in a repo (note the trailing /)
-skillfile add github skill aiskillstore/marketplace skills/
+skillfile add github skill anthropics/courses skills/
 
-#   Found 422 skills under skills/
+#   Found 12 skills under skills/
 #   ┌──────────────────────────────────────────────────┐
 #   │ Select skills          │ SKILL.md preview         │
 #   │ [x] browser            │ # Browser Skill          │
@@ -129,6 +129,34 @@ skillfile install --update        # update to latest upstream
 skillfile install --dry-run       # preview without fetching
 skillfile status --check-upstream # see which entries have updates
 ```
+
+## Team workflow
+
+Commit `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` to your repo. That's it.
+
+The most common team setup: write your own skills in the repo and mix in community ones. Everyone gets the same AI behavior.
+
+```bash
+# Write an in-house skill and track it
+vim skills/our-coding-standards/SKILL.md
+skillfile add local skill skills/our-coding-standards/SKILL.md
+
+# Pull in a community skill too
+skillfile add github skill anthropics/courses skills/research
+
+# Commit everything
+git add Skillfile Skillfile.lock skills/
+git commit -m "Add coding standards and research skills"
+git push
+```
+
+```bash
+# Teammate clones and gets everything
+git pull
+skillfile install    # deploys all skills to their platform
+```
+
+Local skills live in your repo. You write and version them with git. GitHub skills are pinned to exact SHAs in the lock file. Both deploy to every configured platform. New teammate joins, runs `skillfile install`, and gets the same AI setup as everyone else.
 
 ## Skillfile format
 
