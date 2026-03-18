@@ -4,6 +4,38 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.3.0 - 18-03-2026
+
+### Added
+
+- **Interactive add wizard** - `skillfile add` with no subcommand launches a guided wizard. Pick a source (GitHub, search, local, URL), answer a few prompts, and skills get added and installed. Zero CLI syntax to memorize.
+- **Split-pane TUI for bulk add** - discovering skills from a GitHub repo now opens a full-screen split-pane browser matching the `search` experience. Left pane: multi-select list with checkboxes. Right pane: live SKILL.md preview with name, description, risk level, source, GitHub URL, and the first 20 lines of body content. Filter by typing, toggle all with `a`, scroll preview with Tab/Shift+Tab.
+- **Bulk add from any GitHub repo** - `skillfile add github skill owner/repo` discovers every skill in the repo via the Tree API. Works with repos of any depth, including author-namespaced structures. Each selected entry becomes an independent Skillfile line.
+- **Factory (Droid) platform adapter** - 8th supported platform. Skills deploy to `.factory/skills/` (nested), agents to `.factory/droids/` (flat).
+- **Repo validation** - both the wizard and the explicit CLI validate that the GitHub repo exists before attempting Tree API discovery. Typos now produce "repository not found" instead of the misleading "no skills found."
+- **Path hints in wizard** - after entering a repo, the wizard scans for top-level directories and shows them as hints (e.g. "found: skills, agents (or . for all)").
+- **6 new clippy restriction lints** at deny level: `empty_structs_with_brackets`, `rest_pat_in_fully_bound_structs`, `format_push_string`, `needless_raw_strings`, `verbose_file_reads`, `string_lit_chars_any`. Plus 2 new `clippy.toml` thresholds: `too-large-for-stack = 512`, `enum-variant-size-threshold = 256`.
+- **Fuzzer upgraded** - 7 semantic invariants (up from crash-freedom only): name validity, source field non-empty, `owner_repo` contains `/`, install targets, warnings, idempotency, unique names. Fuzz job moved from daily schedule to PR CI pipeline.
+
+### Changed
+
+- **`path` is now optional in `skillfile add github`** - omitting the path defaults to full-repo discovery (`.`). No more clap error when you forget the path argument.
+- **Single-entry discovery skips the TUI** - when exactly one entry is found, it's added directly without opening the multi-select browser.
+- **Skill boundary detection rewritten** - `collapse_to_entries()` now uses SKILL.md markers to detect skill roots at any depth. A directory containing `SKILL.md` claims all descendant files. Directories without markers fall back to the immediate-parent heuristic.
+- **Parser validates `owner_repo` format** - `parse_github_entry` now rejects `owner_repo` values without `/` in the explicit-name branch. Found by the fuzzer.
+- **Non-ASCII path support** - file paths with Unicode characters (Chinese filenames, spaces) are now percent-encoded for `raw.githubusercontent.com` fetches.
+- **README revamped** - new Quick Start showing the wizard, updated examples to use `anthropics/courses`, new "Team workflow" section documenting in-house skills + community skills committed together.
+
+### Fixed
+
+- **`is_discovery_path()` case sensitivity** - used `ends_with(".md")` instead of `Path::extension()` with case-insensitive comparison.
+- **Invalid URL for root path entries** - `build_github_url` generated `/blob/{ref_}/.` for root path `"."` instead of `/tree/{ref_}`.
+- **Render loop allocation** - `draw_list` cloned `owner_repo` on every frame; now uses `as_str()`.
+- **Scroll reset allocation** - `reset_scroll_if_changed` allocated a String every tick to compare highlighted paths; now compares indices.
+- **Primitive obsession in frontmatter parser** - `parse_frontmatter_fields` returned a positionally-coupled 4-tuple; now returns `PreviewContent` directly.
+
+---
+
 ## v1.2.2 - 17-03-2026
 
 ### Changed
