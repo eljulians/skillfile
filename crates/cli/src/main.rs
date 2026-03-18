@@ -352,9 +352,12 @@ enum AddSource {
 }
 
 /// Returns `true` if `path` looks like a directory discovery request rather
-/// than a single-file add. Trailing `/` or bare `.` indicate bulk discovery.
+/// than a single-file add. A path that doesn't end in `.md` is a directory.
 fn is_discovery_path(path: &str) -> bool {
-    path.ends_with('/') || path == "."
+    path == "."
+        || !std::path::Path::new(path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
 fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), SkillfileError> {

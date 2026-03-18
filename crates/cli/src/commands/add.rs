@@ -153,20 +153,13 @@ fn select_entries(
             "interactive selection requires a terminal; use --no-interactive".to_string(),
         ));
     }
-    let ans = inquire::MultiSelect::new(
-        &format!(
-            "Select {}s to add ({} found):",
-            args.entity_type,
-            entries.len()
-        ),
-        entries.to_vec(),
-    )
-    .prompt()
-    .map_err(|e| SkillfileError::Manifest(format!("selection cancelled: {e}")))?;
-    if ans.is_empty() {
+    let ref_ = args.ref_.unwrap_or(DEFAULT_REF);
+    let selected = super::add_tui::run_add_tui(entries, args.owner_repo, ref_)
+        .map_err(|e| SkillfileError::Install(format!("TUI error: {e}")))?;
+    if selected.is_empty() {
         println!("No entries selected.");
     }
-    Ok(ans)
+    Ok(selected)
 }
 
 /// Add each selected path to the manifest, collecting results.

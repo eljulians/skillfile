@@ -111,9 +111,10 @@ fn add_then_remove() {
             "add",
             "github",
             "skill",
-            "my-new-skill",
             "owner/repo",
             "skills/test.md",
+            "--name",
+            "my-new-skill",
         ])
         .assert()
         .success();

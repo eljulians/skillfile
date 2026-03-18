@@ -10,6 +10,40 @@ pub fn http_get(client: &dyn HttpClient, url: &str) -> Result<Vec<u8>, Skillfile
     client.get_bytes(url)
 }
 
+/// Percent-encode a file path for use in a raw.githubusercontent.com URL.
+///
+/// GitHub's Tree API returns paths with raw Unicode and spaces, but
+/// `raw.githubusercontent.com` requires them percent-encoded. We encode
+/// each path segment individually so `/` separators are preserved.
+fn encode_url_path(path: &str) -> String {
+    path.split('/')
+        .map(encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-encode a single path segment (RFC 3986 unreserved characters
+/// pass through, everything else becomes %XX).
+fn encode_path_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.as_bytes() {
+        match byte {
+            // unreserved: ALPHA / DIGIT / "-" / "." / "_" / "~"
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(HEX[(*byte >> 4) as usize]));
+                out.push(char::from(HEX[(*byte & 0x0F) as usize]));
+            }
+        }
+    }
+    out
+}
+
+const HEX: [u8; 16] = *b"0123456789ABCDEF";
+
 /// Check whether a GitHub repository has been renamed by comparing the
 /// API-returned `full_name` against the requested `owner_repo`.
 ///
@@ -87,14 +121,14 @@ pub fn resolve_github_sha(
 }
 
 /// Reference to a GitHub repo at a specific commit, bundling client + coordinates.
-pub(crate) struct GithubFetch<'a> {
+pub struct GithubFetch<'a> {
     pub client: &'a dyn HttpClient,
     pub owner_repo: &'a str,
     pub ref_: &'a str,
 }
 
 /// Fetch raw file bytes from `raw.githubusercontent.com`.
-pub(crate) fn fetch_github_file(
+pub fn fetch_github_file(
     gh: &GithubFetch<'_>,
     path_in_repo: &str,
 ) -> Result<Vec<u8>, SkillfileError> {
@@ -371,9 +405,10 @@ pub(crate) fn list_github_dir_recursive(
         .filter_map(|item| {
             let path = item["path"].as_str()?;
             let relative_path = path.strip_prefix(&prefix)?.to_string();
+            let encoded_path = encode_url_path(path);
             let download_url = format!(
                 "https://raw.githubusercontent.com/{}/{}/{}",
-                gh.owner_repo, gh.ref_, path
+                gh.owner_repo, gh.ref_, encoded_path
             );
             Some(DirEntry {
                 relative_path,
@@ -413,6 +448,28 @@ impl FileContent {
     }
 }
 
+/// Maximum number of files to download concurrently per batch.
+const DOWNLOAD_BATCH_SIZE: usize = 50;
+
+/// Download a batch of files in parallel using `thread::scope`.
+fn fetch_batch(
+    client: &dyn HttpClient,
+    chunk: &[DirEntry],
+) -> Vec<Result<(String, FileContent), SkillfileError>> {
+    std::thread::scope(|s| {
+        let handles: Vec<_> = chunk
+            .iter()
+            .map(|entry| {
+                s.spawn(|| download_one(client, &entry.download_url, &entry.relative_path))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("download thread panicked"))
+            .collect()
+    })
+}
+
 /// Download a single file and return `(relative_path, content)`.
 ///
 /// Extracted to reduce nesting inside the `thread::scope` closure in
@@ -442,21 +499,20 @@ pub fn fetch_files_parallel(
         )]);
     }
 
-    // Parallel fetch using scoped threads (client is &dyn HttpClient: Send + Sync)
-    let results: Vec<Result<(String, FileContent), SkillfileError>> = std::thread::scope(|s| {
-        let handles: Vec<_> = files
-            .iter()
-            .map(|entry| {
-                s.spawn(|| download_one(client, &entry.download_url, &entry.relative_path))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("download thread panicked"))
-            .collect()
-    });
+    // Parallel fetch in batches to avoid exhausting file descriptors.
+    // Each thread opens a TCP connection + TLS + local file handle; repos with
+    // hundreds of files (aiskillstore/marketplace has 400+) exceed the default
+    // ulimit -n (typically 1024) if all fetched at once.
+    let mut out = Vec::with_capacity(files.len());
 
-    results.into_iter().collect()
+    for chunk in files.chunks(DOWNLOAD_BATCH_SIZE) {
+        let batch = fetch_batch(client, chunk);
+        for result in batch {
+            out.push(result?);
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1161,6 +1217,49 @@ mod tests {
     // -----------------------------------------------------------------------
     // is_repo_meta_file
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // encode_url_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_url_path_ascii_unchanged() {
+        assert_eq!(
+            encode_url_path("skills/browser/SKILL.md"),
+            "skills/browser/SKILL.md"
+        );
+    }
+
+    #[test]
+    fn encode_url_path_spaces_encoded() {
+        assert_eq!(
+            encode_url_path("skills/my skill/SKILL.md"),
+            "skills/my%20skill/SKILL.md"
+        );
+    }
+
+    #[test]
+    fn encode_url_path_chinese_characters_encoded() {
+        // The real-world case: aiskillstore/marketplace has Chinese filenames
+        let input = "skills/telegram-dev/references/Telegram_Bot_按钮  和键盘实现模板.md";
+        let encoded = encode_url_path(input);
+        assert!(
+            !encoded.contains('按'),
+            "Chinese chars should be percent-encoded"
+        );
+        assert!(!encoded.contains(' '), "spaces should be percent-encoded");
+        assert!(encoded.starts_with("skills/telegram-dev/references/"));
+    }
+
+    #[test]
+    fn encode_url_path_preserves_slashes() {
+        assert_eq!(encode_url_path("a/b/c"), "a/b/c");
+    }
+
+    #[test]
+    fn encode_url_path_tilde_and_dash_unchanged() {
+        assert_eq!(encode_url_path("my-skill/v~1"), "my-skill/v~1");
+    }
 
     // -----------------------------------------------------------------------
     // is_repo_meta_file — comprehensive edge cases
