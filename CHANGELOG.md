@@ -12,6 +12,7 @@ All notable changes to skillfile are documented here.
 - **`cargo-binstall` support** - `cargo binstall skillfile` now downloads the pre-built binary in seconds instead of compiling from source. Zero config needed, piggybacks on existing release assets.
 - **Windows support** - pre-built `x86_64-pc-windows-msvc` binary in releases. Path separators normalized to forward slashes in deploy keys. CRLF line endings handled in patch application. Windows CI test job added.
 - **Local path drift in status** - `skillfile status` now shows `✗ path missing: <path>` for local entries whose file or directory no longer exists on disk. Previously all local entries showed `local` regardless of path validity.
+- **GitHub token config + init wizard** - `skillfile init` now walks you through GitHub token setup after platform selection. Detects existing tokens from env vars, `gh` CLI, or config file. Offers paste-and-validate or skip. Token is saved to `~/.config/skillfile/config.toml` with `0o600` permissions. The token discovery chain now checks: `GITHUB_TOKEN` env → `GH_TOKEN` env → config file → `gh auth token`.
 
 ### Fixed
 
