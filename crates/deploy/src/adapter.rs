@@ -226,6 +226,14 @@ impl PlatformAdapter for FileSystemAdapter {
 // Deployment helpers (used by FileSystemAdapter)
 // ---------------------------------------------------------------------------
 
+/// Convert a [`Path`] to a forward-slash string for use as patch/deploy keys.
+///
+/// On Unix this is a no-op. On Windows, `\` separators become `/` so that
+/// patch keys are portable across platforms.
+fn forward_slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 /// Build `{relative_path: absolute_path}` for all non-.meta files in a deployed directory.
 fn collect_dir_deploy_result(source: &Path, dest: &Path) -> DeployResult {
     let mut result = HashMap::new();
@@ -236,7 +244,7 @@ fn collect_dir_deploy_result(source: &Path, dest: &Path) -> DeployResult {
         let Ok(rel) = file.strip_prefix(source) else {
             continue;
         };
-        result.insert(rel.to_string_lossy().to_string(), dest.join(rel));
+        result.insert(forward_slash(rel), dest.join(rel));
     }
     result
 }
@@ -267,7 +275,7 @@ fn collect_walkdir_relative(base: &Path) -> HashMap<String, PathBuf> {
         let Ok(rel) = file.strip_prefix(base) else {
             continue;
         };
-        result.insert(rel.to_string_lossy().to_string(), file);
+        result.insert(forward_slash(rel), file);
     }
     result
 }
@@ -288,7 +296,7 @@ fn collect_flat_installed(vdir: &Path, target_dir: &Path) -> HashMap<String, Pat
         };
         let dest = target_dir.join(file.file_name().unwrap_or_default());
         if dest.exists() {
-            result.insert(rel.to_string_lossy().to_string(), dest);
+            result.insert(forward_slash(rel), dest);
         }
     }
     result
@@ -332,7 +340,7 @@ fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> D
         }
         progress!("  {} -> {}", name.to_string_lossy(), dest.display());
         if let Ok(rel) = src.strip_prefix(source_dir) {
-            result.insert(rel.to_string_lossy().to_string(), dest);
+            result.insert(forward_slash(rel), dest);
         }
     }
     result
@@ -1403,6 +1411,18 @@ mod tests {
         let files = a.installed_dir_files(&entry, &local(dir.path()));
         assert!(files.contains_key("backend.md"));
         assert!(!files.contains_key("frontend.md"));
+    }
+
+    #[test]
+    fn forward_slash_converts_backslashes() {
+        assert_eq!(forward_slash(Path::new("a/b/c")), "a/b/c");
+        assert_eq!(forward_slash(Path::new("simple.md")), "simple.md");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn forward_slash_converts_windows_separators() {
+        assert_eq!(forward_slash(Path::new(r"a\b\c.md")), "a/b/c.md");
     }
 
     #[test]

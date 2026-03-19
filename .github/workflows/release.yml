@@ -58,6 +58,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: skillfile-aarch64-macos
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: skillfile-x86_64-windows.exe
     steps:
       - uses: actions/checkout@v4
 

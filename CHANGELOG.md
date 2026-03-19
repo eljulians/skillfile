@@ -10,6 +10,7 @@ All notable changes to skillfile are documented here.
 
 - **One-line installer** - `curl -fsSL .../install.sh | sh` detects OS and architecture, downloads the right binary to `~/.local/bin/`, and prints a PATH hint if needed. Supports `SKILLFILE_VERSION` and `SKILLFILE_INSTALL_DIR` overrides. Served as a release asset so it never reflects in-progress work on master.
 - **`cargo-binstall` support** - `cargo binstall skillfile` now downloads the pre-built binary in seconds instead of compiling from source. Zero config needed, piggybacks on existing release assets.
+- **Windows support** - pre-built `x86_64-pc-windows-msvc` binary in releases. Path separators normalized to forward slashes in deploy keys. CRLF line endings handled in patch application. Windows CI test job added.
 
 ### Fixed
 

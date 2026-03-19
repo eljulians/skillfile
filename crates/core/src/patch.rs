@@ -283,7 +283,7 @@ fn try_hunk_at(lines: &[String], start: usize, ctx_lines: &[&str]) -> bool {
         return false;
     }
     for (i, expected) in ctx_lines.iter().enumerate() {
-        if lines[start + i].trim_end_matches('\n') != *expected {
+        if lines[start + i].trim_end_matches(['\n', '\r']) != *expected {
             return false;
         }
     }
@@ -390,6 +390,10 @@ pub fn apply_patch_pure(original: &str, patch_text: &str) -> Result<String, Skil
     if patch_text.is_empty() {
         return Ok(original.to_string());
     }
+
+    // Normalize CRLF to LF so patches apply cleanly on Windows.
+    let original = &original.replace("\r\n", "\n");
+    let patch_text = &patch_text.replace("\r\n", "\n");
 
     // Split into lines preserving newlines (like Python's splitlines(keepends=True))
     let lines: Vec<String> = original
@@ -892,6 +896,32 @@ mod tests {
             v
         };
         assert_eq!(files, sorted, "walkdir results must be sorted");
+    }
+
+    // --- apply_patch_pure: CRLF handling ---
+
+    #[test]
+    fn apply_patch_pure_handles_crlf_original() {
+        let orig_lf = "line1\nline2\nline3\n";
+        let modified = "line1\nchanged\nline3\n";
+        let patch = generate_patch(orig_lf, modified, "test.md");
+
+        // Apply the LF-generated patch to a CRLF original
+        let orig_crlf = "line1\r\nline2\r\nline3\r\n";
+        let result = apply_patch_pure(orig_crlf, &patch).unwrap();
+        assert_eq!(result, modified);
+    }
+
+    #[test]
+    fn apply_patch_pure_handles_crlf_patch() {
+        let orig = "line1\nline2\nline3\n";
+        let modified = "line1\nchanged\nline3\n";
+        let patch_lf = generate_patch(orig, modified, "test.md");
+
+        // Convert patch itself to CRLF
+        let patch_crlf = patch_lf.replace('\n', "\r\n");
+        let result = apply_patch_pure(orig, &patch_crlf).unwrap();
+        assert_eq!(result, modified);
     }
 
     // --- apply_patch_pure: fuzzy hunk matching ---
