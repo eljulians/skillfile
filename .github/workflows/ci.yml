@@ -49,6 +49,9 @@ jobs:
       - name: Check unused dependencies
         run: cargo machete
 
+      - name: Shellcheck install script
+        run: shellcheck install.sh
+
 
   test-linux:
     name: Tests (Linux, with coverage)

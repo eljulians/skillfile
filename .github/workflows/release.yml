@@ -16,10 +16,31 @@ jobs:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
 
+  verify-install:
+    name: Verify install script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run install.sh against previous release
+        env:
+          SKILLFILE_INSTALL_DIR: ${{ runner.temp }}/skillfile-test
+        run: sh install.sh
+
+      - name: Verify binary runs
+        run: |
+          "${{ runner.temp }}/skillfile-test/skillfile" --version
+          "${{ runner.temp }}/skillfile-test/skillfile" --help
+
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    needs: [ci]
+    needs: [ci, verify-install]
     strategy:
       fail-fast: false
       matrix:
@@ -121,3 +142,4 @@ jobs:
           files: |
             dist/skillfile-*
             dist/checksums-sha256.txt
+            install.sh
