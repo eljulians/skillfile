@@ -172,8 +172,13 @@ fn format_entry_status(
     let name = &entry.name;
     let col_w = ctx.col_w;
 
-    if matches!(entry.source, SourceFields::Local { .. }) {
-        return Ok(format!("{name:<col_w$} local"));
+    if let SourceFields::Local { path } = &entry.source {
+        let status = if ctx.repo_root.join(path).exists() {
+            "local".to_string()
+        } else {
+            format!("local  \u{2717} path missing: {path}")
+        };
+        return Ok(format!("{name:<col_w$} {status}"));
     }
 
     let Some(locked_info) = ctx.locked.get(&key) else {
@@ -300,10 +305,20 @@ mod tests {
     }
 
     #[test]
-    fn local_entry_shows_local() {
+    fn local_entry_path_exists_shows_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("skills/foo.md");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "# Foo").unwrap();
+        write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
+        cmd_status(dir.path(), false).unwrap();
+    }
+
+    #[test]
+    fn local_entry_path_missing_shows_status_without_error() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
-        // Capture output by running — for unit test we just verify no error
+        // Missing path should not cause an error — status reports it inline
         cmd_status(dir.path(), false).unwrap();
     }
 
@@ -624,6 +639,63 @@ mod tests {
         assert!(
             !is_modified_local(entry, &manifest, dir.path()),
             "pinned dir entries must not report as modified"
+        );
+    }
+
+    // -- format_entry_status: local path drift --
+
+    #[test]
+    fn local_entry_existing_path_formats_as_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("skills/foo.md");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "# Foo").unwrap();
+        write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
+
+        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
+        let manifest = result.manifest;
+        let locked = std::collections::BTreeMap::new();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("local") && !line.contains("path missing"),
+            "existing path should show 'local' without warning, got: {line}"
+        );
+    }
+
+    #[test]
+    fn local_entry_missing_path_formats_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
+
+        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
+        let manifest = result.manifest;
+        let locked = std::collections::BTreeMap::new();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("path missing"),
+            "missing path should show warning, got: {line}"
+        );
+        assert!(
+            line.contains("skills/foo.md"),
+            "warning should include the path, got: {line}"
         );
     }
 }
