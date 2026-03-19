@@ -12,8 +12,8 @@ use skillfile_core::error::SkillfileError;
 use skillfile_core::output::Spinner;
 use skillfile_sources::http::UreqClient;
 use skillfile_sources::registry::{
-    fetch_agentskill_github_meta, search_all, search_registry, RegistryId, SearchOptions,
-    SearchResponse,
+    fetch_agentskill_github_meta, scrape_github_meta_from_page, search_all, search_registry,
+    RegistryId, SearchOptions, SearchResponse,
 };
 use skillfile_sources::resolver::list_repo_skill_entries;
 
@@ -97,20 +97,55 @@ fn is_interactive_tty() -> bool {
 fn resolve_source_coords(
     item: &skillfile_sources::registry::SearchResult,
 ) -> (Option<String>, Option<String>) {
-    if item.registry == RegistryId::AgentskillSh && item.source_path.is_none() {
-        let slug = item.source_repo.as_deref().unwrap_or("");
-        if !slug.is_empty() {
-            let client = UreqClient::new();
-            let spinner = Spinner::new("Resolving GitHub coordinates");
-            let meta = fetch_agentskill_github_meta(&client, slug, &item.name);
-            spinner.finish();
-            return match meta {
-                Some(m) => (Some(m.source_repo), Some(m.source_path)),
-                None => (item.source_repo.clone(), None),
-            };
-        }
+    if item.registry != RegistryId::AgentskillSh
+        || item.source_repo.is_some()
+        || item.source_path.is_some()
+    {
+        return (item.source_repo.clone(), item.source_path.clone());
     }
-    (item.source_repo.clone(), item.source_path.clone())
+    // No GitHub coordinates from the search API. Extract the registry
+    // slug from the URL and try the detail API to resolve the real
+    // owner/repo and path.
+    let slug = item
+        .url
+        .strip_prefix("https://agentskill.sh/@")
+        .unwrap_or("");
+    if slug.is_empty() {
+        return (None, None);
+    }
+    let client = UreqClient::new();
+    let spinner = Spinner::new("Resolving GitHub coordinates");
+    let meta = fetch_agentskill_github_meta(&client, slug, &item.name);
+    spinner.finish();
+    if let Some(m) = meta {
+        return (Some(m.source_repo), Some(m.source_path));
+    }
+    // Detail API couldn't find the slug. Fall back to scraping the skill
+    // page for the GitHub repo URL and path.
+    let spinner = Spinner::new("Fetching source from skill page");
+    let meta = scrape_github_meta_from_page(&client, slug);
+    spinner.finish();
+    match meta {
+        Some(m) => {
+            let path = (!m.source_path.is_empty()).then_some(m.source_path);
+            (Some(m.source_repo), path)
+        }
+        None => (None, None),
+    }
+}
+
+/// Resolve the GitHub `owner/repo`. If already known, returns it. Otherwise
+/// prompts the user (e.g. for skillhub.club results with no GitHub info).
+fn resolve_owner_repo(source_repo: Option<&str>) -> Result<Option<String>, SkillfileError> {
+    if let Some(repo) = source_repo {
+        return Ok(Some(repo.to_string()));
+    }
+    println!("  Enter the GitHub repository for this skill.");
+    prompt_result(
+        inquire::Text::new("GitHub owner/repo:")
+            .with_help_message("e.g. owner/repo — check the skill page for the source")
+            .prompt(),
+    )
 }
 
 /// Present search results in the ratatui TUI.
@@ -136,26 +171,25 @@ fn interactive_select(resp: &SearchResponse, repo_root: &Path) -> Result<(), Ski
     }
     println!();
 
+    // If an agentskill.sh slug couldn't be resolved to GitHub coordinates,
+    // bail with actionable guidance instead of showing confusing prompts.
+    if source_repo.is_none() && source_path.is_none() && item.registry == RegistryId::AgentskillSh {
+        eprintln!(
+            "  Could not resolve GitHub coordinates for this skill.\n  \
+             Check the skill page for the source repository, then add manually:\n\n  \
+             skillfile add github skill <owner/repo> <path>"
+        );
+        return Ok(());
+    }
+
     let Some(entity_type) =
         prompt_result(inquire::Select::new("Entity type:", vec!["skill", "agent"]).prompt())?
     else {
         return Ok(());
     };
 
-    // Resolve GitHub owner/repo.
-    let owner_repo = if let Some(repo) = &source_repo {
-        repo.clone()
-    } else {
-        println!("  Enter the GitHub repository for this skill.");
-        let Some(repo) = prompt_result(
-            inquire::Text::new("GitHub owner/repo:")
-                .with_help_message("e.g. owner/repo — check the skill page for the source")
-                .prompt(),
-        )?
-        else {
-            return Ok(());
-        };
-        repo
+    let Some(owner_repo) = resolve_owner_repo(source_repo.as_deref())? else {
+        return Ok(());
     };
 
     // Resolve the path-in-repo for the Skillfile entry.

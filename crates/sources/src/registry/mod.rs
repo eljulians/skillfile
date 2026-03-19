@@ -28,7 +28,9 @@ use skillhub::SkillhubClub;
 use skillssh::SkillsSh;
 
 // Re-export the detail API from the agentskill module.
-pub use agentskill::{fetch_agentskill_github_meta, AgentskillGithubMeta};
+pub use agentskill::{
+    fetch_agentskill_github_meta, scrape_github_meta_from_page, AgentskillGithubMeta,
+};
 
 // ===========================================================================
 // Public types

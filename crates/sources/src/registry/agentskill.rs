@@ -44,8 +44,7 @@ fn map_api_result(r: ApiResult) -> Option<SearchResult> {
     let name = r.name?;
     let owner = r.owner.unwrap_or_default();
     let slug = r.slug.unwrap_or_else(|| format!("{owner}/{name}"));
-    let source_repo = github_repo_from(r.github_owner.as_deref(), r.github_repo.as_deref())
-        .or_else(|| Some(slug.clone()));
+    let source_repo = github_repo_from(r.github_owner.as_deref(), r.github_repo.as_deref());
     Some(SearchResult {
         url: format!("https://agentskill.sh/@{slug}"),
         source_repo,
@@ -157,6 +156,84 @@ pub fn fetch_agentskill_github_meta(
         }
     }
 
+    None
+}
+
+/// Scrape GitHub coordinates from an agentskill.sh skill page.
+///
+/// Fallback for when [`fetch_agentskill_github_meta`] can't find the slug
+/// in the detail API search results. The skill page embeds `githubOwner`,
+/// `githubRepo`, and `githubPath` in its Nuxt hydration data.
+pub fn scrape_github_meta_from_page(
+    client: &dyn HttpClient,
+    slug: &str,
+) -> Option<AgentskillGithubMeta> {
+    let url = format!("https://agentskill.sh/@{slug}");
+    let bytes = client.get_bytes(&url).ok()?;
+    let html = String::from_utf8(bytes).ok()?;
+    let source_repo = extract_repo_from_html(&html)?;
+    let source_path = extract_path_from_html(&html).unwrap_or_default();
+    Some(AgentskillGithubMeta {
+        source_repo,
+        source_path,
+    })
+}
+
+/// Parse the first `github.com/{owner}/{repo}` URL from Nuxt-rendered HTML.
+fn extract_repo_from_html(html: &str) -> Option<String> {
+    extract_repo_nuxt(html).or_else(|| extract_repo_plain(html))
+}
+
+/// Parse the `githubPath` from Nuxt-rendered HTML.
+///
+/// Looks for a Nuxt-escaped path ending in `SKILL.md`.
+fn extract_path_from_html(html: &str) -> Option<String> {
+    // Nuxt format: "skills\u002Fauthor\u002Fname\u002FSKILL.md"
+    let marker = r"\u002FSKILL.md";
+    if let Some(end) = html.find(marker) {
+        let before = &html[..end];
+        let quote = before.rfind('"')?;
+        let raw = &html[quote + 1..end + marker.len()];
+        return Some(raw.replace(r"\u002F", "/"));
+    }
+    None
+}
+
+fn extract_repo_nuxt(html: &str) -> Option<String> {
+    let marker = r"github.com\u002F";
+    let sep = r"\u002F";
+    let pos = html.find(marker)?;
+    let after = &html[pos + marker.len()..];
+    let owner_end = after.find(sep)?;
+    let owner = &after[..owner_end];
+    let after_owner = &after[owner_end + sep.len()..];
+    let repo_end = after_owner.find(['"', '\\'])?;
+    let repo = &after_owner[..repo_end];
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+fn extract_repo_plain(html: &str) -> Option<String> {
+    let marker = "github.com/";
+    for (i, _) in html.match_indices(marker) {
+        let after = &html[i + marker.len()..];
+        let Some(owner_end) = after.find('/') else {
+            continue;
+        };
+        let owner = &after[..owner_end];
+        let after_owner = &after[owner_end + 1..];
+        let Some(repo_end) =
+            after_owner.find(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.')
+        else {
+            continue;
+        };
+        let repo = &after_owner[..repo_end];
+        if !owner.is_empty() && !repo.is_empty() && owner != "avatars" {
+            return Some(format!("{owner}/{repo}"));
+        }
+    }
     None
 }
 
@@ -289,10 +366,9 @@ mod tests {
             resp.items[0].url,
             "https://agentskill.sh/@alice/code-reviewer"
         );
-        assert_eq!(
-            resp.items[0].source_repo.as_deref(),
-            Some("alice/code-reviewer")
-        );
+        // No GitHub coordinates in the mock → source_repo must be None.
+        // The slug is in the URL, not source_repo.
+        assert!(resp.items[0].source_repo.is_none());
         assert!(resp.items[0].source_path.is_none());
     }
 
@@ -435,6 +511,133 @@ mod tests {
         let client = MockClient::new(vec![Ok(json)]);
         let meta =
             fetch_agentskill_github_meta(&client, "openclaw/fzf-fuzzy-finder", "fzf-fuzzy-finder");
+        assert!(meta.is_none());
+    }
+
+    // -- Slug-as-source_repo regression tests ----------------------------------
+
+    /// Regression: when the search API returns a result WITHOUT explicit GitHub
+    /// coordinates (`githubOwner`, `githubRepo`, `githubPath` are all null),
+    /// `source_repo` must NOT be set to the registry slug.
+    ///
+    /// The slug (e.g. `openclaw/k8s`) is a registry identifier, not a GitHub
+    /// `owner/repo`. Treating it as one causes the Tree API to fail downstream,
+    /// leading to a confusing "Path in repo:" prompt instead of a clear error.
+    /// Regression: slug must NOT leak into `source_repo` when GitHub
+    /// coordinates are absent from the search API response.
+    #[test]
+    fn map_result_without_github_coords_does_not_use_slug_as_source_repo() {
+        let json = r#"{
+            "results": [{
+                "slug": "openclaw/k8s-config-gen",
+                "name": "k8s-config-gen",
+                "owner": "openclaw",
+                "description": "Kubernetes config generator",
+                "securityScore": 80,
+                "githubStars": 100
+            }],
+            "total": 1
+        }"#;
+        let client = MockClient::new(vec![Ok(json.to_string())]);
+        let resp =
+            super::super::search_with_client(&client, "k8s", &SearchOptions::default()).unwrap();
+
+        assert_eq!(resp.items.len(), 1);
+        assert!(
+            resp.items[0].source_repo.is_none(),
+            "source_repo should be None when GitHub coords are missing, \
+             got {:?} (slug leaked into source_repo)",
+            resp.items[0].source_repo
+        );
+    }
+
+    // -- Page scrape tests -------------------------------------------------------
+
+    #[test]
+    fn extract_repo_from_nuxt_escaped_html() {
+        let html = r#"some stuff "https:\u002F\u002Fgithub.com\u002Fopenclaw\u002Fskills" more"#;
+        assert_eq!(
+            extract_repo_from_html(html).as_deref(),
+            Some("openclaw/skills")
+        );
+    }
+
+    #[test]
+    fn extract_repo_from_plain_html() {
+        let html = r#"<a href="https://github.com/openclaw/skills/tree/main">repo</a>"#;
+        assert_eq!(
+            extract_repo_from_html(html).as_deref(),
+            Some("openclaw/skills")
+        );
+    }
+
+    #[test]
+    fn extract_repo_skips_avatar_urls() {
+        let html =
+            "https://avatars.githubusercontent.com/u/12345 https://github.com/real/repo stuff";
+        assert_eq!(extract_repo_from_html(html).as_deref(), Some("real/repo"));
+    }
+
+    #[test]
+    fn extract_repo_returns_none_for_no_github_url() {
+        let html = "<html><body>no github links here</body></html>";
+        assert!(extract_repo_from_html(html).is_none());
+    }
+
+    #[test]
+    fn extract_repo_handles_hyphenated_names() {
+        let html = r#""https:\u002F\u002Fgithub.com\u002Falphaonedev\u002Fopenclaw-graph""#;
+        assert_eq!(
+            extract_repo_from_html(html).as_deref(),
+            Some("alphaonedev/openclaw-graph")
+        );
+    }
+
+    #[test]
+    fn extract_repo_plain_skips_malformed_first_match() {
+        let html = "github.com/broken https://github.com/real/repo end";
+        assert_eq!(extract_repo_from_html(html).as_deref(), Some("real/repo"));
+    }
+
+    #[test]
+    fn extract_path_from_nuxt_html() {
+        let html = r#"stuff "skills\u002Fivangdavila\u002Fk8s\u002FSKILL.md" more"#;
+        assert_eq!(
+            extract_path_from_html(html).as_deref(),
+            Some("skills/ivangdavila/k8s/SKILL.md")
+        );
+    }
+
+    #[test]
+    fn extract_path_returns_none_when_missing() {
+        let html = "<html>no skill path here</html>";
+        assert!(extract_path_from_html(html).is_none());
+    }
+
+    #[test]
+    fn scrape_page_returns_full_meta_from_mock_html() {
+        let html = r#"<html>"https:\u002F\u002Fgithub.com\u002Fopenclaw\u002Fskills" and "skills\u002Fivangdavila\u002Fk8s\u002FSKILL.md"</html>"#;
+        let client = MockClient::new(vec![Ok(html.to_string())]);
+        let meta = scrape_github_meta_from_page(&client, "openclaw/k8s");
+        let meta = meta.expect("should return meta");
+        assert_eq!(meta.source_repo, "openclaw/skills");
+        assert_eq!(meta.source_path, "skills/ivangdavila/k8s/SKILL.md");
+    }
+
+    #[test]
+    fn scrape_page_returns_repo_only_when_no_path() {
+        let html = r#"<html>"https:\u002F\u002Fgithub.com\u002Fopenclaw\u002Fskills"</html>"#;
+        let client = MockClient::new(vec![Ok(html.to_string())]);
+        let meta = scrape_github_meta_from_page(&client, "openclaw/k8s");
+        let meta = meta.expect("should return meta with empty path");
+        assert_eq!(meta.source_repo, "openclaw/skills");
+        assert!(meta.source_path.is_empty());
+    }
+
+    #[test]
+    fn scrape_page_returns_none_on_network_error() {
+        let client = MockClient::new(vec![Err("connection refused".to_string())]);
+        let meta = scrape_github_meta_from_page(&client, "openclaw/k8s");
         assert!(meta.is_none());
     }
 

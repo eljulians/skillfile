@@ -1675,10 +1675,15 @@ mod tests {
 
         let tree_url =
             format!("https://api.github.com/repos/owner/repo/git/trees/{sha}?recursive=1");
-        // Tree with no entries under the prefix
         let tree_json = serde_json::json!({ "tree": [] }).to_string();
 
-        let client = MockClient::new().with_json(tree_url, Some(tree_json));
+        // Contents API fallback also returns nothing (404).
+        let contents_url =
+            format!("https://api.github.com/repos/owner/repo/contents/skills/empty-dir?ref={sha}");
+
+        let client = MockClient::new()
+            .with_json(tree_url, Some(tree_json))
+            .with_json(contents_url, None);
 
         let result = fetch_dir_at_sha(&client, &entry, sha);
         assert!(result.is_ok());

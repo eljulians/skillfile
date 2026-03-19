@@ -377,6 +377,22 @@ pub(crate) fn list_github_dir_recursive(
     gh: &GithubFetch<'_>,
     base_path: &str,
 ) -> Result<Vec<DirEntry>, SkillfileError> {
+    let entries = list_dir_via_tree(gh, base_path)?;
+    if !entries.is_empty() {
+        return Ok(entries);
+    }
+    // Tree API returned nothing for this prefix. For massive repos the
+    // recursive tree is truncated (~7000 entries) and the prefix may fall
+    // beyond the cutoff. Fall back to the Contents API which lists a
+    // specific directory without truncation.
+    list_dir_via_contents(gh, base_path)
+}
+
+/// List directory files via the recursive Tree API (fast, but truncates on huge repos).
+fn list_dir_via_tree(
+    gh: &GithubFetch<'_>,
+    base_path: &str,
+) -> Result<Vec<DirEntry>, SkillfileError> {
     let url = format!(
         "https://api.github.com/repos/{}/git/trees/{}?recursive=1",
         gh.owner_repo, gh.ref_
@@ -418,6 +434,36 @@ pub(crate) fn list_github_dir_recursive(
         .collect();
 
     Ok(entries)
+}
+
+/// List directory files via the Contents API (slower, but works for any repo size).
+fn list_dir_via_contents(
+    gh: &GithubFetch<'_>,
+    base_path: &str,
+) -> Result<Vec<DirEntry>, SkillfileError> {
+    let encoded = encode_url_path(base_path);
+    let url = format!(
+        "https://api.github.com/repos/{}/contents/{}?ref={}",
+        gh.owner_repo, encoded, gh.ref_
+    );
+    let Some(text) = gh.client.get_json(&url)? else {
+        return Ok(Vec::new());
+    };
+    let items: Vec<serde_json::Value> = serde_json::from_str(&text)
+        .map_err(|e| SkillfileError::Network(format!("invalid contents JSON: {e}")))?;
+
+    Ok(items
+        .iter()
+        .filter(|item| item["type"].as_str() == Some("file"))
+        .filter_map(|item| {
+            let name = item["name"].as_str()?;
+            let download_url = item["download_url"].as_str()?.to_string();
+            Some(DirEntry {
+                relative_path: name.to_string(),
+                download_url,
+            })
+        })
+        .collect())
 }
 
 /// Attempt to decode bytes as UTF-8 text. Returns `Err(original_bytes)` for binary.
@@ -1040,13 +1086,45 @@ mod tests {
     }
 
     #[test]
-    fn list_github_dir_recursive_empty_tree() {
+    fn list_github_dir_recursive_empty_tree_falls_back_to_contents() {
         let owner_repo = "org/repo";
         let ref_ = "main";
-        let url = tree_url(owner_repo, ref_);
 
         let mut client = MockClient::new();
-        client.add_json(&url, r#"{"tree": []}"#);
+        // Tree API returns empty (simulates truncation where prefix isn't found).
+        client.add_json(&tree_url(owner_repo, ref_), r#"{"tree": []}"#);
+        // Contents API returns the directory listing.
+        let contents_url =
+            format!("https://api.github.com/repos/{owner_repo}/contents/agents/dir?ref={ref_}");
+        client.add_json(
+            &contents_url,
+            r#"[
+                {"name": "SKILL.md", "type": "file", "download_url": "https://raw.githubusercontent.com/org/repo/main/agents/dir/SKILL.md"},
+                {"name": "sub", "type": "dir", "download_url": null}
+            ]"#,
+        );
+
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+        };
+        let entries = list_github_dir_recursive(&gh, "agents/dir").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].relative_path, "SKILL.md");
+    }
+
+    #[test]
+    fn list_github_dir_recursive_empty_tree_and_empty_contents() {
+        let owner_repo = "org/repo";
+        let ref_ = "main";
+
+        let mut client = MockClient::new();
+        client.add_json(&tree_url(owner_repo, ref_), r#"{"tree": []}"#);
+        let contents_url =
+            format!("https://api.github.com/repos/{owner_repo}/contents/agents/dir?ref={ref_}");
+        // Contents API also returns nothing (directory doesn't exist or is empty).
+        client.add_json_none(&contents_url);
 
         let gh = GithubFetch {
             client: &client,

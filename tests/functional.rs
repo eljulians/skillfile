@@ -565,6 +565,57 @@ fn scoped_discovery_nested_repo() {
     //       that nesting exists at all, which the depth check above does).
 }
 
+/// Regression: agentskill.sh search results without explicit GitHub
+/// coordinates must NOT have the registry slug in `source_repo`.
+///
+/// The slug (e.g. `openclaw/k8s`) is a registry identifier, not a GitHub
+/// `owner/repo`. Using it as one causes the Tree API to fail, leading to
+/// a confusing "Path in repo:" prompt.
+///
+/// This test hits the real agentskill.sh API and validates that items
+/// without `source_path` either have a `source_repo` pointing to a real
+/// GitHub repo, or have `source_repo = None`.
+#[test]
+fn agentskill_search_no_slug_leak_in_source_repo() {
+    if !require_github_token() {
+        return;
+    }
+
+    let client = skillfile_sources::http::UreqClient::new();
+
+    let resp = retry(retry_delays(), || {
+        skillfile_sources::registry::search_registry(
+            "agentskill.sh",
+            "kubernetes",
+            &skillfile_sources::registry::SearchOptions {
+                limit: 20,
+                min_score: None,
+            },
+        )
+        .map_err(|e| e.to_string())
+    })
+    .expect("search failed after retries");
+
+    // For every item without source_path: if source_repo is set, it must
+    // be a real GitHub repo (Tree API returns entries). A registry slug
+    // that isn't a real repo is the bug.
+    for item in resp
+        .items
+        .iter()
+        .filter(|i| i.source_path.is_none() && i.source_repo.is_some())
+    {
+        let repo = item.source_repo.as_deref().unwrap();
+        let entries = skillfile_sources::resolver::list_repo_skill_entries(&client, repo);
+        assert!(
+            !entries.is_empty(),
+            "item '{}' has source_repo='{}' which is not a valid GitHub repo \
+             (Tree API returned empty). Registry slug leaked into source_repo.",
+            item.name,
+            repo
+        );
+    }
+}
+
 /// End-to-end: single-skill repo with SKILL.md at root resolves to ".".
 #[test]
 fn skill_entry_resolution_single_skill_repo() {

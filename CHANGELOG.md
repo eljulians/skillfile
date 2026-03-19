@@ -4,6 +4,16 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- **Search-to-add broken for agentskill.sh monorepo entries** - registry slugs (e.g. `openclaw/k8s-config-gen`) were leaking into `source_repo` and being treated as GitHub `owner/repo` values. The Tree API would fail, leading to a confusing "Path in repo:" prompt. Now `source_repo` is only set when real GitHub coordinates exist.
+- **Coordinate resolution for agentskill.sh skills** - when the detail API can't find a skill by name (common for large registries), the system now scrapes the skill page HTML for GitHub coordinates as a fallback. Resolves repo and path without user intervention.
+- **Directory sync fails silently on massive repos** - `list_github_dir_recursive` used the recursive Tree API which truncates at ~7000 entries. Skills deep in the alphabet (e.g. `skills/ivangdavila/k8s` in `openclaw/skills`) would silently get zero content. Now falls back to the GitHub Contents API for the specific directory when the tree returns empty.
+
+---
+
 ## v1.3.0 - 18-03-2026
 
 ### Added

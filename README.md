@@ -2,7 +2,6 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/eljulians/skillfile/ci.yml?style=flat-square&label=CI)](https://github.com/eljulians/skillfile/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/skillfile?style=flat-square)](https://crates.io/crates/skillfile)
-[![Latest Release](https://img.shields.io/github/v/release/eljulians/skillfile?style=flat-square)](https://github.com/eljulians/skillfile/releases/latest)
 [![MSRV](https://img.shields.io/badge/MSRV-1.82-blue?style=flat-square)](https://github.com/eljulians/skillfile)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
 [![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey?style=flat-square)]()
@@ -25,17 +24,13 @@ skillfile fixes all of that. One manifest, one lock file, every platform.
 
 ## Install
 
+Download a pre-built binary from [GitHub Releases](https://github.com/eljulians/skillfile/releases/latest). Single binary, 3.5 MB, no runtime dependencies.
+
+Or via cargo:
+
 ```
 cargo install skillfile
 ```
-
-Or download a pre-built binary from [GitHub Releases](https://github.com/eljulians/skillfile/releases). Or build from source:
-
-```
-git clone https://github.com/eljulians/skillfile.git && cargo install --path crates/cli
-```
-
-Single binary, 3.5 MB, no runtime dependencies.
 
 > **GitHub token recommended.** skillfile uses the GitHub API to resolve commits. Without a token you're limited to 60 req/hour. Set `GITHUB_TOKEN`, `GH_TOKEN`, or run `gh auth login`.
 
@@ -208,7 +203,7 @@ Review what you install. The risk profile is the same as `git clone`.
 
 ```bash
 cargo test --workspace                     # unit + integration tests
-cargo test --test functional -- --ignored  # network tests (needs GITHUB_TOKEN)
+cargo test --test functional              # network tests (needs GITHUB_TOKEN)
 cargo clippy --all-targets -- -D warnings  # lint
 cargo fmt --check                          # format check
 ```
