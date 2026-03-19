@@ -21,7 +21,7 @@ skillfile-deploy = { path = "crates/deploy", version = "1.0.0" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
 
 # HTTP (blocking — skillfile is not a server)
 ureq = { version = "3", features = ["json"] }

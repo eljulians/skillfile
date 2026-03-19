@@ -7,7 +7,22 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use skillfile_core::error::SkillfileError;
+
+/// Read entry names from the Skillfile in the current directory for shell completion.
+fn complete_entry_names() -> Vec<CompletionCandidate> {
+    let path = std::path::Path::new("Skillfile");
+    let Ok(result) = skillfile_core::parser::parse_manifest(path) else {
+        return Vec::new();
+    };
+    result
+        .manifest
+        .entries
+        .iter()
+        .map(|e| CompletionCandidate::new(&e.name))
+        .collect()
+}
 
 /// Parse and validate entity type (must be "skill" or "agent").
 fn parse_entity_type(s: &str) -> Result<String, String> {
@@ -94,6 +109,7 @@ Examples:
   skillfile remove code-refactorer")]
     Remove {
         /// Entry name to remove
+        #[arg(add = ArgValueCandidates::new(complete_entry_names))]
         name: String,
     },
 
@@ -249,6 +265,7 @@ Examples:
   skillfile pin browser --dry-run")]
     Pin {
         /// Entry name to pin
+        #[arg(add = ArgValueCandidates::new(complete_entry_names))]
         name: String,
         /// Show what would be pinned without writing
         #[arg(long)]
@@ -265,6 +282,7 @@ Examples:
   skillfile unpin browser")]
     Unpin {
         /// Entry name to unpin
+        #[arg(add = ArgValueCandidates::new(complete_entry_names))]
         name: String,
     },
 
@@ -278,6 +296,7 @@ Examples:
   skillfile diff browser")]
     Diff {
         /// Entry name
+        #[arg(add = ArgValueCandidates::new(complete_entry_names))]
         name: String,
     },
 
@@ -295,6 +314,7 @@ Examples:
   skillfile resolve --abort")]
     Resolve {
         /// Entry name to resolve
+        #[arg(add = ArgValueCandidates::new(complete_entry_names))]
         name: Option<String>,
         /// Clear pending conflict state without merging
         #[arg(long)]
@@ -527,6 +547,10 @@ fn run() -> Result<(), SkillfileError> {
 }
 
 fn main() {
+    // Handle dynamic shell completion requests before any other initialization.
+    // Shells call the binary with COMPLETE=<shell> to get completions at runtime.
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+
     // Spawn background update check (non-blocking)
     let update_rx = update_check::should_check().then(update_check::spawn_check);
 
