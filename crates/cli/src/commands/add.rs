@@ -451,11 +451,7 @@ fn wizard_url(repo_root: &Path) -> Result<(), SkillfileError> {
         .default_input("")
         .interact()?;
 
-    let name_opt = if name.is_empty() {
-        None
-    } else {
-        Some(name.as_str())
-    };
+    let name_opt = (!name.is_empty()).then_some(name.as_str());
     let entry = entry_from_url(entity_type, &url, name_opt);
     cmd_add(&entry, repo_root)
 }

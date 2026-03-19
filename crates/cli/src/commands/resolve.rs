@@ -241,14 +241,8 @@ fn merge_all_files(
     let mut any_conflict = false;
 
     for filename in upstream.filenames {
-        let base = upstream
-            .base
-            .get(filename)
-            .map_or("", std::string::String::as_str);
-        let theirs = upstream
-            .theirs
-            .get(filename)
-            .map_or("", std::string::String::as_str);
+        let base = upstream.base.get(filename).map_or("", String::as_str);
+        let theirs = upstream.theirs.get(filename).map_or("", String::as_str);
 
         // Reconstruct "yours" from stored patch + base
         let p = dir_patch_path(ctx.entry, filename, ctx.repo_root);
@@ -291,9 +285,7 @@ fn write_merged_results(
     remove_all_dir_patches(ctx.entry, ctx.repo_root)?;
     let mut pinned: Vec<String> = Vec::new();
     for (filename, merged_text) in merged_results {
-        let theirs = theirs_files
-            .get(filename)
-            .map_or("", std::string::String::as_str);
+        let theirs = theirs_files.get(filename).map_or("", String::as_str);
         if let Some(inst_path) = ctx.installed.get(filename) {
             std::fs::write(inst_path, merged_text)?;
         }

@@ -156,9 +156,7 @@ fn fetch_latest_release() -> Option<(String, String)> {
     let data: serde_json::Value = serde_json::from_str(&body).ok()?;
 
     let tag = data["tag_name"].as_str()?;
-    let html_url = data["html_url"]
-        .as_str()
-        .map(std::string::ToString::to_string);
+    let html_url = data["html_url"].as_str().map(ToString::to_string);
     let url = html_url
         .unwrap_or_else(|| format!("https://github.com/eljulians/skillfile/releases/tag/{tag}"));
 

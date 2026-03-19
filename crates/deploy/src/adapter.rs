@@ -461,11 +461,7 @@ impl AdapterRegistry {
 
     /// Sorted list of all adapter names.
     pub fn names(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = self
-            .adapters
-            .keys()
-            .map(std::string::String::as_str)
-            .collect();
+        let mut names: Vec<&str> = self.adapters.keys().map(String::as_str).collect();
         names.sort_unstable();
         names
     }

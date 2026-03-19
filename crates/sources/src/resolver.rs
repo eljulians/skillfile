@@ -81,7 +81,7 @@ fn try_resolve_sha(
         ))
     })?;
 
-    Ok(data["sha"].as_str().map(std::string::ToString::to_string))
+    Ok(data["sha"].as_str().map(ToString::to_string))
 }
 
 /// Resolve a branch/tag/SHA ref to a full commit SHA via GitHub API.
@@ -205,10 +205,7 @@ fn collapse_to_entries(md_files: &[String]) -> Vec<String> {
     let skill_roots = find_skill_roots(md_files);
     let unclaimed = find_unclaimed_files(md_files, &skill_roots);
 
-    let mut entries: Vec<String> = skill_roots
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect();
+    let mut entries: Vec<String> = skill_roots.iter().map(ToString::to_string).collect();
     entries.extend(collapse_by_heuristic(&unclaimed));
     entries
 }

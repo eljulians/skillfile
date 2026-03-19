@@ -324,7 +324,8 @@ fn sort_by_popularity(items: &mut [SearchResult]) {
 /// Percent-encode a single character that requires escaping in a URL query component.
 fn percent_encode_char(c: char, out: &mut String) {
     use std::fmt::Write;
-    for byte in c.to_string().as_bytes() {
+    let mut buf = [0u8; 4];
+    for byte in c.encode_utf8(&mut buf).as_bytes() {
         let _ = write!(out, "%{byte:02X}");
     }
 }

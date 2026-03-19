@@ -398,7 +398,7 @@ pub fn apply_patch_pure(original: &str, patch_text: &str) -> Result<String, Skil
     // Split into lines preserving newlines (like Python's splitlines(keepends=True))
     let lines: Vec<String> = original
         .split_inclusive('\n')
-        .map(std::string::ToString::to_string)
+        .map(ToString::to_string)
         .collect();
 
     let mut state = PatchState::new(&lines);

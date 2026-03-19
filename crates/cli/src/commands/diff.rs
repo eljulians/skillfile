@@ -43,13 +43,14 @@ fn diff_local_single(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), S
     let installed_text = std::fs::read_to_string(&dest)?;
 
     let diff_text = similar::TextDiff::from_lines(upstream.as_str(), installed_text.as_str());
-    let formatted = format!(
-        "{}",
-        diff_text.unified_diff().context_radius(3).header(
+    let formatted = diff_text
+        .unified_diff()
+        .context_radius(3)
+        .header(
             &format!("a/{}.md (upstream sha={})", entry.name, short_sha(sha)),
             &format!("b/{}.md (installed)", entry.name),
         )
-    );
+        .to_string();
 
     if formatted.is_empty() {
         println!("'{}' is clean — no local modifications", entry.name);
@@ -103,9 +104,10 @@ fn diff_local_dir(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), Skil
         let installed_text = std::fs::read_to_string(inst_path)?;
         let diff_text =
             similar::TextDiff::from_lines(original_text.as_str(), installed_text.as_str());
-        let formatted = format!(
-            "{}",
-            diff_text.unified_diff().context_radius(3).header(
+        let formatted = diff_text
+            .unified_diff()
+            .context_radius(3)
+            .header(
                 &format!(
                     "a/{}/{filename} (upstream sha={})",
                     entry.name,
@@ -113,7 +115,7 @@ fn diff_local_dir(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), Skil
                 ),
                 &format!("b/{}/{filename} (installed)", entry.name),
             )
-        );
+            .to_string();
 
         if !formatted.is_empty() {
             any_diff = true;
@@ -198,9 +200,10 @@ fn diff_conflict_single(
     progress!("done\n");
 
     let diff_text = similar::TextDiff::from_lines(old_content.as_str(), new_content.as_str());
-    let formatted = format!(
-        "{}",
-        diff_text.unified_diff().context_radius(3).header(
+    let formatted = diff_text
+        .unified_diff()
+        .context_radius(3)
+        .header(
             &format!(
                 "{}.md (old upstream sha={})",
                 entry.name,
@@ -212,7 +215,7 @@ fn diff_conflict_single(
                 short_sha(&conflict.new_sha)
             ),
         )
-    );
+        .to_string();
 
     if formatted.is_empty() {
         println!("No upstream changes detected (patch conflict may be due to local file drift).");
@@ -252,16 +255,13 @@ fn diff_conflict_dir(
     let mut any_diff = false;
 
     for filename in &all_filenames {
-        let old_content = old_files
-            .get(filename)
-            .map_or("", std::string::String::as_str);
-        let new_content = new_files
-            .get(filename)
-            .map_or("", std::string::String::as_str);
+        let old_content = old_files.get(filename).map_or("", String::as_str);
+        let new_content = new_files.get(filename).map_or("", String::as_str);
         let diff_text = similar::TextDiff::from_lines(old_content, new_content);
-        let formatted = format!(
-            "{}",
-            diff_text.unified_diff().context_radius(3).header(
+        let formatted = diff_text
+            .unified_diff()
+            .context_radius(3)
+            .header(
                 &format!(
                     "{}/{filename} (old upstream sha={})",
                     entry.name,
@@ -273,7 +273,7 @@ fn diff_conflict_dir(
                     short_sha(&conflict.new_sha)
                 ),
             )
-        );
+            .to_string();
         if !formatted.is_empty() {
             any_diff = true;
             out.write_all(formatted.as_bytes())?;

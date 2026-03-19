@@ -57,7 +57,7 @@ impl From<&InstallTarget> for InstallEntry {
     fn from(target: &InstallTarget) -> Self {
         Self {
             platform: target.adapter.clone(),
-            scope: target.scope.as_str().to_string(),
+            scope: target.scope.to_string(),
         }
     }
 }

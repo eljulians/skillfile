@@ -105,7 +105,7 @@ pub fn meta_sha(vdir: &Path) -> Option<String> {
     let meta_path = vdir.join(".meta");
     let text = std::fs::read_to_string(&meta_path).ok()?;
     let data: serde_json::Value = serde_json::from_str(&text).ok()?;
-    data["sha"].as_str().map(std::string::ToString::to_string)
+    data["sha"].as_str().map(ToString::to_string)
 }
 
 #[cfg(test)]
