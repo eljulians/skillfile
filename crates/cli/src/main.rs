@@ -486,6 +486,10 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
 }
 
 fn run() -> Result<(), SkillfileError> {
+    // Inject config-file token before any command (and before the OnceLock is
+    // populated by `github_token()`). This runs once; subsequent calls are no-ops.
+    skillfile_sources::http::set_config_token(crate::config::read_config_token());
+
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e)

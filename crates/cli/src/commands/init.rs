@@ -1,5 +1,6 @@
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
+use std::process::Command;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::models::EntityType;
@@ -209,6 +210,111 @@ fn select_destination() -> Result<&'static str, SkillfileError> {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub token setup helpers
+// ---------------------------------------------------------------------------
+
+/// Check for an existing token via env vars, config file, or `gh` CLI directly.
+/// Does NOT use the `OnceLock`-cached `github_token()` — that may already be
+/// populated with `None` by the time init runs.
+fn detect_existing_token() -> bool {
+    let has_env = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GH_TOKEN"))
+        .is_ok_and(|t| !t.is_empty());
+    if has_env {
+        return true;
+    }
+    if crate::config::read_config_token().is_some() {
+        return true;
+    }
+    Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+}
+
+/// Return `true` if the `gh` binary is available on PATH.
+fn gh_available() -> bool {
+    Command::new("gh")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Validate a token with a lightweight GET to the GitHub API.
+fn validate_token(token: &str) -> bool {
+    ureq::Agent::new_with_defaults()
+        .get("https://api.github.com/user")
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("User-Agent", "skillfile/1.0")
+        .call()
+        .is_ok_and(|r| r.status() == 200)
+}
+
+/// Handle the "paste a token" branch of the init token wizard.
+fn handle_paste_token() -> Result<(), SkillfileError> {
+    let token: String =
+        cliclack::password("Paste your GitHub personal access token:").interact()?;
+    if validate_token(&token) {
+        crate::config::write_config_token(&token)?;
+        cliclack::log::success("Token saved to config (0o600)")?;
+    } else {
+        cliclack::log::warning(
+            "Token validation failed — not saved. You can set GITHUB_TOKEN manually.",
+        )?;
+    }
+    Ok(())
+}
+
+/// Handle the "gh CLI" branch — prompt user to authenticate in another terminal.
+fn handle_gh_cli() -> Result<(), SkillfileError> {
+    cliclack::log::info("Run `gh auth login` in another terminal, then press Enter.")?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    if detect_existing_token() {
+        cliclack::log::success("GitHub token found via gh CLI")?;
+    } else {
+        cliclack::log::warning("Still no token detected. You can set GITHUB_TOKEN manually.")?;
+    }
+    Ok(())
+}
+
+/// Interactive GitHub token setup step for `skillfile init`.
+///
+/// Skips when a token is already available. Otherwise presents options for gh
+/// CLI auth, pasting a token, or skipping (with a rate-limit warning).
+fn setup_github_token() -> Result<(), SkillfileError> {
+    if detect_existing_token() {
+        cliclack::log::success("GitHub token found")?;
+        return Ok(());
+    }
+
+    let show_gh = gh_available();
+    let mut select = cliclack::select("No GitHub token found. How would you like to authenticate?");
+    if show_gh {
+        select = select.item(
+            "gh",
+            "Use gh CLI",
+            "run `gh auth login` in another terminal",
+        );
+    }
+    select = select
+        .item("paste", "Paste a token", "github.com/settings/tokens")
+        .item("skip", "Skip", "unauthenticated: 60 req/hr limit");
+
+    let choice: &str = select.interact()?;
+    match choice {
+        "gh" => handle_gh_cli(),
+        "paste" => handle_paste_token(),
+        _ => {
+            cliclack::log::warning(
+                "Skipping token setup. GitHub API limited to 60 req/hr without a token.",
+            )?;
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point — interactive cliclack flow
 // ---------------------------------------------------------------------------
 
@@ -292,6 +398,7 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
 
     let destination = select_destination()?;
     persist_targets(&manifest_path, destination, &new_targets)?;
+    setup_github_token()?;
     update_gitignore(repo_root)?;
 
     let outro = if result.manifest.entries.is_empty() {
