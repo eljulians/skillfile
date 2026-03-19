@@ -6,6 +6,11 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+### Added
+
+- **One-line installer** - `curl -fsSL .../install.sh | sh` detects OS and architecture, downloads the right binary to `~/.local/bin/`, and prints a PATH hint if needed. Supports `SKILLFILE_VERSION` and `SKILLFILE_INSTALL_DIR` overrides. Served as a release asset so it never reflects in-progress work on master.
+- **`cargo-binstall` support** - `cargo binstall skillfile` now downloads the pre-built binary in seconds instead of compiling from source. Zero config needed, piggybacks on existing release assets.
+
 ### Fixed
 
 - **Search-to-add broken for agentskill.sh monorepo entries** - registry slugs (e.g. `openclaw/k8s-config-gen`) were leaking into `source_repo` and being treated as GitHub `owner/repo` values. The Tree API would fail, leading to a confusing "Path in repo:" prompt. Now `source_repo` is only set when real GitHub coordinates exist.
