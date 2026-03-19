@@ -9,6 +9,20 @@ use skillfile_core::error::SkillfileError;
 
 static TOKEN_CACHE: OnceLock<Option<String>> = OnceLock::new();
 
+/// Token injected from the CLI config file before any command runs.
+///
+/// The CLI crate reads the config file and calls [`set_config_token`] once at
+/// startup. This keeps the `sources` crate free of any dependency on `cli`.
+static CONFIG_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+
+/// Inject a GitHub token read from the user config file.
+///
+/// Must be called before the first use of [`github_token`]. Subsequent calls
+/// are ignored (the `OnceLock` is already set).
+pub fn set_config_token(token: Option<String>) {
+    let _ = CONFIG_TOKEN.set(token);
+}
+
 /// Discover a GitHub token from environment or `gh` CLI. Cached after first call.
 #[must_use]
 pub fn github_token() -> Option<&'static str> {
@@ -19,6 +33,15 @@ fn env_token(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|t| !t.is_empty())
 }
 
+fn gh_cli_token() -> Option<String> {
+    let output = Command::new("gh").args(["auth", "token"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!token.is_empty()).then_some(token)
+}
+
 fn discover_github_token() -> Option<String> {
     if let Some(token) = env_token("GITHUB_TOKEN") {
         return Some(token);
@@ -26,16 +49,13 @@ fn discover_github_token() -> Option<String> {
     if let Some(token) = env_token("GH_TOKEN") {
         return Some(token);
     }
-    let output = Command::new("gh").args(["auth", "token"]).output().ok()?;
-    if !output.status.success() {
-        return None;
+    // Config-file token injected by the CLI crate before commands run.
+    if let Some(Some(token)) = CONFIG_TOKEN.get() {
+        if !token.is_empty() {
+            return Some(token.clone());
+        }
     }
-    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
-    }
+    gh_cli_token()
 }
 
 // ---------------------------------------------------------------------------
@@ -226,5 +246,17 @@ mod tests {
     #[test]
     fn ureq_client_default_creates_successfully() {
         let _client = UreqClient::default();
+    }
+
+    /// Verify that `set_config_token` populates `CONFIG_TOKEN`.
+    ///
+    /// `OnceLock` can only be written once per process; this test confirms the
+    /// happy-path write succeeds (or that a prior write is already present).
+    #[test]
+    fn set_config_token_populates_cache() {
+        set_config_token(Some("test-token-abc".to_string()));
+        // Either we just set it, or a previous test already set it.
+        // Either way the lock must be initialised.
+        assert!(CONFIG_TOKEN.get().is_some());
     }
 }
