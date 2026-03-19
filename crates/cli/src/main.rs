@@ -486,7 +486,19 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
 }
 
 fn run() -> Result<(), SkillfileError> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e)
+            if e.kind() == clap::error::ErrorKind::DisplayHelp
+                || e.kind() == clap::error::ErrorKind::DisplayVersion =>
+        {
+            let _ = e.print();
+            return Ok(());
+        }
+        Err(e) => {
+            e.exit();
+        }
+    };
     let quiet = cli.quiet || std::env::var("SKILLFILE_QUIET").is_ok_and(|v| !v.is_empty());
     skillfile_core::output::set_quiet(quiet);
     let repo_root = PathBuf::from(".");
@@ -495,11 +507,7 @@ fn run() -> Result<(), SkillfileError> {
 
 fn main() {
     // Spawn background update check (non-blocking)
-    let update_rx = if update_check::should_check() {
-        Some(update_check::spawn_check())
-    } else {
-        None
-    };
+    let update_rx = update_check::should_check().then(update_check::spawn_check);
 
     let exit_code = match run() {
         Ok(()) => 0,
