@@ -6,7 +6,7 @@ use skillfile::config;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use skillfile_core::error::SkillfileError;
 
 /// Parse and validate entity type (must be "skill" or "agent").
@@ -300,6 +300,15 @@ Examples:
         #[arg(long)]
         abort: bool,
     },
+
+    // -- Shell completions (display_order 50) ---------------------------------
+    /// Generate shell completions for bash, zsh, fish, or powershell
+    #[command(display_order = 50)]
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -430,6 +439,15 @@ fn run_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), Skil
 /// Dispatch content-management commands (validate through resolve).
 fn run_content_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileError> {
     match cmd {
+        Command::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "skillfile",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
         Command::Validate => commands::validate::cmd_validate(repo_root),
         Command::Format { dry_run } => commands::format::cmd_format(repo_root, dry_run),
         Command::Pin { name, dry_run } => commands::pin::cmd_pin(&name, repo_root, dry_run),
@@ -438,7 +456,6 @@ fn run_content_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileE
         Command::Resolve { name, abort } => {
             commands::resolve::cmd_resolve(name.as_deref(), abort, repo_root)
         }
-        // Remaining commands are handled by run()
         cmd => run_source_commands(repo_root, cmd),
     }
 }
@@ -534,5 +551,39 @@ fn main() {
 
     if exit_code != 0 {
         process::exit(exit_code);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn completions_non_empty(shell: clap_complete::Shell) {
+        let mut buf = Vec::new();
+        clap_complete::generate(shell, &mut Cli::command(), "skillfile", &mut buf);
+        assert!(
+            !buf.is_empty(),
+            "completions for {shell:?} should produce output"
+        );
+    }
+
+    #[test]
+    fn completions_bash() {
+        completions_non_empty(clap_complete::Shell::Bash);
+    }
+
+    #[test]
+    fn completions_zsh() {
+        completions_non_empty(clap_complete::Shell::Zsh);
+    }
+
+    #[test]
+    fn completions_fish() {
+        completions_non_empty(clap_complete::Shell::Fish);
+    }
+
+    #[test]
+    fn completions_powershell() {
+        completions_non_empty(clap_complete::Shell::PowerShell);
     }
 }
