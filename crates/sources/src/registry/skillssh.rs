@@ -5,7 +5,8 @@ use serde::Deserialize;
 use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
-use super::{urlencoded, Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
+use super::scrape::{html_to_markdown, json_string_end, urlencoded};
+use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
 
 /// Base URL for the skills.sh search API.
 const SKILLSSH_API: &str = "https://skills.sh/api/search";
@@ -44,52 +45,39 @@ fn skill_md_urls(repo: &str, name: &str) -> [String; 3] {
     ]
 }
 
-/// Find the byte length of a JSON string literal (including both quotes).
-///
-/// Input must start with `"`. Returns the position just past the closing
-/// `"`, or `None` if unterminated. Safe on UTF-8 because `"` and `\` are
-/// single-byte ASCII and cannot appear as continuation bytes.
-fn json_string_end(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    if bytes.first() != Some(&b'"') {
-        return None;
+/// Returns true if `prefix` looks like an RSC flight data header (`22:T46a`).
+fn looks_like_rsc_prefix(prefix: &str) -> bool {
+    let Some(colon) = prefix.find(':') else {
+        return false;
+    };
+    let (id, rest) = (&prefix[..colon], &prefix[colon + 1..]);
+    if id.is_empty() || rest.is_empty() {
+        return false;
     }
-    let mut i = 1;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => return Some(i + 1),
-            _ => i += 1,
-        }
-    }
-    None
+    id.bytes().all(|b| b.is_ascii_digit())
+        && rest.as_bytes()[0].is_ascii_alphabetic()
+        && rest[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Strip HTML tags and decode common entities to plain text.
-fn strip_html(html: &str) -> String {
-    let mut out = String::with_capacity(html.len() / 2);
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' if in_tag => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
+/// Strip RSC flight data header from a decoded chunk.
+///
+/// RSC chunks have the format `{id}:{type}{hex_size},{content}`.
+/// Example: `22:T46a,<h1>Kubernetes...` → `<h1>Kubernetes...`
+fn strip_rsc_header(s: &str) -> &str {
+    let Some(comma) = s.find(',') else { return s };
+    let prefix = &s[..comma];
+    if prefix.len() < 20 && looks_like_rsc_prefix(prefix) {
+        &s[comma + 1..]
+    } else {
+        s
     }
-    out = out.replace("&amp;", "&");
-    out = out.replace("&lt;", "<");
-    out = out.replace("&gt;", ">");
-    out = out.replace("&#x26;", "&");
-    out = out.replace("&quot;", "\"");
-    out.replace("&#39;", "'")
 }
 
 /// Extract rendered skill content from a skills.sh Next.js RSC page.
 ///
 /// The page streams content via `self.__next_f.push([1, "..."])` chunks.
-/// The main content chunk contains the SKILL.md rendered as HTML. We find
-/// it by looking for `<h1>` or `<h2>` tags, then strip to plain text.
+/// The main content chunk contains the SKILL.md rendered as HTML. We
+/// convert it to approximate markdown so the TUI preview can style it.
 fn extract_rsc_content(html: &str) -> Option<String> {
     let prefix = "self.__next_f.push([1,";
     let mut pos = 0;
@@ -103,10 +91,11 @@ fn extract_rsc_content(html: &str) -> Option<String> {
         else {
             continue;
         };
-        if !decoded.contains("<h1>") && !decoded.contains("<h2>") {
+        let content = strip_rsc_header(&decoded);
+        if !content.contains("<h1>") && !content.contains("<h2>") {
             continue;
         }
-        let text = strip_html(&decoded);
+        let text = html_to_markdown(content);
         if text.len() > 50 {
             return Some(text);
         }
@@ -121,6 +110,33 @@ fn scrape_skill_page(client: &dyn HttpClient, url: &str) -> Option<String> {
     let bytes = client.get_bytes(url).ok()?;
     let html = String::from_utf8(bytes).ok()?;
     extract_rsc_content(&html)
+}
+
+fn map_api_result(r: ApiResult) -> Option<SearchResult> {
+    let name = r.name?;
+    // skills.sh `source` field is `owner/repo` (GitHub coordinates)
+    let source_repo = r.source;
+    let owner = source_repo
+        .as_deref()
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("")
+        .to_string();
+    // URL uses the `id` field (owner/repo/skillId) when available.
+    let url = match &r.id {
+        Some(id) => format!("https://skills.sh/{id}"),
+        None => format!("https://skills.sh/skills/{name}"),
+    };
+    Some(SearchResult {
+        name,
+        owner,
+        description: None, // skills.sh doesn't return descriptions
+        security_score: None,
+        stars: r.installs,
+        url,
+        registry: RegistryId::SkillsSh,
+        source_repo,
+        source_path: None,
+    })
 }
 
 impl Registry for SkillsSh {
@@ -158,35 +174,7 @@ impl Registry for SkillsSh {
         })?;
 
         let results = api.skills.unwrap_or_default();
-        let items: Vec<SearchResult> = results
-            .into_iter()
-            .filter_map(|r| {
-                let name = r.name?;
-                // skills.sh `source` field is `owner/repo` (GitHub coordinates)
-                let source_repo = r.source.clone();
-                let owner = source_repo
-                    .as_deref()
-                    .and_then(|s| s.split('/').next())
-                    .unwrap_or("")
-                    .to_string();
-                // URL uses the `id` field (owner/repo/skillId) when available.
-                let url = match &r.id {
-                    Some(id) => format!("https://skills.sh/{id}"),
-                    None => format!("https://skills.sh/skills/{name}"),
-                };
-                Some(SearchResult {
-                    name,
-                    owner,
-                    description: None, // skills.sh doesn't return descriptions
-                    security_score: None,
-                    stars: r.installs,
-                    url,
-                    registry: RegistryId::SkillsSh,
-                    source_repo,
-                    source_path: None,
-                })
-            })
-            .collect();
+        let items: Vec<SearchResult> = results.into_iter().filter_map(map_api_result).collect();
 
         Ok(SearchResponse {
             total: api.count.unwrap_or(items.len()),
@@ -404,18 +392,37 @@ mod tests {
     }
 
     #[test]
-    fn strip_html_removes_tags_and_decodes_entities() {
-        assert_eq!(strip_html("<p>hello &amp; world</p>"), "hello & world");
-        assert_eq!(strip_html("<h1>Title</h1>"), "Title");
-        assert_eq!(strip_html("no tags"), "no tags");
+    fn strip_rsc_header_removes_prefix() {
+        assert_eq!(strip_rsc_header("22:T46a,<h1>Title</h1>"), "<h1>Title</h1>");
     }
 
     #[test]
-    fn json_string_end_finds_closing_quote() {
-        assert_eq!(json_string_end(r#""hello""#), Some(7));
-        assert_eq!(json_string_end(r#""esc\"d""#), Some(8));
-        assert_eq!(json_string_end(r#""\\""#), Some(4));
-        assert!(json_string_end("not a string").is_none());
-        assert!(json_string_end(r#""unterminated"#).is_none());
+    fn strip_rsc_header_preserves_plain_text() {
+        assert_eq!(strip_rsc_header("no prefix here"), "no prefix here");
+    }
+
+    #[test]
+    fn strip_rsc_header_preserves_non_rsc_comma() {
+        assert_eq!(strip_rsc_header("hello, world"), "hello, world");
+    }
+
+    #[test]
+    fn extract_rsc_strips_flight_header() {
+        let html = r#"self.__next_f.push([1,"22:T46a,\u003ch1\u003eKubernetes\u003c/h1\u003e\n\u003cp\u003eExpert knowledge for managing clusters and deployments.\u003c/p\u003e"])"#;
+        let result = extract_rsc_content(html).expect("should parse");
+        assert!(
+            !result.starts_with("22:T"),
+            "RSC header should be stripped: {result}"
+        );
+        assert!(result.contains("Kubernetes"), "missing content: {result}");
+    }
+
+    #[test]
+    fn extract_rsc_preserves_markdown_structure() {
+        let html = r#"self.__next_f.push([1,"\u003ch1\u003eKubernetes\u003c/h1\u003e\u003ch2\u003eQuick Start\u003c/h2\u003e\u003cul\u003e\u003cli\u003eFirst step\u003c/li\u003e\u003cli\u003eSecond step\u003c/li\u003e\u003c/ul\u003e"])"#;
+        let result = extract_rsc_content(html).expect("should parse");
+        assert!(result.contains("# Kubernetes"), "missing h1: {result}");
+        assert!(result.contains("## Quick Start"), "missing h2: {result}");
+        assert!(result.contains("- First step"), "missing list: {result}");
     }
 }

@@ -59,7 +59,55 @@ pub fn parse_skill_frontmatter(content: &str) -> PreviewContent {
     }
 }
 
+/// Returns true for YAML multiline scalar indicators (`>`, `|`, `>-`, `|-`).
+fn is_multiline_indicator(value: &str) -> bool {
+    matches!(value, ">" | "|" | ">-" | "|-")
+}
+
+/// Set a known frontmatter field, ignoring empty values and unknown keys.
+fn set_field(content: &mut PreviewContent, key: &str, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    match key {
+        "name" => content.name = Some(value.to_string()),
+        "description" => content.description = Some(value.to_string()),
+        "risk" => content.risk = Some(value.to_string()),
+        "source" => content.source = Some(value.to_string()),
+        _ => {}
+    }
+}
+
+/// Append text to a known frontmatter field (for YAML continuation lines).
+fn append_field(content: &mut PreviewContent, key: &str, extra: &str) {
+    let field = match key {
+        "name" => &mut content.name,
+        "description" => &mut content.description,
+        "risk" => &mut content.risk,
+        "source" => &mut content.source,
+        _ => return,
+    };
+    match field {
+        Some(existing) => {
+            existing.push(' ');
+            existing.push_str(extra);
+        }
+        None => *field = Some(extra.to_string()),
+    }
+}
+
+/// Append a YAML continuation line (indented) to the last known key.
+fn append_continuation(content: &mut PreviewContent, key: &str, line: &str) {
+    let trimmed = line.trim();
+    if !trimmed.is_empty() && !key.is_empty() {
+        append_field(content, key, trimmed);
+    }
+}
+
 /// Parse key-value pairs from frontmatter text into a `PreviewContent` (no body).
+///
+/// Handles YAML multiline indicators (`>`, `|`, `>-`, `|-`) by treating
+/// subsequent indented lines as continuations of the previous key.
 fn parse_frontmatter_fields(frontmatter: &str) -> PreviewContent {
     let mut content = PreviewContent {
         name: None,
@@ -68,18 +116,22 @@ fn parse_frontmatter_fields(frontmatter: &str) -> PreviewContent {
         source: None,
         body_excerpt: None,
     };
+    let mut last_key = String::new();
+
     for line in frontmatter.lines() {
-        let Some((key, value)) = line.split_once(':') else {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            append_continuation(&mut content, &last_key, line);
+            continue;
+        }
+        let Some((raw_key, value)) = line.split_once(':') else {
             continue;
         };
-        let value = value.trim().to_string();
-        match key.trim().to_lowercase().as_str() {
-            "name" => content.name = Some(value),
-            "description" => content.description = Some(value),
-            "risk" => content.risk = Some(value),
-            "source" => content.source = Some(value),
-            _ => {}
+        let key = raw_key.trim().to_lowercase();
+        let value = value.trim();
+        if !is_multiline_indicator(value) {
+            set_field(&mut content, &key, value);
         }
+        last_key = key;
     }
     content
 }
@@ -111,10 +163,24 @@ pub(super) fn risk_icon(risk: &str) -> (&'static str, Color) {
     }
 }
 
+/// Split a numbered list line (e.g. `1. Item`) into prefix and content.
+fn numbered_list_split(line: &str) -> Option<(&str, &str)> {
+    let dot = line.find(". ")?;
+    if dot == 0 || dot > 3 {
+        return None;
+    }
+    if line[..dot].bytes().all(|b| b.is_ascii_digit()) {
+        Some((&line[..dot + 2], &line[dot + 2..]))
+    } else {
+        None
+    }
+}
+
 /// Apply basic markdown styling to a single line for the preview pane.
 ///
 /// Recognizes: `#`..`####` headings (stripped), `- ` / `* ` list items
-/// (gray bullet), ``` ``` code fences (dark gray), and `---` horizontal rules.
+/// (gray bullet), `1. ` numbered lists, ``` ``` code fences (dark gray),
+/// and `---` horizontal rules.
 pub(super) fn style_markdown_line(line: &str) -> Line<'static> {
     let trimmed = line.trim_start();
     let heading_style = |level: usize| {
@@ -131,12 +197,17 @@ pub(super) fn style_markdown_line(line: &str) -> Line<'static> {
     } else if let Some(text) = trimmed.strip_prefix("# ") {
         Line::from(Span::styled(text.to_string(), heading_style(1)))
     } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        style_list_line(line, trimmed)
+    } else if let Some((num_prefix, rest)) = numbered_list_split(trimmed) {
         let indent = line.len() - trimmed.len();
-        let prefix = " ".repeat(indent);
+        let pad = " ".repeat(indent);
         Line::from(vec![
-            Span::raw(prefix),
-            Span::styled("  \u{2022} ", Style::default().fg(Color::DarkGray)),
-            Span::raw(trimmed[2..].to_string()),
+            Span::raw(pad),
+            Span::styled(
+                format!("  {num_prefix}"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(rest.to_string()),
         ])
     } else if trimmed.starts_with("```") {
         Line::from(Span::styled(
@@ -151,6 +222,17 @@ pub(super) fn style_markdown_line(line: &str) -> Line<'static> {
     } else {
         Line::from(line.to_string())
     }
+}
+
+/// Style an unordered list line (`- ` or `* `) with a gray bullet.
+fn style_list_line(line: &str, trimmed: &str) -> Line<'static> {
+    let indent = line.len() - trimmed.len();
+    let prefix = " ".repeat(indent);
+    Line::from(vec![
+        Span::raw(prefix),
+        Span::styled("  \u{2022} ", Style::default().fg(Color::DarkGray)),
+        Span::raw(trimmed[2..].to_string()),
+    ])
 }
 
 /// Build styled lines for SKILL.md content (frontmatter metadata + body).
@@ -484,5 +566,102 @@ Some body text.
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("\u{2717} high"));
+    }
+
+    // -- YAML multiline tests --------------------------------------------------
+
+    #[test]
+    fn parse_frontmatter_folded_scalar() {
+        let content = "\
+---
+name: kubernetes-deployment
+description: >
+  Deploy, manage, and scale containerized applications
+  with best practices for production workloads.
+risk: medium
+---
+";
+        let preview = parse_skill_frontmatter(content);
+        assert_eq!(preview.name.as_deref(), Some("kubernetes-deployment"));
+        let desc = preview.description.unwrap();
+        assert!(desc.contains("Deploy, manage"), "got: {desc}");
+        assert!(desc.contains("best practices"), "got: {desc}");
+        assert_eq!(preview.risk.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn parse_frontmatter_literal_scalar() {
+        let content = "\
+---
+name: test-skill
+description: |
+  Line one of the description.
+  Line two of the description.
+risk: low
+---
+";
+        let preview = parse_skill_frontmatter(content);
+        let desc = preview.description.unwrap();
+        assert!(desc.contains("Line one"), "got: {desc}");
+        assert!(desc.contains("Line two"), "got: {desc}");
+        assert_eq!(preview.risk.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn parse_frontmatter_nested_yaml_ignored() {
+        let content = "\
+---
+name: kubernetes
+description: Kubernetes operations playbook
+progressive_disclosure:
+  entry_point:
+    summary: Operate Kubernetes workloads
+tags:
+  - kubernetes
+  - k8s
+---
+";
+        let preview = parse_skill_frontmatter(content);
+        assert_eq!(preview.name.as_deref(), Some("kubernetes"));
+        assert_eq!(
+            preview.description.as_deref(),
+            Some("Kubernetes operations playbook")
+        );
+    }
+
+    #[test]
+    fn parse_frontmatter_continuation_with_colon() {
+        let content = "\
+---
+description: >
+  Deploy services: core objects, probes, and sizing.
+name: test
+---
+";
+        let preview = parse_skill_frontmatter(content);
+        let desc = preview.description.unwrap();
+        assert!(
+            desc.contains("Deploy services: core objects"),
+            "got: {desc}"
+        );
+        assert_eq!(preview.name.as_deref(), Some("test"));
+    }
+
+    // -- Numbered list tests ---------------------------------------------------
+
+    #[test]
+    fn style_numbered_list() {
+        let line = style_markdown_line("1. First item");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("1. "), "got: {text}");
+        assert!(text.contains("First item"), "got: {text}");
+    }
+
+    #[test]
+    fn style_numbered_list_double_digit() {
+        let line = style_markdown_line("10. Tenth item");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("10. "), "got: {text}");
+        assert!(text.contains("Tenth item"), "got: {text}");
     }
 }

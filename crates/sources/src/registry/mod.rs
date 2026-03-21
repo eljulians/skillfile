@@ -16,8 +16,12 @@
 //! ```
 
 pub mod agentskill;
+mod scrape;
 mod skillhub;
 mod skillssh;
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use crate::http::{HttpClient, UreqClient};
 use skillfile_core::error::SkillfileError;
@@ -348,97 +352,6 @@ fn sort_by_popularity(items: &mut [SearchResult]) {
     });
 }
 
-/// Percent-encode a single character that requires escaping in a URL query component.
-fn percent_encode_char(c: char, out: &mut String) {
-    use std::fmt::Write;
-    let mut buf = [0u8; 4];
-    for byte in c.encode_utf8(&mut buf).as_bytes() {
-        let _ = write!(out, "%{byte:02X}");
-    }
-}
-
-/// Minimal URL encoding for query parameters.
-pub(crate) fn urlencoded(s: &str) -> String {
-    let s = s.trim();
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            ' ' => out.push('+'),
-            '&' | '=' | '?' | '#' | '+' | '%' => percent_encode_char(c, &mut out),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-// ===========================================================================
-// Shared test support
-// ===========================================================================
-
-#[cfg(test)]
-pub(crate) mod test_support {
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
-
-    use crate::http::HttpClient;
-    use skillfile_core::error::SkillfileError;
-
-    /// Sequential mock client: returns responses in FIFO order.
-    ///
-    /// Each call to `get_bytes` pops the next response. An `Err` variant
-    /// simulates a network failure.
-    pub(crate) struct MockClient {
-        responses: Mutex<VecDeque<Result<String, String>>>,
-        post_responses: Mutex<VecDeque<Result<String, String>>>,
-    }
-
-    impl MockClient {
-        pub fn new(responses: Vec<Result<String, String>>) -> Self {
-            Self {
-                responses: Mutex::new(responses.into()),
-                post_responses: Mutex::new(VecDeque::new()),
-            }
-        }
-
-        pub fn with_post_responses(mut self, post_responses: Vec<Result<String, String>>) -> Self {
-            self.post_responses = Mutex::new(post_responses.into());
-            self
-        }
-    }
-
-    impl HttpClient for MockClient {
-        fn get_bytes(&self, _url: &str) -> Result<Vec<u8>, SkillfileError> {
-            let resp = self
-                .responses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("MockClient: no more responses");
-            match resp {
-                Ok(body) => Ok(body.into_bytes()),
-                Err(msg) => Err(SkillfileError::Network(msg)),
-            }
-        }
-
-        fn get_json(&self, _url: &str) -> Result<Option<String>, SkillfileError> {
-            unimplemented!("registry tests don't use get_json")
-        }
-
-        fn post_json(&self, _url: &str, _body: &str) -> Result<Vec<u8>, SkillfileError> {
-            let resp = self
-                .post_responses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("MockClient: no more post responses");
-            match resp {
-                Ok(body) => Ok(body.into_bytes()),
-                Err(msg) => Err(SkillfileError::Network(msg)),
-            }
-        }
-    }
-}
-
 // ===========================================================================
 // Tests — aggregation, sorting, utilities
 // ===========================================================================
@@ -595,19 +508,6 @@ mod tests {
         for item in &resp.items {
             assert_eq!(item.registry, RegistryId::AgentskillSh);
         }
-    }
-
-    // -- Utility tests ----------------------------------------------------------
-
-    #[test]
-    fn urlencoded_encodes_spaces_and_specials() {
-        assert_eq!(urlencoded("code review"), "code+review");
-        assert_eq!(urlencoded("a&b"), "a%26b");
-        assert_eq!(urlencoded("q=1"), "q%3D1");
-        assert_eq!(urlencoded("hello"), "hello");
-        assert_eq!(urlencoded("docker\n"), "docker");
-        assert_eq!(urlencoded("  docker  "), "docker");
-        assert_eq!(urlencoded("代码审查"), "代码审查");
     }
 
     #[test]

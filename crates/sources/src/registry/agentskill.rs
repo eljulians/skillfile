@@ -5,7 +5,8 @@ use serde::Deserialize;
 use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
-use super::{urlencoded, Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
+use super::scrape::urlencoded;
+use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
 
 /// Base URL for the agentskill.sh search API.
 const AGENTSKILL_API: &str = "https://agentskill.sh/api/agent/search";
