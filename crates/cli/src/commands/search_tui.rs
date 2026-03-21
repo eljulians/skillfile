@@ -24,6 +24,8 @@ use ratatui::{
 };
 use skillfile_sources::registry::{RegistryId, SearchResult};
 
+use super::add_tui::{parse_skill_frontmatter, PreviewContent};
+
 // ===========================================================================
 // Model
 // ===========================================================================
@@ -40,6 +42,19 @@ pub struct SecurityAudit {
 pub enum AuditState {
     Loading,
     Loaded(Vec<SecurityAudit>),
+    Failed,
+}
+
+/// State of a SKILL.md preview fetch for a given search result URL.
+#[derive(Debug, Clone)]
+pub enum SkillPreviewState {
+    /// Fetch in progress.
+    Loading,
+    /// Successfully fetched and parsed.
+    Loaded(PreviewContent),
+    /// No GitHub coordinates available — nothing to fetch.
+    NotAvailable,
+    /// Fetch attempted but failed.
     Failed,
 }
 
@@ -65,6 +80,12 @@ pub struct App<'a> {
     audit_rx: mpsc::Receiver<(String, AuditState)>,
     /// Sender cloned into background fetch threads.
     audit_tx: mpsc::Sender<(String, AuditState)>,
+    /// Cache of fetched SKILL.md previews, keyed by skill URL.
+    skill_preview_cache: HashMap<String, SkillPreviewState>,
+    /// Receiver for completed SKILL.md preview fetches from background threads.
+    skill_preview_rx: mpsc::Receiver<(String, SkillPreviewState)>,
+    /// Sender cloned into background SKILL.md fetch threads.
+    skill_preview_tx: mpsc::Sender<(String, SkillPreviewState)>,
 }
 
 impl<'a> App<'a> {
@@ -76,6 +97,7 @@ impl<'a> App<'a> {
             list_state.select(Some(0));
         }
         let (audit_tx, audit_rx) = mpsc::channel();
+        let (skill_preview_tx, skill_preview_rx) = mpsc::channel();
         Self {
             items,
             filtered,
@@ -87,6 +109,9 @@ impl<'a> App<'a> {
             audit_cache: HashMap::new(),
             audit_rx,
             audit_tx,
+            skill_preview_cache: HashMap::new(),
+            skill_preview_rx,
+            skill_preview_tx,
         }
     }
 
@@ -146,6 +171,35 @@ impl<'a> App<'a> {
             self.audit_cache.insert(url, state);
         }
     }
+
+    /// Spawn a background SKILL.md fetch for the currently highlighted item if not cached.
+    ///
+    /// Delegates content extraction to each registry's `fetch_skill_content`
+    /// implementation (Strategy pattern). Only the highlighted item is fetched.
+    fn maybe_fetch_skill_preview(&mut self) {
+        let Some(item) = self.selected() else {
+            return;
+        };
+        let url = item.url.clone();
+        if self.skill_preview_cache.contains_key(&url) {
+            return;
+        }
+        self.skill_preview_cache
+            .insert(url.clone(), SkillPreviewState::Loading);
+        let item = item.clone();
+        let tx = self.skill_preview_tx.clone();
+        std::thread::spawn(move || {
+            let state = fetch_skill_preview_for_item(&item);
+            let _ = tx.send((url, state));
+        });
+    }
+
+    /// Drain any completed SKILL.md preview fetches from the channel into the cache.
+    fn poll_skill_previews(&mut self) {
+        while let Ok((url, state)) = self.skill_preview_rx.try_recv() {
+            self.skill_preview_cache.insert(url, state);
+        }
+    }
 }
 
 /// Returns true if `item` matches `query` (empty query matches all).
@@ -163,6 +217,14 @@ fn item_matches_query(item: &SearchResult, query: &str) -> bool {
     .to_lowercase();
     // Simple substring match — sufficient for a filter list.
     query.split_whitespace().all(|w| haystack.contains(w))
+}
+
+/// Fetch SKILL.md content via the per-registry Strategy dispatch.
+fn fetch_skill_preview_for_item(item: &SearchResult) -> SkillPreviewState {
+    match skillfile_sources::registry::fetch_skill_content_for(item) {
+        Some(content) => SkillPreviewState::Loaded(parse_skill_frontmatter(&content)),
+        None => SkillPreviewState::NotAvailable,
+    }
 }
 
 /// Spawn a background thread to fetch audit results for `url`.
@@ -383,7 +445,8 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     let content = match app.selected() {
         Some(item) => {
             let audit_state = app.audit_cache.get(&item.url);
-            build_preview_lines(item, audit_state)
+            let skill_preview = app.skill_preview_cache.get(&item.url);
+            build_preview_lines(item, audit_state, skill_preview)
         }
         None => vec![Line::from("No results match the filter.")],
     };
@@ -466,10 +529,134 @@ fn build_description_lines<'a>(description: Option<&'a str>) -> Vec<Line<'a>> {
     lines
 }
 
+/// Apply basic markdown styling to a single line for the preview pane.
+///
+/// Recognizes: `#`..`####` headings, `- ` / `* ` list items,
+/// ``` ``` code fences, and `---` horizontal rules.
+fn style_markdown_line(line: &str) -> Line<'static> {
+    let trimmed = line.trim_start();
+    let heading_style = |level: usize| {
+        let color = if level == 1 { Color::Cyan } else { Color::Blue };
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    };
+
+    if let Some(text) = trimmed.strip_prefix("#### ") {
+        Line::from(Span::styled(text.to_string(), heading_style(4)))
+    } else if let Some(text) = trimmed.strip_prefix("### ") {
+        Line::from(Span::styled(text.to_string(), heading_style(3)))
+    } else if let Some(text) = trimmed.strip_prefix("## ") {
+        Line::from(Span::styled(text.to_string(), heading_style(2)))
+    } else if let Some(text) = trimmed.strip_prefix("# ") {
+        Line::from(Span::styled(text.to_string(), heading_style(1)))
+    } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        let indent = line.len() - trimmed.len();
+        let prefix = " ".repeat(indent);
+        Line::from(vec![
+            Span::raw(prefix),
+            Span::styled("  \u{2022} ", Style::default().fg(Color::DarkGray)),
+            Span::raw(trimmed[2..].to_string()),
+        ])
+    } else if trimmed.starts_with("```") {
+        Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else if trimmed == "---" {
+        Line::from(Span::styled(
+            SKILL_PREVIEW_HR,
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        Line::from(line.to_string())
+    }
+}
+
+/// Horizontal rule separating the SKILL.md section from registry metadata.
+const SKILL_PREVIEW_HR: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
+
+/// Render the SKILL.md preview section (loaded content).
+fn build_skill_loaded_lines(content: &PreviewContent) -> Vec<Line<'static>> {
+    let label_style = Style::default().fg(Color::DarkGray);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(name) = &content.name {
+        lines.push(Line::from(vec![
+            Span::styled("Name:        ", label_style),
+            Span::styled(name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+        ]));
+    }
+    if let Some(desc) = &content.description {
+        lines.push(Line::from(vec![
+            Span::styled("Description: ", label_style),
+            Span::raw(desc.clone()),
+        ]));
+    }
+    if let Some(risk) = &content.risk {
+        lines.push(Line::from(vec![
+            Span::styled("Risk:        ", label_style),
+            Span::raw(risk.clone()),
+        ]));
+    }
+    if let Some(body) = &content.body_excerpt {
+        lines.push(Line::from(""));
+        lines.extend(body.lines().map(style_markdown_line));
+    }
+    lines
+}
+
+/// Render the SKILL.md preview section for the preview pane.
+fn build_skill_preview_section(state: Option<&SkillPreviewState>) -> Vec<Line<'static>> {
+    let header_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+    match state {
+        Some(SkillPreviewState::Loaded(content)) => {
+            let mut lines: Vec<Line<'static>> = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    SKILL_PREVIEW_HR,
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+                Line::from(Span::styled("SKILL.md:", header_style)),
+                Line::from(""),
+            ];
+            lines.extend(build_skill_loaded_lines(content));
+            lines
+        }
+        Some(SkillPreviewState::Loading) => vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                SKILL_PREVIEW_HR,
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Loading SKILL.md...",
+                Style::default().fg(Color::Yellow),
+            )),
+        ],
+        Some(SkillPreviewState::Failed) => vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                SKILL_PREVIEW_HR,
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Could not fetch SKILL.md",
+                Style::default().fg(Color::Red),
+            )),
+        ],
+        // NotAvailable or None: show nothing.
+        Some(SkillPreviewState::NotAvailable) | None => Vec::new(),
+    }
+}
+
 /// Build the preview text for a single search result.
 fn build_preview_lines<'a>(
     item: &'a SearchResult,
     audit_state: Option<&'a AuditState>,
+    skill_preview: Option<&'a SkillPreviewState>,
 ) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(16);
 
@@ -542,6 +729,9 @@ fn build_preview_lines<'a>(
 
     // Description
     lines.extend(build_description_lines(item.description.as_deref()));
+
+    // SKILL.md preview (below description)
+    lines.extend(build_skill_preview_section(skill_preview));
 
     lines
 }
@@ -666,10 +856,12 @@ pub fn run_tui(items: &[SearchResult], total: usize) -> Result<Option<usize>, st
 
     let mut app = App::new(items, total);
 
-    // Event loop — polls with timeout so background audit fetches can land.
+    // Event loop — polls with timeout so background fetches can land.
     let result = loop {
         app.maybe_fetch_audits();
         app.poll_audits();
+        app.maybe_fetch_skill_preview();
+        app.poll_skill_previews();
 
         terminal.draw(|f| draw(f, &mut app))?;
 
@@ -1007,7 +1199,7 @@ mod tests {
     #[test]
     fn build_preview_includes_all_fields() {
         let item = &sample_items()[0]; // code-reviewer — has all fields
-        let lines = build_preview_lines(item, Option::<&AuditState>::None);
+        let lines = build_preview_lines(item, Option::<&AuditState>::None, None);
         let text: String = lines
             .iter()
             .map(std::string::ToString::to_string)
@@ -1025,7 +1217,7 @@ mod tests {
     #[test]
     fn build_preview_handles_missing_fields() {
         let item = &sample_items()[1]; // docker-helper — no description, no score
-        let lines = build_preview_lines(item, Option::<&AuditState>::None);
+        let lines = build_preview_lines(item, Option::<&AuditState>::None, None);
         let text: String = lines
             .iter()
             .map(std::string::ToString::to_string)
@@ -1093,7 +1285,7 @@ mod tests {
                 passed: false,
             },
         ]);
-        let lines = build_preview_lines(item, Some(&audits));
+        let lines = build_preview_lines(item, Some(&audits), None);
         let text: String = lines
             .iter()
             .map(std::string::ToString::to_string)
@@ -1106,12 +1298,173 @@ mod tests {
     #[test]
     fn build_preview_shows_loading_audits() {
         let item = &sample_items()[1]; // docker-helper — skills.sh
-        let lines = build_preview_lines(item, Some(&AuditState::Loading));
+        let lines = build_preview_lines(item, Some(&AuditState::Loading), None);
         let text: String = lines
             .iter()
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("loading"), "should show loading state");
+    }
+
+    // -- SkillPreviewState tests -----------------------------------------------
+
+    #[test]
+    fn skill_preview_spawns_fetch_for_all_registries() {
+        let items = sample_items();
+        // testing-pro (index 2) is skillhub.club — no source_repo.
+        // With Strategy pattern dispatch, all items go through the thread.
+        let mut app = App::new(&items, 3);
+        app.list_state.select(Some(2));
+
+        app.maybe_fetch_skill_preview();
+
+        let url = &items[2].url;
+        assert!(
+            matches!(
+                app.skill_preview_cache.get(url),
+                Some(SkillPreviewState::Loading)
+            ),
+            "all registries should spawn a fetch thread"
+        );
+    }
+
+    #[test]
+    fn skill_preview_loading_set_for_item_with_source_repo() {
+        let items = sample_items();
+        // code-reviewer (index 0) has source_repo = Some("alice/code-reviewer").
+        let mut app = App::new(&items, 3);
+        // index 0 is already selected by default.
+
+        app.maybe_fetch_skill_preview();
+
+        let url = &items[0].url;
+        // Should be Loading (thread spawned) or already Loaded/Failed if thread was fast.
+        assert!(
+            app.skill_preview_cache.contains_key(url),
+            "cache should have an entry for the highlighted item"
+        );
+    }
+
+    #[test]
+    fn skill_preview_not_cached_twice() {
+        let items = sample_items();
+        let mut app = App::new(&items, 3);
+
+        // First call inserts Loading.
+        app.maybe_fetch_skill_preview();
+        let url = &items[0].url;
+        assert!(app.skill_preview_cache.contains_key(url));
+
+        // Manually replace with NotAvailable to confirm second call is a no-op.
+        app.skill_preview_cache
+            .insert(url.clone(), SkillPreviewState::NotAvailable);
+        app.maybe_fetch_skill_preview();
+
+        // Still NotAvailable — second call did not overwrite.
+        match app.skill_preview_cache.get(url) {
+            Some(SkillPreviewState::NotAvailable) => {}
+            other => panic!("expected NotAvailable after second call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_preview_includes_skill_content() {
+        let item = &sample_items()[0]; // code-reviewer
+        let content = PreviewContent {
+            name: Some("Code Reviewer".to_string()),
+            description: Some("Automated code review skill".to_string()),
+            risk: Some("low".to_string()),
+            source: None,
+            body_excerpt: Some("## Use this skill when\n- You want automated review".to_string()),
+        };
+        let skill_state = SkillPreviewState::Loaded(content);
+        let lines = build_preview_lines(item, Option::<&AuditState>::None, Some(&skill_state));
+        let text: String = lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("SKILL.md:"), "missing SKILL.md header");
+        assert!(text.contains("Code Reviewer"), "missing skill name");
+        assert!(
+            text.contains("Automated code review skill"),
+            "missing skill description"
+        );
+        assert!(text.contains("low"), "missing risk");
+        assert!(text.contains("Use this skill when"), "missing body excerpt");
+    }
+
+    #[test]
+    fn build_preview_shows_loading_skill_preview() {
+        let item = &sample_items()[0];
+        let lines = build_preview_lines(
+            item,
+            Option::<&AuditState>::None,
+            Some(&SkillPreviewState::Loading),
+        );
+        let text: String = lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Loading SKILL.md"), "missing loading message");
+    }
+
+    #[test]
+    fn build_preview_shows_failed_skill_preview() {
+        let item = &sample_items()[0];
+        let lines = build_preview_lines(
+            item,
+            Option::<&AuditState>::None,
+            Some(&SkillPreviewState::Failed),
+        );
+        let text: String = lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("Could not fetch SKILL.md"),
+            "missing failure message"
+        );
+    }
+
+    #[test]
+    fn build_preview_no_skill_section_when_not_available() {
+        let item = &sample_items()[2]; // testing-pro — no source_repo
+        let lines = build_preview_lines(
+            item,
+            Option::<&AuditState>::None,
+            Some(&SkillPreviewState::NotAvailable),
+        );
+        let text: String = lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains("SKILL.md:"),
+            "should not show SKILL.md section for NotAvailable"
+        );
+    }
+
+    #[test]
+    fn poll_skill_previews_drains_channel() {
+        let items = sample_items();
+        let mut app = App::new(&items, 3);
+        let url = items[0].url.clone();
+
+        // Send a result directly via the tx.
+        app.skill_preview_tx
+            .send((url.clone(), SkillPreviewState::NotAvailable))
+            .unwrap();
+
+        app.poll_skill_previews();
+
+        match app.skill_preview_cache.get(&url) {
+            Some(SkillPreviewState::NotAvailable) => {}
+            other => panic!("expected NotAvailable after poll, got {other:?}"),
+        }
     }
 }

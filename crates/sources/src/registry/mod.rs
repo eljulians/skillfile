@@ -157,6 +157,19 @@ pub(crate) trait Registry: Send + Sync {
 
     /// Search this registry. Returns a unified [`SearchResponse`].
     fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError>;
+
+    /// Fetch raw SKILL.md content for a search result.
+    ///
+    /// Each registry extracts the content from its own data source:
+    /// agentskill.sh scrapes Nuxt hydration data, skills.sh fetches from
+    /// `raw.githubusercontent.com`. Default returns `None` (not supported).
+    fn fetch_skill_content(
+        &self,
+        _client: &dyn HttpClient,
+        _item: &SearchResult,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// Returns registries to query by default (public, no auth required).
@@ -261,6 +274,20 @@ pub(crate) fn search_registry_with_client(
     post_process(&mut resp, q.opts);
 
     Ok(resp)
+}
+
+/// Fetch raw SKILL.md content for a search result.
+///
+/// Dispatches to the correct registry's content fetcher based on
+/// `item.registry`. Returns `None` if the registry doesn't support
+/// content fetching or if the fetch fails.
+pub fn fetch_skill_content_for(item: &SearchResult) -> Option<String> {
+    let client = UreqClient::new();
+    match item.registry {
+        RegistryId::AgentskillSh => AgentskillSh.fetch_skill_content(&client, item),
+        RegistryId::SkillsSh => SkillsSh.fetch_skill_content(&client, item),
+        RegistryId::SkillhubClub => None,
+    }
 }
 
 /// Backward-compatible entry point — searches agentskill.sh only.

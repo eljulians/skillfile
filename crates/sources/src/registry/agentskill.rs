@@ -58,9 +58,42 @@ fn map_api_result(r: ApiResult) -> Option<SearchResult> {
     })
 }
 
+/// Extract the JSON body from the first `__NUXT_DATA__` `<script>` tag.
+fn extract_nuxt_json(html: &str) -> Option<&str> {
+    let marker = r#"id="__NUXT_DATA__""#;
+    let tag_start = html.find(marker)?;
+    let after = &html[tag_start..];
+    let tag_end = after.find('>')?;
+    let content = &html[tag_start + tag_end + 1..];
+    let end = content.find("</script>")?;
+    Some(content[..end].trim())
+}
+
+/// Resolve the `skillMd` value from a Nuxt hydration data array.
+///
+/// The `__NUXT_DATA__` array contains objects whose values are numeric
+/// indices into the same array. Find any object with a `"skillMd"` key,
+/// read its numeric value, and index back into the array to get the
+/// raw markdown string.
+fn extract_skill_md(data: &[serde_json::Value]) -> Option<String> {
+    let ref_idx = data
+        .iter()
+        .find_map(|v| v.as_object()?.get("skillMd")?.as_u64())?;
+    let idx = usize::try_from(ref_idx).ok()?;
+    data.get(idx)?.as_str().map(String::from)
+}
+
 impl Registry for AgentskillSh {
     fn name(&self) -> &'static str {
         "agentskill.sh"
+    }
+
+    fn fetch_skill_content(&self, client: &dyn HttpClient, item: &SearchResult) -> Option<String> {
+        let bytes = client.get_bytes(&item.url).ok()?;
+        let html = String::from_utf8(bytes).ok()?;
+        let json_str = extract_nuxt_json(&html)?;
+        let data: Vec<serde_json::Value> = serde_json::from_str(json_str).ok()?;
+        extract_skill_md(&data)
     }
 
     fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError> {
@@ -656,5 +689,84 @@ mod tests {
             meta.source_path,
             "skills/arnarsson/fzf-fuzzy-finder/SKILL.md"
         );
+    }
+
+    // -- fetch_skill_content tests (Nuxt __NUXT_DATA__ scraping) ---------------
+
+    fn make_nuxt_html(nuxt_data: &serde_json::Value) -> String {
+        format!(
+            r#"<html><head><script id="__NUXT_DATA__" type="application/json">{nuxt_data}</script></head></html>"#
+        )
+    }
+
+    fn make_search_result(url: &str) -> SearchResult {
+        SearchResult {
+            name: "test-skill".into(),
+            owner: "test".into(),
+            description: None,
+            security_score: None,
+            stars: None,
+            url: url.into(),
+            registry: RegistryId::AgentskillSh,
+            source_repo: None,
+            source_path: None,
+        }
+    }
+
+    #[test]
+    fn fetch_skill_content_extracts_from_nuxt_payload() {
+        let md = "---\nname: test-skill\n---\n# Test Skill\nBody.";
+        // Real format: an object has {"skillMd": N} where data[N] is the markdown.
+        let data = serde_json::json!(["padding", {"skillMd": 2}, md]);
+        let html = make_nuxt_html(&data);
+        let client = MockClient::new(vec![Ok(html)]);
+        let item = make_search_result("https://agentskill.sh/@test/test-skill");
+        let result = AgentskillSh.fetch_skill_content(&client, &item);
+        assert_eq!(result.as_deref(), Some(md));
+    }
+
+    #[test]
+    fn fetch_skill_content_returns_none_on_missing_payload() {
+        let html = "<html><body>No Nuxt data</body></html>";
+        let client = MockClient::new(vec![Ok(html.into())]);
+        let item = make_search_result("https://agentskill.sh/@test/x");
+        assert!(AgentskillSh.fetch_skill_content(&client, &item).is_none());
+    }
+
+    #[test]
+    fn fetch_skill_content_returns_none_on_network_error() {
+        let client = MockClient::new(vec![Err("refused".into())]);
+        let item = make_search_result("https://agentskill.sh/@test/x");
+        assert!(AgentskillSh.fetch_skill_content(&client, &item).is_none());
+    }
+
+    #[test]
+    fn fetch_skill_content_returns_none_on_missing_skill_md_key() {
+        let data = serde_json::json!(["no", "skillMd_key", "here"]);
+        let html = make_nuxt_html(&data);
+        let client = MockClient::new(vec![Ok(html)]);
+        let item = make_search_result("https://agentskill.sh/@test/x");
+        assert!(AgentskillSh.fetch_skill_content(&client, &item).is_none());
+    }
+
+    #[test]
+    fn fetch_skill_content_returns_none_on_invalid_json() {
+        let html = r#"<html><script id="__NUXT_DATA__">not json</script></html>"#;
+        let client = MockClient::new(vec![Ok(html.into())]);
+        let item = make_search_result("https://agentskill.sh/@test/x");
+        assert!(AgentskillSh.fetch_skill_content(&client, &item).is_none());
+    }
+
+    #[test]
+    fn extract_nuxt_json_handles_attributes_order() {
+        let html = r#"<script type="application/json" id="__NUXT_DATA__">["a","b"]</script>"#;
+        let json = extract_nuxt_json(html);
+        assert_eq!(json, Some(r#"["a","b"]"#));
+    }
+
+    #[test]
+    fn extract_skill_md_returns_none_when_ref_out_of_bounds() {
+        let data = vec![serde_json::json!({"skillMd": 999})];
+        assert!(extract_skill_md(&data).is_none());
     }
 }

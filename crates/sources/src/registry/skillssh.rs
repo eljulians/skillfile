@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 
+use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
 use super::{urlencoded, Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
@@ -11,6 +12,9 @@ const SKILLSSH_API: &str = "https://skills.sh/api/search";
 
 /// The skills.sh registry (public, no auth, minimal fields).
 pub struct SkillsSh;
+
+/// Base URL for raw file fetches from GitHub (no API, no auth required).
+const GITHUB_RAW: &str = "https://raw.githubusercontent.com";
 
 #[derive(Deserialize)]
 struct ApiResponse {
@@ -28,9 +32,113 @@ struct ApiResult {
     source: Option<String>,
 }
 
+/// Candidate paths for locating SKILL.md in a GitHub repository.
+///
+/// Most skills.sh entries follow the `skills/{name}/SKILL.md` convention.
+/// Falls back to `{name}/SKILL.md` and then root `SKILL.md`.
+fn skill_md_urls(repo: &str, name: &str) -> [String; 3] {
+    [
+        format!("{GITHUB_RAW}/{repo}/HEAD/skills/{name}/SKILL.md"),
+        format!("{GITHUB_RAW}/{repo}/HEAD/{name}/SKILL.md"),
+        format!("{GITHUB_RAW}/{repo}/HEAD/SKILL.md"),
+    ]
+}
+
+/// Find the byte length of a JSON string literal (including both quotes).
+///
+/// Input must start with `"`. Returns the position just past the closing
+/// `"`, or `None` if unterminated. Safe on UTF-8 because `"` and `\` are
+/// single-byte ASCII and cannot appear as continuation bytes.
+fn json_string_end(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'"') {
+        return None;
+    }
+    let mut i = 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Strip HTML tags and decode common entities to plain text.
+fn strip_html(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out = out.replace("&amp;", "&");
+    out = out.replace("&lt;", "<");
+    out = out.replace("&gt;", ">");
+    out = out.replace("&#x26;", "&");
+    out = out.replace("&quot;", "\"");
+    out.replace("&#39;", "'")
+}
+
+/// Extract rendered skill content from a skills.sh Next.js RSC page.
+///
+/// The page streams content via `self.__next_f.push([1, "..."])` chunks.
+/// The main content chunk contains the SKILL.md rendered as HTML. We find
+/// it by looking for `<h1>` or `<h2>` tags, then strip to plain text.
+fn extract_rsc_content(html: &str) -> Option<String> {
+    let prefix = "self.__next_f.push([1,";
+    let mut pos = 0;
+    while let Some(offset) = html[pos..].find(prefix) {
+        let json_start = pos + offset + prefix.len();
+        pos = json_start + 1;
+        let Some(end) = json_string_end(&html[json_start..]) else {
+            continue;
+        };
+        let Ok(decoded) = serde_json::from_str::<String>(&html[json_start..json_start + end])
+        else {
+            continue;
+        };
+        if !decoded.contains("<h1>") && !decoded.contains("<h2>") {
+            continue;
+        }
+        let text = strip_html(&decoded);
+        if text.len() > 50 {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// Fetch skill content by scraping the skills.sh page directly.
+///
+/// Fallback when raw GitHub paths fail (repo uses non-standard layout).
+fn scrape_skill_page(client: &dyn HttpClient, url: &str) -> Option<String> {
+    let bytes = client.get_bytes(url).ok()?;
+    let html = String::from_utf8(bytes).ok()?;
+    extract_rsc_content(&html)
+}
+
 impl Registry for SkillsSh {
     fn name(&self) -> &'static str {
         "skills.sh"
+    }
+
+    fn fetch_skill_content(&self, client: &dyn HttpClient, item: &SearchResult) -> Option<String> {
+        // Fast path: try raw GitHub URLs (gives raw markdown).
+        if let Some(md) = item.source_repo.as_deref().and_then(|repo| {
+            skill_md_urls(repo, &item.name)
+                .iter()
+                .find_map(|url| String::from_utf8(client.get_bytes(url).ok()?).ok())
+        }) {
+            return Some(md);
+        }
+        // Fallback: scrape rendered HTML from the skills.sh page.
+        scrape_skill_page(client, &item.url)
     }
 
     fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError> {
@@ -180,5 +288,134 @@ mod tests {
             .unwrap();
         assert_eq!(resp.items.len(), 0);
         assert_eq!(resp.total, 0);
+    }
+
+    // -- fetch_skill_content tests (GitHub raw fetch with fallback) -------------
+
+    fn make_search_result(name: &str, repo: Option<&str>) -> SearchResult {
+        SearchResult {
+            name: name.into(),
+            owner: String::new(),
+            description: None,
+            security_score: None,
+            stars: None,
+            url: format!("https://skills.sh/owner/{name}/{name}"),
+            registry: RegistryId::SkillsSh,
+            source_repo: repo.map(String::from),
+            source_path: None,
+        }
+    }
+
+    #[test]
+    fn fetch_skill_content_from_github_raw() {
+        let md = "---\nname: docker-helper\n---\n# Docker Helper";
+        let client = MockClient::new(vec![Ok(md.into())]);
+        let item = make_search_result("docker-helper", Some("dockerfan/docker-helper"));
+        let result = SkillsSh.fetch_skill_content(&client, &item);
+        assert_eq!(result.as_deref(), Some(md));
+    }
+
+    #[test]
+    fn fetch_skill_content_fallback_paths() {
+        let md = "---\nname: test\n---";
+        let client = MockClient::new(vec![
+            Err("404".into()), // skills/{name}/SKILL.md
+            Ok(md.into()),     // {name}/SKILL.md
+        ]);
+        let item = make_search_result("test-skill", Some("owner/repo"));
+        let result = SkillsSh.fetch_skill_content(&client, &item);
+        assert_eq!(result.as_deref(), Some(md));
+    }
+
+    #[test]
+    fn fetch_skill_content_falls_through_to_root() {
+        let md = "# Root SKILL.md";
+        let client = MockClient::new(vec![
+            Err("404".into()), // skills/{name}/SKILL.md
+            Err("404".into()), // {name}/SKILL.md
+            Ok(md.into()),     // SKILL.md (root)
+        ]);
+        let item = make_search_result("mono", Some("owner/mono-repo"));
+        let result = SkillsSh.fetch_skill_content(&client, &item);
+        assert_eq!(result.as_deref(), Some(md));
+    }
+
+    #[test]
+    fn fetch_skill_content_without_source_repo_tries_page_scrape() {
+        // No source_repo → skip GitHub raw paths, attempt page scrape.
+        let client = MockClient::new(vec![Err("404".into())]); // page scrape fails
+        let item = make_search_result("orphan", None);
+        assert!(SkillsSh.fetch_skill_content(&client, &item).is_none());
+    }
+
+    #[test]
+    fn fetch_skill_content_returns_none_when_all_paths_fail() {
+        let client = MockClient::new(vec![
+            Err("404".into()), // skills/{name}/SKILL.md
+            Err("404".into()), // {name}/SKILL.md
+            Err("404".into()), // SKILL.md
+            Err("404".into()), // page scrape
+        ]);
+        let item = make_search_result("gone", Some("owner/repo"));
+        assert!(SkillsSh.fetch_skill_content(&client, &item).is_none());
+    }
+
+    #[test]
+    fn fetch_skill_content_falls_back_to_page_scrape() {
+        let rsc_page = r#"<html><script>self.__next_f.push([1,"\u003ch1\u003eKubernetes Operations\u003c/h1\u003e\n\u003cp\u003eExpert knowledge for Kubernetes cluster management, deployment, and troubleshooting.\u003c/p\u003e"])</script></html>"#;
+        let client = MockClient::new(vec![
+            Err("404".into()),   // skills/{name}/SKILL.md
+            Err("404".into()),   // {name}/SKILL.md
+            Err("404".into()),   // SKILL.md
+            Ok(rsc_page.into()), // page scrape succeeds
+        ]);
+        let item = make_search_result("k8s-ops", Some("owner/repo"));
+        let result = SkillsSh.fetch_skill_content(&client, &item);
+        let text = result.expect("should extract from page");
+        assert!(
+            text.contains("Kubernetes Operations"),
+            "missing title: {text}"
+        );
+        assert!(text.contains("deployment"), "missing body: {text}");
+    }
+
+    // -- RSC extraction unit tests ---------------------------------------------
+
+    #[test]
+    fn extract_rsc_content_parses_html_chunk() {
+        let html = r#"self.__next_f.push([1,"\u003ch1\u003eKubernetes Operations\u003c/h1\u003e\n\u003cp\u003eExpert knowledge for Kubernetes cluster management and troubleshooting.\u003c/p\u003e"])"#;
+        let result = extract_rsc_content(html).expect("should parse");
+        assert!(result.contains("Kubernetes Operations"));
+        assert!(result.contains("Expert knowledge"));
+        assert!(!result.contains("<h1>"), "tags should be stripped");
+    }
+
+    #[test]
+    fn extract_rsc_content_skips_non_content_chunks() {
+        let html = r#"self.__next_f.push([1,"$Sreact.fragment"])self.__next_f.push([1,"\u003ch2\u003eReal Content\u003c/h2\u003e\n\u003cp\u003eThis is the actual skill description with enough detail to pass the length check.\u003c/p\u003e"])"#;
+        let result = extract_rsc_content(html).expect("should find content chunk");
+        assert!(result.contains("Real Content"));
+    }
+
+    #[test]
+    fn extract_rsc_content_returns_none_without_html() {
+        let html = r#"self.__next_f.push([1,"just text no tags"])"#;
+        assert!(extract_rsc_content(html).is_none());
+    }
+
+    #[test]
+    fn strip_html_removes_tags_and_decodes_entities() {
+        assert_eq!(strip_html("<p>hello &amp; world</p>"), "hello & world");
+        assert_eq!(strip_html("<h1>Title</h1>"), "Title");
+        assert_eq!(strip_html("no tags"), "no tags");
+    }
+
+    #[test]
+    fn json_string_end_finds_closing_quote() {
+        assert_eq!(json_string_end(r#""hello""#), Some(7));
+        assert_eq!(json_string_end(r#""esc\"d""#), Some(8));
+        assert_eq!(json_string_end(r#""\\""#), Some(4));
+        assert!(json_string_end("not a string").is_none());
+        assert!(json_string_end(r#""unterminated"#).is_none());
     }
 }
