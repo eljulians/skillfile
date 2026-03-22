@@ -8,5 +8,6 @@ pub mod remove;
 pub mod resolve;
 pub mod search;
 pub mod search_tui;
+pub mod skill_preview;
 pub mod status;
 pub mod validate;

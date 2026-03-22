@@ -13,6 +13,11 @@ All notable changes to skillfile are documented here.
 - **Windows support** - pre-built `x86_64-pc-windows-msvc` binary in releases. Path separators normalized to forward slashes in deploy keys. CRLF line endings handled in patch application. Windows CI test job added.
 - **Local path drift in status** - `skillfile status` now shows `✗ path missing: <path>` for local entries whose file or directory no longer exists on disk. Previously all local entries showed `local` regardless of path validity.
 - **GitHub token config + init wizard** - `skillfile init` now walks you through GitHub token setup after platform selection. Detects existing tokens from env vars, `gh` CLI, or config file. Offers paste-and-validate or skip. Token is saved to `~/.config/skillfile/config.toml` with `0o600` permissions. The token discovery chain now checks: `GITHUB_TOKEN` env → `GH_TOKEN` env → config file → `gh auth token`.
+- **SKILL.md preview in search TUI** - the search TUI preview pane now shows rendered SKILL.md content. Each registry fetches content through its own strategy: agentskill.sh extracts from Nuxt hydration data, skills.sh tries raw GitHub URLs with page-scrape fallback. Frontmatter fields (name, description, risk, source) render as a metadata header above the body.
+
+### Changed
+
+- **HTML entity decoding** - replaced hand-rolled 8-entity decoder with the `html-escape` crate, covering all 2,231+ named, numeric, and hex HTML entities. Fixes garbled characters in skills.sh preview content.
 - **Shell completions** - `skillfile completions <shell>` generates static completion scripts for bash, zsh, fish, and PowerShell. Dynamic completions via `eval "$(COMPLETE=bash skillfile)"` add entry name completion for `remove`, `pin`, `unpin`, `diff`, and `resolve` by reading the Skillfile at tab-press time.
 
 ### Fixed

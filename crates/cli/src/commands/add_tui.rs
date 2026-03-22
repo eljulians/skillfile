@@ -25,19 +25,11 @@ use ratatui::{
     Frame, Terminal,
 };
 
+use super::skill_preview::{self, parse_skill_frontmatter, PreviewContent};
+
 // ===========================================================================
 // Model
 // ===========================================================================
-
-/// Parsed SKILL.md frontmatter + body excerpt for the preview pane.
-#[derive(Debug, Clone)]
-pub struct PreviewContent {
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub risk: Option<String>,
-    pub source: Option<String>,
-    pub body_excerpt: Option<String>,
-}
 
 /// State of a preview fetch for a given path.
 #[derive(Debug, Clone)]
@@ -226,73 +218,6 @@ fn fetch_preview(owner_repo: &str, ref_: &str, path: &str) -> PreviewState {
             PreviewState::Loaded(parse_skill_frontmatter(&text))
         }
         Err(_) => PreviewState::Failed,
-    }
-}
-
-/// Parse key-value pairs from frontmatter text into a `PreviewContent` (no body).
-fn parse_frontmatter_fields(frontmatter: &str) -> PreviewContent {
-    let mut content = PreviewContent {
-        name: None,
-        description: None,
-        risk: None,
-        source: None,
-        body_excerpt: None,
-    };
-    for line in frontmatter.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim().to_string();
-        match key.trim().to_lowercase().as_str() {
-            "name" => content.name = Some(value),
-            "description" => content.description = Some(value),
-            "risk" => content.risk = Some(value),
-            "source" => content.source = Some(value),
-            _ => {}
-        }
-    }
-    content
-}
-
-/// Extract a body excerpt (first 20 lines) from content after frontmatter.
-fn extract_body_excerpt(body: &str) -> Option<String> {
-    let body = body.trim_start();
-    if body.is_empty() {
-        return None;
-    }
-    Some(body.lines().take(20).collect::<Vec<_>>().join("\n"))
-}
-
-/// Parse SKILL.md frontmatter and extract a body excerpt.
-///
-/// Lightweight: splits on `---` markers, matches `key: value` lines.
-/// No YAML crate needed.
-pub fn parse_skill_frontmatter(content: &str) -> PreviewContent {
-    let trimmed = content.trim_start();
-
-    if let Some(after_opening) = trimmed.strip_prefix("---") {
-        if let Some(end) = after_opening.find("\n---") {
-            let frontmatter = &after_opening[..end];
-            let mut content = parse_frontmatter_fields(frontmatter);
-            let body_start = end + 4; // skip \n---
-            content.body_excerpt = extract_body_excerpt(&after_opening[body_start..]);
-            return content;
-        }
-    }
-
-    // No frontmatter — treat entire content as body excerpt.
-    let body_excerpt = if content.trim().is_empty() {
-        None
-    } else {
-        extract_body_excerpt(trimmed)
-    };
-
-    PreviewContent {
-        name: None,
-        description: None,
-        risk: None,
-        source: None,
-        body_excerpt,
     }
 }
 
@@ -584,42 +509,11 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     frame.render_widget(para, area);
 }
 
-/// Horizontal rule for separating metadata from body content.
-const PREVIEW_HR: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
-
 /// Build the loaded-content section of the preview pane (all owned).
 fn build_loaded_preview_lines(content: &PreviewContent, url: &str) -> Vec<Line<'static>> {
     let label_style = Style::default().fg(Color::DarkGray);
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    if let Some(name) = &content.name {
-        lines.push(Line::from(vec![
-            Span::styled("Name:        ", label_style),
-            Span::styled(name.clone(), Style::default().add_modifier(Modifier::BOLD)),
-        ]));
-    }
-    if let Some(desc) = &content.description {
-        lines.push(Line::from(vec![
-            Span::styled("Description: ", label_style),
-            Span::raw(desc.clone()),
-        ]));
-    }
-    if let Some(risk) = &content.risk {
-        let (icon, color) = risk_icon(risk);
-        lines.push(Line::from(vec![
-            Span::styled("Risk:        ", label_style),
-            Span::styled(
-                format!("{icon} {risk}"),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
-    if let Some(source) = &content.source {
-        lines.push(Line::from(vec![
-            Span::styled("Source:      ", label_style),
-            Span::styled(source.clone(), Style::default().fg(Color::Magenta)),
-        ]));
-    }
     lines.push(Line::from(vec![
         Span::styled("URL:         ", label_style),
         Span::styled(
@@ -629,51 +523,9 @@ fn build_loaded_preview_lines(content: &PreviewContent, url: &str) -> Vec<Line<'
                 .add_modifier(Modifier::UNDERLINED),
         ),
     ]));
-    if let Some(body) = &content.body_excerpt {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            PREVIEW_HR,
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::from(""));
-        lines.extend(body.lines().map(|l| style_body_line(l.to_string())));
-    }
-    if content.name.is_none() && content.description.is_none() && content.body_excerpt.is_none() {
-        lines.push(Line::from(Span::styled(
-            "No metadata available.",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
+    lines.push(Line::from(""));
+    lines.extend(skill_preview::build_skill_content_lines(content));
     lines
-}
-
-/// Style a body line — markdown headings get special treatment.
-fn style_body_line(line: String) -> Line<'static> {
-    if line.starts_with("## ") {
-        // h2, h3, h4+ — all start with "## "
-        Line::from(Span::styled(
-            line,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ))
-    } else if line.starts_with("# ") {
-        // h1 — Green to distinguish from Cyan path header and Yellow h2+
-        Line::from(Span::styled(
-            line,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ))
-    } else if line.starts_with("- ") || line.starts_with("* ") {
-        let (bullet, rest) = line.split_at(2);
-        Line::from(vec![
-            Span::styled(bullet.to_string(), Style::default().fg(Color::Cyan)),
-            Span::raw(rest.to_string()),
-        ])
-    } else {
-        Line::from(line)
-    }
 }
 
 /// Build a GitHub URL for the entry.
@@ -716,22 +568,6 @@ fn build_preview_lines(path: &str, state: Option<&PreviewState>, url: &str) -> V
     }
 
     lines
-}
-
-/// Map a risk level to an icon and color.
-fn risk_icon(risk: &str) -> (&'static str, Color) {
-    match risk.to_lowercase().as_str() {
-        "low" => ("\u{2713}", Color::Green),     // ✓
-        "medium" => ("\u{26a0}", Color::Yellow), // ⚠
-        "high" => ("\u{2717}", Color::Red),      // ✗
-        _ => ("\u{2022}", Color::White),         // •
-    }
-}
-
-/// Map a risk level string to a display color.
-#[cfg(test)]
-fn risk_color(risk: &str) -> Color {
-    risk_icon(risk).1
 }
 
 // ===========================================================================
@@ -1213,86 +1049,6 @@ mod tests {
         assert_eq!(app.selection_count(), 0);
     }
 
-    // -- Preview parsing tests -------------------------------------------------
-
-    #[test]
-    fn parse_frontmatter_full() {
-        let content = "\
----
-name: Browser Automation
-description: Automate web browsing tasks
-risk: medium
-source: community
----
-
-## Use this skill when
-- You need to interact with web pages
-";
-        let preview = parse_skill_frontmatter(content);
-        assert_eq!(preview.name.as_deref(), Some("Browser Automation"));
-        assert_eq!(
-            preview.description.as_deref(),
-            Some("Automate web browsing tasks")
-        );
-        assert_eq!(preview.risk.as_deref(), Some("medium"));
-        assert_eq!(preview.source.as_deref(), Some("community"));
-        assert!(preview.body_excerpt.is_some());
-        assert!(preview.body_excerpt.unwrap().contains("Use this skill"));
-    }
-
-    #[test]
-    fn parse_frontmatter_missing_fields() {
-        let content = "\
----
-name: Simple Skill
----
-
-Some body text.
-";
-        let preview = parse_skill_frontmatter(content);
-        assert_eq!(preview.name.as_deref(), Some("Simple Skill"));
-        assert!(preview.description.is_none());
-        assert!(preview.risk.is_none());
-        assert!(preview.source.is_none());
-        assert!(preview.body_excerpt.is_some());
-    }
-
-    #[test]
-    fn parse_frontmatter_no_frontmatter() {
-        let content = "# Just a heading\n\nSome body text.\n";
-        let preview = parse_skill_frontmatter(content);
-        assert!(preview.name.is_none());
-        assert!(preview.body_excerpt.is_some());
-        assert!(preview.body_excerpt.unwrap().contains("Just a heading"));
-    }
-
-    #[test]
-    fn parse_frontmatter_empty_content() {
-        let preview = parse_skill_frontmatter("");
-        assert!(preview.name.is_none());
-        assert!(preview.body_excerpt.is_none());
-    }
-
-    #[test]
-    fn parse_frontmatter_only_whitespace() {
-        let preview = parse_skill_frontmatter("   \n  \n  ");
-        assert!(preview.name.is_none());
-        assert!(preview.body_excerpt.is_none());
-    }
-
-    #[test]
-    fn parse_frontmatter_body_truncated_to_20_lines() {
-        use std::fmt::Write as _;
-        let mut content = "---\nname: Test\n---\n".to_string();
-        for i in 0..30 {
-            let _ = writeln!(content, "Line {i}");
-        }
-        let preview = parse_skill_frontmatter(&content);
-        let body = preview.body_excerpt.unwrap();
-        let line_count = body.lines().count();
-        assert_eq!(line_count, 20);
-    }
-
     // -- resolve_preview_path tests --------------------------------------------
 
     #[test]
@@ -1338,23 +1094,6 @@ Some body text.
     #[test]
     fn display_label_no_slash() {
         assert_eq!(display_label("browser"), "browser");
-    }
-
-    // -- Risk color tests ------------------------------------------------------
-
-    #[test]
-    fn risk_color_mapping() {
-        assert_eq!(risk_color("low"), Color::Green);
-        assert_eq!(risk_color("medium"), Color::Yellow);
-        assert_eq!(risk_color("high"), Color::Red);
-        assert_eq!(risk_color("unknown"), Color::White);
-    }
-
-    #[test]
-    fn risk_color_case_insensitive() {
-        assert_eq!(risk_color("LOW"), Color::Green);
-        assert_eq!(risk_color("Medium"), Color::Yellow);
-        assert_eq!(risk_color("HIGH"), Color::Red);
     }
 
     // -- path_matches_query tests ----------------------------------------------
