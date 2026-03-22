@@ -4,7 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/skillfile?style=flat-square)](https://crates.io/crates/skillfile)
 [![MSRV](https://img.shields.io/badge/MSRV-1.82-blue?style=flat-square)](https://github.com/eljulians/skillfile)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
-[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey?style=flat-square)]()
+[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square)]()
 
 **Track AI skills and agents declaratively, like dependencies. Pin them. Patch them. Deploy everywhere.**
 
@@ -24,13 +24,18 @@ skillfile fixes all of that. One manifest, one lock file, every platform.
 
 ## Install
 
-Download a pre-built binary from [GitHub Releases](https://github.com/eljulians/skillfile/releases/latest). Single binary, 3.5 MB, no runtime dependencies.
-
-Or via cargo:
-
+```bash
+curl -fsSL https://github.com/eljulians/skillfile/releases/latest/download/install.sh | sh
 ```
-cargo install skillfile
+
+Or pick your preferred method:
+
+```bash
+cargo binstall skillfile            # pre-built binary via cargo-binstall (seconds)
+cargo install skillfile             # build from source via cargo
 ```
+
+Pre-built binaries for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows (x86_64) are available on [GitHub Releases](https://github.com/eljulians/skillfile/releases/latest). Single binary, ~3.5 MB, no runtime dependencies.
 
 > **GitHub token recommended.** skillfile uses the GitHub API to resolve commits. Without a token you're limited to 60 req/hour. Set `GITHUB_TOKEN`, `GH_TOKEN`, or run `gh auth login`.
 
@@ -190,6 +195,24 @@ Names are inferred from filenames when omitted. Full format specification in [SP
 | `MERGETOOL` | Merge tool for `skillfile resolve` |
 | `EDITOR` | Fallback editor for `skillfile resolve` |
 | `SKILLFILE_QUIET` | Suppress progress output (same as `--quiet`) |
+
+## Shell completions
+
+Generate completions for your shell, then source or install them:
+
+```bash
+# Bash
+skillfile completions bash > ~/.local/share/bash-completion/completions/skillfile
+
+# Zsh
+skillfile completions zsh > ~/.zfunc/_skillfile
+# (add `fpath+=~/.zfunc` to .zshrc before compinit)
+
+# Fish
+skillfile completions fish > ~/.config/fish/completions/skillfile.fish
+```
+
+Tab completion covers all commands, flags, and entry names (for `remove`, `pin`, `unpin`, `diff`, `resolve`).
 
 ## Security
 
