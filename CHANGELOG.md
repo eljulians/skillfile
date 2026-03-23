@@ -4,7 +4,7 @@ All notable changes to skillfile are documented here.
 
 ---
 
-## Unreleased
+## v1.4.0 - 23-03-2026
 
 ### Added
 
