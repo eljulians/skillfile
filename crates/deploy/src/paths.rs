@@ -295,7 +295,12 @@ mod tests {
 
     #[test]
     fn known_adapters_includes_claude_code() {
-        let names = super::super::adapter::known_adapters();
-        assert!(names.contains(&"claude-code"));
+        // resolve_target_dir only succeeds for known adapters; a successful
+        // call is sufficient proof that "claude-code" is registered.
+        let ctx = AdapterScope {
+            scope: Scope::Global,
+            repo_root: Path::new("/tmp"),
+        };
+        assert!(resolve_target_dir("claude-code", EntityType::Skill, &ctx).is_ok());
     }
 }

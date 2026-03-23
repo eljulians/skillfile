@@ -1483,6 +1483,7 @@ name = "skillfile-deploy"
 version = "1.3.0"
 dependencies = [
  "dirs",
+ "serde_json",
  "skillfile-core",
  "skillfile-sources",
  "tempfile",

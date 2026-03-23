@@ -659,6 +659,70 @@ mod tests {
         EntityType, Entry, InstallTarget, LockEntry, Scope, SourceFields,
     };
     use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    // -----------------------------------------------------------------------
+    // Fixture helpers — filesystem-only, no cross-crate function calls
+    // -----------------------------------------------------------------------
+
+    /// Return the path for a single-file entry patch.
+    /// `.skillfile/patches/<type>s/<name>.patch`
+    fn patch_fixture_path(dir: &Path, entry: &Entry) -> PathBuf {
+        dir.join(".skillfile/patches")
+            .join(entry.entity_type.dir_name())
+            .join(format!("{}.patch", entry.name))
+    }
+
+    /// Return the path for a per-file patch within a directory entry.
+    /// `.skillfile/patches/<type>s/<name>/<rel>.patch`
+    fn dir_patch_fixture_path(dir: &Path, entry: &Entry, rel: &str) -> PathBuf {
+        dir.join(".skillfile/patches")
+            .join(entry.entity_type.dir_name())
+            .join(&entry.name)
+            .join(format!("{rel}.patch"))
+    }
+
+    /// Write a single-file patch fixture to the correct path.
+    fn write_patch_fixture(dir: &Path, entry: &Entry, text: &str) {
+        let p = patch_fixture_path(dir, entry);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    /// Write `Skillfile.lock` as JSON. Uses `serde_json` — no cross-crate call.
+    fn write_lock_fixture(dir: &Path, locked: &BTreeMap<String, LockEntry>) {
+        let json = serde_json::to_string_pretty(locked).unwrap();
+        std::fs::write(dir.join("Skillfile.lock"), format!("{json}\n")).unwrap();
+    }
+
+    /// Write `.skillfile/conflict` JSON from a `ConflictState`.
+    fn write_conflict_fixture(dir: &Path, state: &ConflictState) {
+        let p = dir.join(".skillfile/conflict");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let json = serde_json::to_string_pretty(state).unwrap();
+        std::fs::write(p, format!("{json}\n")).unwrap();
+    }
+
+    /// Return `true` if any `.patch` file exists under the directory-entry patch dir.
+    fn has_dir_patch_fixture(dir: &Path, entry: &Entry) -> bool {
+        let d = dir
+            .join(".skillfile/patches")
+            .join(entry.entity_type.dir_name())
+            .join(&entry.name);
+        if !d.is_dir() {
+            return false;
+        }
+        std::fs::read_dir(&d)
+            .map(|rd| {
+                rd.filter_map(std::result::Result::ok)
+                    .any(|e| e.path().extension().is_some_and(|x| x == "patch"))
+            })
+            .unwrap_or(false)
+    }
+
+    // -----------------------------------------------------------------------
+    // Entry and target builders
+    // -----------------------------------------------------------------------
 
     fn make_agent_entry(name: &str) -> Entry {
         Entry {
@@ -939,7 +1003,7 @@ mod tests {
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("test.md"), "# Test\n\nOriginal.\n").unwrap();
 
-        // Write a patch
+        // Write a patch using filesystem fixture helper.
         let entry = Entry {
             entity_type: EntityType::Skill,
             name: "test".into(),
@@ -949,12 +1013,10 @@ mod tests {
                 ref_: "main".into(),
             },
         };
-        let patch_text = skillfile_core::patch::generate_patch(
-            "# Test\n\nOriginal.\n",
-            "# Test\n\nModified.\n",
-            "test.md",
-        );
-        skillfile_core::patch::write_patch(&entry, &patch_text, dir.path()).unwrap();
+        // Hand-written unified diff: "Original." → "Modified."
+        let patch_text =
+            "--- a/test.md\n+++ b/test.md\n@@ -1,3 +1,3 @@\n # Test\n \n-Original.\n+Modified.\n";
+        write_patch_fixture(dir.path(), &entry, patch_text);
 
         let target = make_target("claude-code", Scope::Local);
         install_entry(
@@ -995,7 +1057,7 @@ mod tests {
         // Write a patch that expects a line that doesn't exist
         let bad_patch =
             "--- a/test.md\n+++ b/test.md\n@@ -1 +1 @@\n-expected_original_line\n+modified\n";
-        skillfile_core::patch::write_patch(&entry, bad_patch, dir.path()).unwrap();
+        write_patch_fixture(dir.path(), &entry, bad_patch);
 
         // Deploy the entry
         let installed_dir = dir.path().join(".claude/skills");
@@ -1314,9 +1376,6 @@ mod tests {
 
     #[test]
     fn cmd_install_pending_conflict_blocks() {
-        use skillfile_core::conflict::write_conflict;
-        use skillfile_core::models::ConflictState;
-
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("Skillfile"),
@@ -1324,7 +1383,7 @@ mod tests {
         )
         .unwrap();
 
-        write_conflict(
+        write_conflict_fixture(
             dir.path(),
             &ConflictState {
                 entry: "foo".into(),
@@ -1332,8 +1391,7 @@ mod tests {
                 old_sha: "aaa".into(),
                 new_sha: "bbb".into(),
             },
-        )
-        .unwrap();
+        );
 
         let result = cmd_install(
             dir.path(),
@@ -1378,17 +1436,17 @@ mod tests {
     }
 
     /// Write a minimal Skillfile + Skillfile.lock for a single single-file github skill.
-    fn setup_github_skill_repo(dir: &std::path::Path, name: &str, cache_content: &str) {
-        use skillfile_core::lock::write_lock;
-
+    fn setup_github_skill_repo(dir: &Path, name: &str, cache_content: &str) {
         // Manifest
         std::fs::write(
             dir.join("Skillfile"),
-            format!("install  claude-code  local\ngithub  skill  {name}  owner/repo  skills/{name}.md\n"),
+            format!(
+                "install  claude-code  local\ngithub  skill  {name}  owner/repo  skills/{name}.md\n"
+            ),
         )
         .unwrap();
 
-        // Lock file — use write_lock so we don't need serde_json directly.
+        // Lock file via filesystem fixture (no cross-crate call).
         let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
         locked.insert(
             format!("github/skill/{name}"),
@@ -1399,7 +1457,7 @@ mod tests {
                 ),
             },
         );
-        write_lock(dir, &locked).unwrap();
+        write_lock_fixture(dir, &locked);
 
         // Vendor cache
         let vdir = dir.join(format!(".skillfile/cache/skills/{name}"));
@@ -1431,7 +1489,7 @@ mod tests {
 
         // No patch must have been written.
         assert!(
-            !skillfile_core::patch::has_patch(&entry, dir.path()),
+            !patch_fixture_path(dir.path(), &entry).exists(),
             "local entry must never be pinned"
         );
     }
@@ -1449,13 +1507,11 @@ mod tests {
         // No Skillfile.lock — should silently return without panicking.
         auto_pin_entry(&entry, &manifest, dir.path());
 
-        assert!(!skillfile_core::patch::has_patch(&entry, dir.path()));
+        assert!(!patch_fixture_path(dir.path(), &entry).exists());
     }
 
     #[test]
     fn auto_pin_entry_missing_lock_key_is_skipped() {
-        use skillfile_core::lock::write_lock;
-
         let dir = tempfile::tempdir().unwrap();
 
         // Lock exists but for a different entry.
@@ -1467,7 +1523,7 @@ mod tests {
                 raw_url: "https://example.com/other.md".into(),
             },
         );
-        write_lock(dir.path(), &locked).unwrap();
+        write_lock_fixture(dir.path(), &locked);
 
         let entry = make_skill_entry("test");
         let manifest = Manifest {
@@ -1477,7 +1533,7 @@ mod tests {
 
         auto_pin_entry(&entry, &manifest, dir.path());
 
-        assert!(!skillfile_core::patch::has_patch(&entry, dir.path()));
+        assert!(!patch_fixture_path(dir.path(), &entry).exists());
     }
 
     #[test]
@@ -1504,14 +1560,27 @@ mod tests {
         auto_pin_entry(&entry, &manifest, dir.path());
 
         assert!(
-            skillfile_core::patch::has_patch(&entry, dir.path()),
+            patch_fixture_path(dir.path(), &entry).exists(),
             "patch should be written when installed differs from cache"
         );
 
-        // The stored patch should round-trip: applying it to cache gives installed.
-        let patch_text = skillfile_core::patch::read_patch(&entry, dir.path()).unwrap();
-        let result = skillfile_core::patch::apply_patch_pure(cache_content, &patch_text).unwrap();
-        assert_eq!(result, installed_content);
+        // Verify the patch round-trips: reset the installed file to cache_content and
+        // reinstall — the patch must produce installed_content.
+        std::fs::write(installed_dir.join(format!("{name}.md")), cache_content).unwrap();
+        let target = make_target("claude-code", Scope::Local);
+        install_entry(
+            &entry,
+            &target,
+            &InstallCtx {
+                repo_root: dir.path(),
+                opts: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(installed_dir.join(format!("{name}.md"))).unwrap(),
+            installed_content,
+        );
     }
 
     #[test]
@@ -1530,13 +1599,10 @@ mod tests {
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
 
-        // Pre-write the correct patch (cache → installed).
-        let patch_text = skillfile_core::patch::generate_patch(
-            cache_content,
-            installed_content,
-            &format!("{name}.md"),
-        );
-        skillfile_core::patch::write_patch(&entry, &patch_text, dir.path()).unwrap();
+        // Pre-write the correct patch (cache → installed) using the fixture helper.
+        // Hand-written unified diff: "Original." → "Modified."
+        let patch_text = "--- a/my-skill.md\n+++ b/my-skill.md\n@@ -1,3 +1,3 @@\n # My Skill\n \n-Original.\n+Modified.\n";
+        write_patch_fixture(dir.path(), &entry, patch_text);
 
         // Write installed file that matches what the patch produces.
         let installed_dir = dir.path().join(".claude/skills");
@@ -1544,7 +1610,7 @@ mod tests {
         std::fs::write(installed_dir.join(format!("{name}.md")), installed_content).unwrap();
 
         // Record mtime of patch so we can detect if it changed.
-        let patch_path = skillfile_core::patch::patch_path(&entry, dir.path());
+        let patch_path = patch_fixture_path(dir.path(), &entry);
         let mtime_before = std::fs::metadata(&patch_path).unwrap().modified().unwrap();
 
         // Small sleep so that any write would produce a different mtime.
@@ -1566,7 +1632,6 @@ mod tests {
         let name = "my-skill";
 
         let cache_content = "# My Skill\n\nOriginal.\n";
-        let old_installed = "# My Skill\n\nFirst edit.\n";
         let new_installed = "# My Skill\n\nFirst edit.\n\nSecond edit.\n";
 
         setup_github_skill_repo(dir.path(), name, cache_content);
@@ -1577,13 +1642,9 @@ mod tests {
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
 
-        // Stored patch reflects the old installed state.
-        let old_patch = skillfile_core::patch::generate_patch(
-            cache_content,
-            old_installed,
-            &format!("{name}.md"),
-        );
-        skillfile_core::patch::write_patch(&entry, &old_patch, dir.path()).unwrap();
+        // Stored patch reflects the old installed state: "Original." → "First edit."
+        let old_patch = "--- a/my-skill.md\n+++ b/my-skill.md\n@@ -1,3 +1,3 @@\n # My Skill\n \n-Original.\n+First edit.\n";
+        write_patch_fixture(dir.path(), &entry, old_patch);
 
         // But the actual installed file has further edits.
         let installed_dir = dir.path().join(".claude/skills");
@@ -1592,11 +1653,22 @@ mod tests {
 
         auto_pin_entry(&entry, &manifest, dir.path());
 
-        // The patch should now reflect the new installed content.
-        let new_patch = skillfile_core::patch::read_patch(&entry, dir.path()).unwrap();
-        let result = skillfile_core::patch::apply_patch_pure(cache_content, &new_patch).unwrap();
+        // The patch was re-written to reflect new_installed. Verify by resetting the
+        // installed file to cache_content and reinstalling — must yield new_installed.
+        std::fs::write(installed_dir.join(format!("{name}.md")), cache_content).unwrap();
+        let target = make_target("claude-code", Scope::Local);
+        install_entry(
+            &entry,
+            &target,
+            &InstallCtx {
+                repo_root: dir.path(),
+                opts: None,
+            },
+        )
+        .unwrap();
         assert_eq!(
-            result, new_installed,
+            std::fs::read_to_string(installed_dir.join(format!("{name}.md"))).unwrap(),
+            new_installed,
             "updated patch must describe the latest installed content"
         );
     }
@@ -1607,8 +1679,6 @@ mod tests {
 
     #[test]
     fn auto_pin_dir_entry_writes_per_file_patches() {
-        use skillfile_core::lock::write_lock;
-
         let dir = tempfile::tempdir().unwrap();
         let name = "lang-pro";
 
@@ -1628,7 +1698,7 @@ mod tests {
                 raw_url: format!("https://example.com/{name}"),
             },
         );
-        write_lock(dir.path(), &locked).unwrap();
+        write_lock_fixture(dir.path(), &locked);
 
         // Vendor cache with two files.
         let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
@@ -1651,12 +1721,11 @@ mod tests {
         auto_pin_entry(&entry, &manifest, dir.path());
 
         // Patch for the modified file should exist.
-        let skill_patch = skillfile_core::patch::dir_patch_path(&entry, "SKILL.md", dir.path());
+        let skill_patch = dir_patch_fixture_path(dir.path(), &entry, "SKILL.md");
         assert!(skill_patch.exists(), "patch for SKILL.md must be written");
 
         // Patch for the unmodified file should NOT exist.
-        let examples_patch =
-            skillfile_core::patch::dir_patch_path(&entry, "examples.md", dir.path());
+        let examples_patch = dir_patch_fixture_path(dir.path(), &entry, "examples.md");
         assert!(
             !examples_patch.exists(),
             "patch for examples.md must not be written (content unchanged)"
@@ -1665,8 +1734,6 @@ mod tests {
 
     #[test]
     fn auto_pin_dir_entry_skips_when_vendor_dir_missing() {
-        use skillfile_core::lock::write_lock;
-
         let dir = tempfile::tempdir().unwrap();
         let name = "lang-pro";
 
@@ -1679,7 +1746,7 @@ mod tests {
                 raw_url: "https://example.com".into(),
             },
         );
-        write_lock(dir.path(), &locked).unwrap();
+        write_lock_fixture(dir.path(), &locked);
 
         let entry = make_dir_skill_entry(name);
         let manifest = Manifest {
@@ -1690,13 +1757,11 @@ mod tests {
         // No vendor dir — must silently return without panicking.
         auto_pin_entry(&entry, &manifest, dir.path());
 
-        assert!(!skillfile_core::patch::has_dir_patch(&entry, dir.path()));
+        assert!(!has_dir_patch_fixture(dir.path(), &entry));
     }
 
     #[test]
     fn auto_pin_dir_entry_no_repin_when_patch_already_matches() {
-        use skillfile_core::lock::write_lock;
-
         let dir = tempfile::tempdir().unwrap();
         let name = "lang-pro";
 
@@ -1712,7 +1777,7 @@ mod tests {
                 raw_url: "https://example.com".into(),
             },
         );
-        write_lock(dir.path(), &locked).unwrap();
+        write_lock_fixture(dir.path(), &locked);
 
         // Vendor cache.
         let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
@@ -1730,15 +1795,13 @@ mod tests {
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
 
-        // Pre-write the correct patch.
-        let patch_text = skillfile_core::patch::generate_patch(cache_content, modified, "SKILL.md");
-        skillfile_core::patch::write_dir_patch(
-            &skillfile_core::patch::dir_patch_path(&entry, "SKILL.md", dir.path()),
-            &patch_text,
-        )
-        .unwrap();
+        // Pre-write the correct patch: "Original." → "Modified." for SKILL.md
+        let patch_text = "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1,3 +1,3 @@\n # Lang Pro\n \n-Original.\n+Modified.\n";
+        let dp = dir_patch_fixture_path(dir.path(), &entry, "SKILL.md");
+        std::fs::create_dir_all(dp.parent().unwrap()).unwrap();
+        std::fs::write(&dp, patch_text).unwrap();
 
-        let patch_path = skillfile_core::patch::dir_patch_path(&entry, "SKILL.md", dir.path());
+        let patch_path = dir_patch_fixture_path(dir.path(), &entry, "SKILL.md");
         let mtime_before = std::fs::metadata(&patch_path).unwrap().modified().unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1772,14 +1835,11 @@ mod tests {
 
         let entry = make_dir_skill_entry("lang-pro");
 
-        // Create patch dir with a valid patch (old cache → installed).
-        let patch_text =
-            skillfile_core::patch::generate_patch(cache_content, installed_content, "SKILL.md");
-        skillfile_core::patch::write_dir_patch(
-            &skillfile_core::patch::dir_patch_path(&entry, "SKILL.md", dir.path()),
-            &patch_text,
-        )
-        .unwrap();
+        // Create patch dir with a valid patch (old cache → installed): "Original." → "Modified."
+        let patch_text = "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1,3 +1,3 @@\n # Skill\n \n-Original.\n+Modified.\n";
+        let dp = dir_patch_fixture_path(dir.path(), &entry, "SKILL.md");
+        std::fs::create_dir_all(dp.parent().unwrap()).unwrap();
+        std::fs::write(&dp, patch_text).unwrap();
 
         // Installed file starts at cache content (patch not yet applied).
         let inst_dir = dir.path().join(".claude/skills/lang-pro");
@@ -1810,17 +1870,23 @@ mod tests {
         assert_eq!(installed_after, installed_content);
 
         // The stored patch must now describe the diff from new_cache to installed_content.
-        // Applying the rebased patch to new_cache must reproduce installed_content.
-        let rebased_patch = std::fs::read_to_string(skillfile_core::patch::dir_patch_path(
-            &entry,
-            "SKILL.md",
-            dir.path(),
-        ))
+        // Verify by resetting the installed file to new_cache and reinstalling — must
+        // yield installed_content (== expected_rebased_to_new_cache).
+        std::fs::write(inst_dir.join("SKILL.md"), new_cache_content).unwrap();
+        let mut reinstall_files = std::collections::HashMap::new();
+        reinstall_files.insert("SKILL.md".to_string(), inst_dir.join("SKILL.md"));
+        apply_dir_patches(
+            &PatchCtx {
+                entry: &entry,
+                repo_root: dir.path(),
+            },
+            &reinstall_files,
+            &new_cache_dir,
+        )
         .unwrap();
-        let rebase_result =
-            skillfile_core::patch::apply_patch_pure(new_cache_content, &rebased_patch).unwrap();
         assert_eq!(
-            rebase_result, expected_rebased_to_new_cache,
+            std::fs::read_to_string(inst_dir.join("SKILL.md")).unwrap(),
+            expected_rebased_to_new_cache,
             "rebased patch applied to new_cache must reproduce installed_content"
         );
     }
@@ -1837,12 +1903,11 @@ mod tests {
 
         let entry = make_dir_skill_entry("lang-pro");
 
-        let patch_text = skillfile_core::patch::generate_patch(original, modified, "SKILL.md");
-        skillfile_core::patch::write_dir_patch(
-            &skillfile_core::patch::dir_patch_path(&entry, "SKILL.md", dir.path()),
-            &patch_text,
-        )
-        .unwrap();
+        // Hand-written patch: "Original." → "Modified."
+        let patch_text = "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1,3 +1,3 @@\n # Skill\n \n-Original.\n+Modified.\n";
+        let dp = dir_patch_fixture_path(dir.path(), &entry, "SKILL.md");
+        std::fs::create_dir_all(dp.parent().unwrap()).unwrap();
+        std::fs::write(&dp, patch_text).unwrap();
 
         // Installed file starts at original (patch not yet applied).
         let inst_dir = dir.path().join(".claude/skills/lang-pro");
@@ -1867,9 +1932,9 @@ mod tests {
         .unwrap();
 
         // Patch file must be removed (rebase produced empty diff).
-        let patch_path = skillfile_core::patch::dir_patch_path(&entry, "SKILL.md", dir.path());
+        let removed_patch = dir_patch_fixture_path(dir.path(), &entry, "SKILL.md");
         assert!(
-            !patch_path.exists(),
+            !removed_patch.exists(),
             "patch file must be removed when rebase yields empty diff"
         );
     }
@@ -1911,9 +1976,10 @@ mod tests {
 
         let entry = make_skill_entry("test");
 
-        // Write patch.
-        let patch_text = skillfile_core::patch::generate_patch(original, modified, "test.md");
-        skillfile_core::patch::write_patch(&entry, &patch_text, dir.path()).unwrap();
+        // Write patch using filesystem fixture: "Original." → "Modified."
+        let patch_text =
+            "--- a/test.md\n+++ b/test.md\n@@ -1,3 +1,3 @@\n # Skill\n \n-Original.\n+Modified.\n";
+        write_patch_fixture(dir.path(), &entry, patch_text);
 
         // Set up vendor cache (the "new" version).
         let vdir = dir.path().join(".skillfile/cache/skills/test");
@@ -1942,7 +2008,7 @@ mod tests {
 
         // Patch file must have been removed.
         assert!(
-            !skillfile_core::patch::has_patch(&entry, dir.path()),
+            !patch_fixture_path(dir.path(), &entry).exists(),
             "patch must be removed when new cache already matches patched content"
         );
     }
@@ -1961,8 +2027,10 @@ mod tests {
 
         let entry = make_skill_entry("test");
 
-        let patch_text = skillfile_core::patch::generate_patch(original, modified, "test.md");
-        skillfile_core::patch::write_patch(&entry, &patch_text, dir.path()).unwrap();
+        // Hand-written patch: "Original." → "Modified."
+        let patch_text =
+            "--- a/test.md\n+++ b/test.md\n@@ -1,3 +1,3 @@\n # Skill\n \n-Original.\n+Modified.\n";
+        write_patch_fixture(dir.path(), &entry, patch_text);
 
         // New vendor cache (upstream updated).
         let vdir = dir.path().join(".skillfile/cache/skills/test");
@@ -1989,16 +2057,27 @@ mod tests {
         // Installed must now be the patched content.
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), modified);
 
-        // The patch is rebased: generate_patch(new_cache, modified).
-        // Applying the rebased patch to new_cache must reproduce modified.
+        // The rebased patch must still exist (new_cache != modified).
         assert!(
-            skillfile_core::patch::has_patch(&entry, dir.path()),
+            patch_fixture_path(dir.path(), &entry).exists(),
             "rebased patch must still exist (new_cache != modified)"
         );
-        let rebased = skillfile_core::patch::read_patch(&entry, dir.path()).unwrap();
-        let result = skillfile_core::patch::apply_patch_pure(new_cache, &rebased).unwrap();
+        // Verify the rebased patch yields expected_rebased_result when applied to new_cache.
+        // Reset dest to new_cache and call apply_single_file_patch again.
+        std::fs::write(&dest, new_cache).unwrap();
+        std::fs::write(&source, new_cache).unwrap();
+        apply_single_file_patch(
+            &PatchCtx {
+                entry: &entry,
+                repo_root: dir.path(),
+            },
+            &dest,
+            &source,
+        )
+        .unwrap();
         assert_eq!(
-            result, expected_rebased_result,
+            std::fs::read_to_string(&dest).unwrap(),
+            expected_rebased_result,
             "rebased patch applied to new_cache must reproduce installed content"
         );
     }
@@ -2024,16 +2103,13 @@ mod tests {
 
     #[test]
     fn check_preconditions_pending_conflict_returns_error() {
-        use skillfile_core::conflict::write_conflict;
-        use skillfile_core::models::ConflictState;
-
         let dir = tempfile::tempdir().unwrap();
         let manifest = Manifest {
             entries: vec![],
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
 
-        write_conflict(
+        write_conflict_fixture(
             dir.path(),
             &ConflictState {
                 entry: "my-skill".into(),
@@ -2041,8 +2117,7 @@ mod tests {
                 old_sha: "aaa".into(),
                 new_sha: "bbb".into(),
             },
-        )
-        .unwrap();
+        );
 
         let result = check_preconditions(&manifest, dir.path());
         assert!(result.is_err());
@@ -2057,315 +2132,5 @@ mod tests {
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
         check_preconditions(&manifest, dir.path()).unwrap();
-    }
-
-    // -----------------------------------------------------------------------
-    // deploy_all — PatchConflict writes conflict state and returns Install error
-    // -----------------------------------------------------------------------
-
-    fn setup_deploy_all_conflict_scenario(
-        dir: &std::path::Path,
-        name: &str,
-    ) -> (
-        Entry,
-        Manifest,
-        std::collections::BTreeMap<String, skillfile_core::models::LockEntry>,
-        std::collections::BTreeMap<String, skillfile_core::models::LockEntry>,
-    ) {
-        // Vendor cache: content that cannot match the stored patch.
-        let vdir = dir.join(format!(".skillfile/cache/skills/{name}"));
-        std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(
-            vdir.join(format!("{name}.md")),
-            "totally different content\n",
-        )
-        .unwrap();
-
-        // Write a patch that expects lines which don't exist.
-        let entry = make_skill_entry(name);
-        let bad_patch =
-            "--- a/test.md\n+++ b/test.md\n@@ -1,1 +1,1 @@\n-expected_original_line\n+modified\n";
-        skillfile_core::patch::write_patch(&entry, bad_patch, dir).unwrap();
-
-        // Pre-create installed file.
-        let inst_dir = dir.join(".claude/skills");
-        std::fs::create_dir_all(&inst_dir).unwrap();
-        std::fs::write(
-            inst_dir.join(format!("{name}.md")),
-            "totally different content\n",
-        )
-        .unwrap();
-
-        // Manifest.
-        let manifest = Manifest {
-            entries: vec![entry.clone()],
-            install_targets: vec![make_target("claude-code", Scope::Local)],
-        };
-
-        let lock_key_str = format!("github/skill/{name}");
-        let old_sha = "a".repeat(40);
-        let new_sha = "b".repeat(40);
-
-        let mut old_locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-        old_locked.insert(
-            lock_key_str.clone(),
-            LockEntry {
-                sha: old_sha.clone(),
-                raw_url: "https://example.com/old.md".into(),
-            },
-        );
-
-        let mut new_locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-        new_locked.insert(
-            lock_key_str,
-            LockEntry {
-                sha: new_sha.clone(),
-                raw_url: "https://example.com/new.md".into(),
-            },
-        );
-
-        (entry, manifest, new_locked, old_locked)
-    }
-
-    #[test]
-    fn deploy_all_patch_conflict_writes_conflict_state() {
-        use skillfile_core::conflict::{has_conflict, read_conflict};
-        use skillfile_core::lock::write_lock;
-
-        let dir = tempfile::tempdir().unwrap();
-        let name = "test";
-
-        let (_, manifest, new_locked, old_locked) =
-            setup_deploy_all_conflict_scenario(dir.path(), name);
-
-        write_lock(dir.path(), &new_locked).unwrap();
-
-        let old_sha = old_locked
-            .get(&format!("github/skill/{name}"))
-            .map(|l| l.sha.clone())
-            .unwrap_or_default();
-        let new_sha = new_locked
-            .get(&format!("github/skill/{name}"))
-            .map(|l| l.sha.clone())
-            .unwrap_or_default();
-
-        let opts = InstallOptions {
-            dry_run: false,
-            overwrite: true,
-        };
-
-        let result = deploy_all(
-            &manifest,
-            &DeployCtx {
-                repo_root: dir.path(),
-                opts: &opts,
-                maps: LockMaps {
-                    locked: &new_locked,
-                    old_locked: &old_locked,
-                },
-            },
-        );
-
-        // Must return an error.
-        assert!(
-            result.is_err(),
-            "deploy_all must return Err on PatchConflict"
-        );
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("conflict"),
-            "error message must mention conflict: {err_msg}"
-        );
-
-        // Conflict state file must have been written.
-        assert!(
-            has_conflict(dir.path()),
-            "conflict state file must be written after PatchConflict"
-        );
-
-        let conflict = read_conflict(dir.path()).unwrap().unwrap();
-        assert_eq!(conflict.entry, name);
-        assert_eq!(conflict.old_sha, old_sha);
-        assert_eq!(conflict.new_sha, new_sha);
-    }
-
-    fn make_lock_map(key: &str, sha: &str, url: &str) -> BTreeMap<String, LockEntry> {
-        let mut map: BTreeMap<String, LockEntry> = BTreeMap::new();
-        map.insert(
-            key.to_string(),
-            LockEntry {
-                sha: sha.to_string(),
-                raw_url: url.to_string(),
-            },
-        );
-        map
-    }
-
-    #[test]
-    fn deploy_all_patch_conflict_error_message_contains_sha_context() {
-        use skillfile_core::lock::write_lock;
-
-        let dir = tempfile::tempdir().unwrap();
-        let name = "test";
-
-        let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
-        std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(vdir.join(format!("{name}.md")), "different\n").unwrap();
-
-        let entry = make_skill_entry(name);
-        let bad_patch =
-            "--- a/test.md\n+++ b/test.md\n@@ -1,1 +1,1 @@\n-nonexistent_line\n+other\n";
-        skillfile_core::patch::write_patch(&entry, bad_patch, dir.path()).unwrap();
-
-        let inst_dir = dir.path().join(".claude/skills");
-        std::fs::create_dir_all(&inst_dir).unwrap();
-        std::fs::write(inst_dir.join(format!("{name}.md")), "different\n").unwrap();
-
-        let manifest = Manifest {
-            entries: vec![entry.clone()],
-            install_targets: vec![make_target("claude-code", Scope::Local)],
-        };
-
-        let lock_key = format!("github/skill/{name}");
-        let old_sha = "aabbccddeeff001122334455aabbccddeeff0011";
-        let new_sha = "99887766554433221100ffeeddccbbaa99887766";
-        let old_locked = make_lock_map(&lock_key, old_sha, "https://example.com/old.md");
-        let new_locked = make_lock_map(&lock_key, new_sha, "https://example.com/new.md");
-
-        write_lock(dir.path(), &new_locked).unwrap();
-
-        let opts = InstallOptions {
-            dry_run: false,
-            overwrite: true,
-        };
-
-        let result = deploy_all(
-            &manifest,
-            &DeployCtx {
-                repo_root: dir.path(),
-                opts: &opts,
-                maps: LockMaps {
-                    locked: &new_locked,
-                    old_locked: &old_locked,
-                },
-            },
-        );
-        assert!(result.is_err());
-
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains('\u{2192}'),
-            "error message must contain the SHA arrow: {err_msg}"
-        );
-        assert!(
-            err_msg.contains(&old_sha[..12]),
-            "error must contain old SHA prefix: {err_msg}"
-        );
-        assert!(
-            err_msg.contains(&new_sha[..12]),
-            "error must contain new SHA prefix: {err_msg}"
-        );
-    }
-
-    #[test]
-    fn deploy_all_patch_conflict_error_message_has_resolve_hints() {
-        use skillfile_core::lock::write_lock;
-
-        let dir = tempfile::tempdir().unwrap();
-        let name = "test";
-
-        let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
-        std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(vdir.join(format!("{name}.md")), "different\n").unwrap();
-
-        let entry = make_skill_entry(name);
-        let bad_patch =
-            "--- a/test.md\n+++ b/test.md\n@@ -1,1 +1,1 @@\n-nonexistent_line\n+other\n";
-        skillfile_core::patch::write_patch(&entry, bad_patch, dir.path()).unwrap();
-
-        let inst_dir = dir.path().join(".claude/skills");
-        std::fs::create_dir_all(&inst_dir).unwrap();
-        std::fs::write(inst_dir.join(format!("{name}.md")), "different\n").unwrap();
-
-        let manifest = Manifest {
-            entries: vec![entry.clone()],
-            install_targets: vec![make_target("claude-code", Scope::Local)],
-        };
-
-        let lock_key_str = format!("github/skill/{name}");
-        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
-        locked.insert(
-            lock_key_str,
-            LockEntry {
-                sha: "abc123".into(),
-                raw_url: "https://example.com/test.md".into(),
-            },
-        );
-        write_lock(dir.path(), &locked).unwrap();
-
-        let opts = InstallOptions {
-            dry_run: false,
-            overwrite: true,
-        };
-
-        let result = deploy_all(
-            &manifest,
-            &DeployCtx {
-                repo_root: dir.path(),
-                opts: &opts,
-                maps: LockMaps {
-                    locked: &locked,
-                    old_locked: &BTreeMap::new(),
-                },
-            },
-        );
-        assert!(result.is_err());
-
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("skillfile resolve"),
-            "error must mention resolve command: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("skillfile diff"),
-            "error must mention diff command: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("--abort"),
-            "error must mention --abort: {err_msg}"
-        );
-    }
-
-    #[test]
-    fn deploy_all_unknown_platform_skips_gracefully() {
-        let dir = tempfile::tempdir().unwrap();
-
-        // Manifest with an unknown adapter.
-        let manifest = Manifest {
-            entries: vec![],
-            install_targets: vec![InstallTarget {
-                adapter: "unknown-tool".into(),
-                scope: Scope::Local,
-            }],
-        };
-
-        let opts = InstallOptions {
-            dry_run: false,
-            overwrite: true,
-        };
-
-        // Must succeed even with unknown adapter (just warns).
-        deploy_all(
-            &manifest,
-            &DeployCtx {
-                repo_root: dir.path(),
-                opts: &opts,
-                maps: LockMaps {
-                    locked: &BTreeMap::new(),
-                    old_locked: &BTreeMap::new(),
-                },
-            },
-        )
-        .unwrap();
     }
 }

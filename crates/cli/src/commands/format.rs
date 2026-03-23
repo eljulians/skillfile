@@ -196,22 +196,44 @@ pub fn cmd_format(repo_root: &Path, dry_run: bool) -> Result<(), SkillfileError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skillfile_core::models::{InstallTarget, Scope, SourceFields};
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
     }
 
-    fn parse_and_sort(dir: &Path, content: &str) -> String {
-        write_manifest(dir, content);
-        let result = parse_manifest(&dir.join(MANIFEST_NAME)).unwrap();
-        sorted_manifest_text(&result.manifest, content)
+    fn gh(entity_type: EntityType, owner_repo: &str, path: &str) -> Entry {
+        let name = path
+            .rsplit('/')
+            .next()
+            .unwrap_or(path)
+            .trim_end_matches(".md");
+        Entry {
+            entity_type,
+            name: name.to_string(),
+            source: SourceFields::Github {
+                owner_repo: owner_repo.into(),
+                path_in_repo: path.into(),
+                ref_: "main".into(),
+            },
+        }
+    }
+
+    fn itarget(adapter: &str, scope: Scope) -> InstallTarget {
+        InstallTarget {
+            adapter: adapter.into(),
+            scope,
+        }
     }
 
     #[test]
     fn install_comment_generated() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(
-            dir.path(),
+        let manifest = Manifest {
+            entries: vec![gh(EntityType::Skill, "a/repo", "a.md")],
+            install_targets: vec![itarget("claude-code", Scope::Global)],
+        };
+        let text = sorted_manifest_text(
+            &manifest,
             "install  claude-code  global\ngithub  skill  a/repo  a.md\n",
         );
         assert!(text.contains("# install  <platform>  <scope>"));
@@ -222,23 +244,35 @@ mod tests {
 
     #[test]
     fn agents_section_header_generated() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(dir.path(), "github  agent  owner/repo  agent.md\n");
+        let manifest = Manifest {
+            entries: vec![gh(EntityType::Agent, "owner/repo", "agent.md")],
+            ..Manifest::default()
+        };
+        let text = sorted_manifest_text(&manifest, "github  agent  owner/repo  agent.md\n");
         assert!(text.contains("# --- Agents ---"));
     }
 
     #[test]
     fn skills_section_header_generated() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(dir.path(), "github  skill  owner/repo  skill.md\n");
+        let manifest = Manifest {
+            entries: vec![gh(EntityType::Skill, "owner/repo", "skill.md")],
+            ..Manifest::default()
+        };
+        let text = sorted_manifest_text(&manifest, "github  skill  owner/repo  skill.md\n");
         assert!(text.contains("# --- Skills ---"));
     }
 
     #[test]
     fn section_format_hint_generated() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(
-            dir.path(),
+        let manifest = Manifest {
+            entries: vec![
+                gh(EntityType::Agent, "owner/repo", "agent.md"),
+                gh(EntityType::Skill, "owner/repo", "skill.md"),
+            ],
+            ..Manifest::default()
+        };
+        let text = sorted_manifest_text(
+            &manifest,
             "github  agent  owner/repo  agent.md\ngithub  skill  owner/repo  skill.md\n",
         );
         assert!(text.contains("# github  agent  [name]  <owner/repo>  <path-or-dir>  [ref]"));
@@ -247,16 +281,26 @@ mod tests {
 
     #[test]
     fn no_install_section_when_no_targets() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(dir.path(), "github  skill  a/repo  a.md\n");
+        let manifest = Manifest {
+            entries: vec![gh(EntityType::Skill, "a/repo", "a.md")],
+            ..Manifest::default()
+        };
+        let text = sorted_manifest_text(&manifest, "github  skill  a/repo  a.md\n");
         assert!(!text.contains("install"));
     }
 
     #[test]
     fn entries_grouped_by_repo_with_blank_lines() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(
-            dir.path(),
+        let manifest = Manifest {
+            entries: vec![
+                gh(EntityType::Skill, "b/repo", "b.md"),
+                gh(EntityType::Skill, "a/repo", "a.md"),
+                gh(EntityType::Skill, "a/repo", "z.md"),
+            ],
+            ..Manifest::default()
+        };
+        let text = sorted_manifest_text(
+            &manifest,
             "github  skill  b/repo  b.md\ngithub  skill  a/repo  a.md\ngithub  skill  a/repo  z.md\n",
         );
         let lines: Vec<&str> = text.lines().collect();
@@ -271,9 +315,15 @@ mod tests {
 
     #[test]
     fn agents_before_skills() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(
-            dir.path(),
+        let manifest = Manifest {
+            entries: vec![
+                gh(EntityType::Skill, "owner/repo", "skill.md"),
+                gh(EntityType::Agent, "owner/repo", "agent.md"),
+            ],
+            ..Manifest::default()
+        };
+        let text = sorted_manifest_text(
+            &manifest,
             "github  skill  owner/repo  skill.md\ngithub  agent  owner/repo  agent.md\n",
         );
         assert!(text.find("# --- Agents ---").unwrap() < text.find("# --- Skills ---").unwrap());
@@ -281,9 +331,15 @@ mod tests {
 
     #[test]
     fn entry_adjacent_comment_preserved() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(
-            dir.path(),
+        let manifest = Manifest {
+            entries: vec![
+                gh(EntityType::Skill, "z/repo", "z.md"),
+                gh(EntityType::Skill, "a/repo", "a.md"),
+            ],
+            ..Manifest::default()
+        };
+        let text = sorted_manifest_text(
+            &manifest,
             "github  skill  z/repo  z.md\n# my annotation\ngithub  skill  a/repo  a.md\n",
         );
         let lines: Vec<&str> = text.lines().collect();
@@ -293,9 +349,15 @@ mod tests {
 
     #[test]
     fn section_comment_dropped() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = parse_and_sort(
-            dir.path(),
+        let manifest = Manifest {
+            entries: vec![
+                gh(EntityType::Skill, "b/repo", "b.md"),
+                gh(EntityType::Skill, "a/repo", "a.md"),
+            ],
+            ..Manifest::default()
+        };
+        let text = sorted_manifest_text(
+            &manifest,
             "# old section header\n\ngithub  skill  b/repo  b.md\ngithub  skill  a/repo  a.md\n",
         );
         assert!(!text.contains("old section header"));

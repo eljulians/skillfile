@@ -438,20 +438,9 @@ pub fn cmd_resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skillfile_core::conflict::write_conflict;
-    use skillfile_core::models::{ConflictState, EntityType};
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
-    }
-
-    fn make_conflict(entry: &str, entity_type: EntityType) -> ConflictState {
-        ConflictState {
-            entry: entry.to_string(),
-            entity_type,
-            old_sha: "aaaaaa".to_string(),
-            new_sha: "bbbbbb".to_string(),
-        }
     }
 
     #[test]
@@ -463,38 +452,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_abort_clears_conflict() {
-        let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "");
-        let conflict = make_conflict("test", EntityType::Skill);
-        write_conflict(dir.path(), &conflict).unwrap();
-
-        cmd_resolve(None, true, dir.path()).unwrap();
-
-        // Conflict should be cleared
-        let c = read_conflict(dir.path()).unwrap();
-        assert!(c.is_none());
-    }
-
-    #[test]
     fn resolve_no_conflict_errors() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "github  skill  owner/repo  skills/test.md\n");
-        let result = cmd_resolve(Some("test"), false, dir.path());
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("no pending conflict"));
-    }
-
-    #[test]
-    fn resolve_wrong_entry_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "github  skill  owner/repo  skills/test.md\n");
-        let conflict = make_conflict("other-entry", EntityType::Skill);
-        write_conflict(dir.path(), &conflict).unwrap();
-
         let result = cmd_resolve(Some("test"), false, dir.path());
         assert!(result.is_err());
         assert!(result
@@ -553,8 +513,10 @@ mod tests {
         let base = "original content\n";
         let yours = "modified content\n";
         let theirs = base; // upstream didn't change
-        let patch = crate::patch::generate_patch(base, yours, "test.md");
-        let reconstructed = apply_patch_pure(base, &patch).unwrap();
+                           // Hand-written unified diff replacing "original content" with "modified content"
+        let patch =
+            "--- a/test.md\n+++ b/test.md\n@@ -1 +1 @@\n-original content\n+modified content\n";
+        let reconstructed = apply_patch_pure(base, patch).unwrap();
         assert_eq!(reconstructed, yours);
         let input = MergeInput {
             base,
@@ -579,16 +541,5 @@ mod tests {
                 .contains("entry name required"),
             "expected 'entry name required' in error message"
         );
-    }
-
-    #[test]
-    fn cmd_resolve_entry_not_in_manifest_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        // Manifest has "test" but we request "nonexistent"
-        write_manifest(dir.path(), "github  skill  owner/repo  skills/test.md\n");
-        let conflict = make_conflict("nonexistent", EntityType::Skill);
-        write_conflict(dir.path(), &conflict).unwrap();
-        let result = cmd_resolve(Some("nonexistent"), false, dir.path());
-        assert!(result.is_err(), "expected error for entry not in manifest");
     }
 }

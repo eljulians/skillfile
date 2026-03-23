@@ -242,7 +242,7 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skillfile_core::parser::parse_manifest;
+    use skillfile_core::models::{EntityType, InstallTarget, Scope, SourceFields};
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
@@ -295,6 +295,51 @@ mod tests {
         entity_type: "agent",
         name: "my-agent",
     };
+
+    fn local_entry(name: &str, path: &str) -> Entry {
+        Entry {
+            entity_type: EntityType::Skill,
+            name: name.into(),
+            source: SourceFields::Local { path: path.into() },
+        }
+    }
+
+    fn claude_local_target() -> InstallTarget {
+        InstallTarget {
+            adapter: "claude-code".into(),
+            scope: Scope::Local,
+        }
+    }
+
+    fn agent_manifest() -> Manifest {
+        Manifest {
+            entries: vec![Entry {
+                entity_type: EntityType::Agent,
+                name: "my-agent".into(),
+                source: SourceFields::Github {
+                    owner_repo: "owner/repo".into(),
+                    path_in_repo: "agents/agent.md".into(),
+                    ref_: "main".into(),
+                },
+            }],
+            install_targets: vec![claude_local_target()],
+        }
+    }
+
+    fn dir_skill_manifest() -> Manifest {
+        Manifest {
+            entries: vec![Entry {
+                entity_type: EntityType::Skill,
+                name: "my-dir".into(),
+                source: SourceFields::Github {
+                    owner_repo: "owner/repo".into(),
+                    path_in_repo: "skills/my-dir".into(),
+                    ref_: "main".into(),
+                },
+            }],
+            install_targets: vec![claude_local_target()],
+        }
+    }
 
     #[test]
     fn no_manifest() {
@@ -367,10 +412,6 @@ mod tests {
     #[test]
     fn modified_shows_for_changed_installed_file() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(
-            dir.path(),
-            "install  claude-code  local\ngithub  agent  my-agent  owner/repo  agents/agent.md  main\n",
-        );
         write_lock(
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
@@ -389,8 +430,7 @@ mod tests {
         std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
 
         // is_modified_local should return true
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = agent_manifest();
         let entry = &manifest.entries[0];
         assert!(is_modified_local(entry, &manifest, dir.path()));
     }
@@ -398,10 +438,6 @@ mod tests {
     #[test]
     fn modified_not_shown_for_clean_entry() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(
-            dir.path(),
-            "install  claude-code  local\ngithub  agent  my-agent  owner/repo  agents/agent.md  main\n",
-        );
         write_lock(
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
@@ -419,8 +455,7 @@ mod tests {
         std::fs::create_dir_all(&installed).unwrap();
         std::fs::write(installed.join("my-agent.md"), ORIGINAL).unwrap();
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = agent_manifest();
         let entry = &manifest.entries[0];
         assert!(!is_modified_local(entry, &manifest, dir.path()));
     }
@@ -428,10 +463,6 @@ mod tests {
     #[test]
     fn modified_not_shown_when_not_installed() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(
-            dir.path(),
-            "install  claude-code  local\ngithub  agent  my-agent  owner/repo  agents/agent.md  main\n",
-        );
         write_lock(
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
@@ -447,8 +478,7 @@ mod tests {
         );
         // No installed file
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = agent_manifest();
         let entry = &manifest.entries[0];
         assert!(!is_modified_local(entry, &manifest, dir.path()));
     }
@@ -456,10 +486,6 @@ mod tests {
     #[test]
     fn modified_not_shown_without_vendor_cache() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(
-            dir.path(),
-            "install  claude-code  local\ngithub  agent  my-agent  owner/repo  agents/agent.md  main\n",
-        );
         write_lock(
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
@@ -470,8 +496,7 @@ mod tests {
         std::fs::create_dir_all(&installed).unwrap();
         std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = agent_manifest();
         let entry = &manifest.entries[0];
         assert!(!is_modified_local(entry, &manifest, dir.path()));
     }
@@ -481,10 +506,6 @@ mod tests {
     /// Build a manifest with a github skill dir entry (path_in_repo without .md).
     /// claude-code skills are Nested, so installed files live under .claude/skills/<name>/.
     fn setup_dir_entry(dir: &Path, installed_content: Option<&str>, cache_content: &str) {
-        write_manifest(
-            dir,
-            "install  claude-code  local\ngithub  skill  my-dir  owner/repo  skills/my-dir  main\n",
-        );
         write_lock(
             dir,
             &serde_json::json!({"github/skill/my-dir": {"sha": SHA, "raw_url": "https://example.com"}}),
@@ -513,8 +534,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         setup_dir_entry(dir.path(), Some(MODIFIED), ORIGINAL);
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = dir_skill_manifest();
         let entry = &manifest.entries[0];
         assert!(
             is_dir_entry(entry),
@@ -531,8 +551,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         setup_dir_entry(dir.path(), Some(ORIGINAL), ORIGINAL);
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = dir_skill_manifest();
         let entry = &manifest.entries[0];
         assert!(
             is_dir_entry(entry),
@@ -547,19 +566,14 @@ mod tests {
     #[test]
     fn dir_entry_missing_vendor_dir_not_modified() {
         let dir = tempfile::tempdir().unwrap();
-        // Write manifest + lock but no vendor cache dir at all
-        write_manifest(
-            dir.path(),
-            "install  claude-code  local\ngithub  skill  my-dir  owner/repo  skills/my-dir  main\n",
-        );
+        // Write lock but no vendor cache dir at all
         write_lock(
             dir.path(),
             &serde_json::json!({"github/skill/my-dir": {"sha": SHA, "raw_url": "https://example.com"}}),
         );
         // No .skillfile/cache/skills/my-dir/ written
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = dir_skill_manifest();
         let entry = &manifest.entries[0];
         assert!(
             is_dir_entry(entry),
@@ -574,10 +588,11 @@ mod tests {
     #[test]
     fn local_entry_always_not_modified() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = Manifest {
+            entries: vec![local_entry("foo", "skills/foo.md")],
+            ..Manifest::default()
+        };
         let entry = &manifest.entries[0];
         assert!(
             !is_modified_local(entry, &manifest, dir.path()),
@@ -588,10 +603,6 @@ mod tests {
     #[test]
     fn pinned_entry_not_modified() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(
-            dir.path(),
-            "install  claude-code  local\ngithub  agent  my-agent  owner/repo  agents/agent.md  main\n",
-        );
         write_lock(
             dir.path(),
             &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
@@ -614,8 +625,7 @@ mod tests {
         std::fs::create_dir_all(&patches_dir).unwrap();
         std::fs::write(patches_dir.join("my-agent.patch"), "patch content").unwrap();
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = agent_manifest();
         let entry = &manifest.entries[0];
         assert!(
             !is_modified_local(entry, &manifest, dir.path()),
@@ -633,8 +643,7 @@ mod tests {
         std::fs::create_dir_all(&patches_dir).unwrap();
         std::fs::write(patches_dir.join("tool.md.patch"), "patch content").unwrap();
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = dir_skill_manifest();
         let entry = &manifest.entries[0];
         assert!(
             !is_modified_local(entry, &manifest, dir.path()),
@@ -650,10 +659,11 @@ mod tests {
         let source = dir.path().join("skills/foo.md");
         std::fs::create_dir_all(source.parent().unwrap()).unwrap();
         std::fs::write(&source, "# Foo").unwrap();
-        write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = Manifest {
+            entries: vec![local_entry("foo", "skills/foo.md")],
+            ..Manifest::default()
+        };
         let locked = std::collections::BTreeMap::new();
         let mut sha_cache = HashMap::new();
         let mut ctx = StatusContext {
@@ -674,10 +684,11 @@ mod tests {
     #[test]
     fn local_entry_missing_path_formats_with_warning() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
 
-        let result = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let manifest = result.manifest;
+        let manifest = Manifest {
+            entries: vec![local_entry("foo", "skills/foo.md")],
+            ..Manifest::default()
+        };
         let locked = std::collections::BTreeMap::new();
         let mut sha_cache = HashMap::new();
         let mut ctx = StatusContext {

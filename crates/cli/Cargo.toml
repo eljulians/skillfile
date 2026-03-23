@@ -35,6 +35,10 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 tempfile = { workspace = true }
 
+[dev-dependencies]
+skillfile-core = { workspace = true }
+tempfile = { workspace = true }
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target-arch }-{ target-os }{ binary-ext }"
 pkg-fmt = "bin"

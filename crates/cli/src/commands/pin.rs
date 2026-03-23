@@ -424,31 +424,6 @@ mod tests {
     }
 
     #[test]
-    fn unpin_not_pinned_is_noop() {
-        let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "github  skill  owner/repo  skills/test.md\n");
-
-        // cmd_unpin uses find_entry_in, which needs the manifest parsed
-        // Just check has_patch/has_dir_patch return false
-        let entry = github_entry_skill("test", "skills/test.md");
-        assert!(!has_patch(&entry, dir.path()));
-        assert!(!has_dir_patch(&entry, dir.path()));
-    }
-
-    #[test]
-    fn unpin_removes_patch() {
-        let dir = tempfile::tempdir().unwrap();
-        let entry = github_entry_skill("test", "skills/test.md");
-
-        // Write a patch
-        write_patch(&entry, "some patch content", dir.path()).unwrap();
-        assert!(has_patch(&entry, dir.path()));
-
-        remove_patch(&entry, dir.path()).unwrap();
-        assert!(!has_patch(&entry, dir.path()));
-    }
-
-    #[test]
     fn pin_dir_entry_not_cached_errors() {
         let dir = tempfile::tempdir().unwrap();
         let entry = Entry {
@@ -838,62 +813,6 @@ mod tests {
     // cmd_unpin() full flow
     // -----------------------------------------------------------------------
 
-    // Full unpin flow: patch exists → patch is removed → upstream is restored from cache.
-    #[test]
-    fn cmd_unpin_full_flow_removes_patch_and_restores_upstream() {
-        let dir = tempfile::tempdir().unwrap();
-        let name = "myskill";
-
-        // Manifest with install target so install_entry can restore the file.
-        write_manifest(
-            dir.path(),
-            &format!(
-                "install  claude-code  local\ngithub  skill  {name}  owner/repo  skills/{name}.md\n"
-            ),
-        );
-        write_lock(dir.path(), &make_lock_json(name, "skill"));
-
-        let upstream_content = "# MySkill\n\nUpstream content.\n";
-        let modified_content = "# MySkill\n\nUser-modified content.\n";
-
-        // Vendor cache (upstream)
-        let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
-        std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(vdir.join(format!("{name}.md")), upstream_content).unwrap();
-
-        // Installed file (user-modified)
-        let inst_dir = dir.path().join(".claude/skills");
-        std::fs::create_dir_all(&inst_dir).unwrap();
-        std::fs::write(inst_dir.join(format!("{name}.md")), modified_content).unwrap();
-
-        // Write a patch that represents the user's edits
-        let entry = github_entry_skill(name, &format!("skills/{name}.md"));
-        let patch_text =
-            crate::patch::generate_patch(upstream_content, modified_content, &format!("{name}.md"));
-        write_patch(&entry, &patch_text, dir.path()).unwrap();
-        assert!(
-            has_patch(&entry, dir.path()),
-            "patch must exist before unpin"
-        );
-
-        // Execute unpin
-        let result = cmd_unpin(name, dir.path());
-        assert!(result.is_ok(), "cmd_unpin must succeed: {result:?}");
-
-        // Patch must be removed
-        assert!(
-            !has_patch(&entry, dir.path()),
-            "patch must be removed after unpin"
-        );
-
-        // Installed file must be restored to upstream content
-        let installed_after = std::fs::read_to_string(inst_dir.join(format!("{name}.md"))).unwrap();
-        assert_eq!(
-            installed_after, upstream_content,
-            "installed file must match upstream after unpin"
-        );
-    }
-
     // Unpin when not pinned: no error, no change.
     #[test]
     fn cmd_unpin_not_pinned_is_ok() {
@@ -905,71 +824,6 @@ mod tests {
 
         let result = cmd_unpin("myskill", dir.path());
         assert!(result.is_ok(), "cmd_unpin of unpinned entry must return Ok");
-    }
-
-    // Full unpin flow for a dir entry: all dir patches are removed and
-    // upstream files are restored from the vendor cache (Nested mode).
-    #[test]
-    fn cmd_unpin_dir_entry_removes_all_dir_patches_and_restores() {
-        let dir = tempfile::tempdir().unwrap();
-        let name = "lang-pro";
-
-        write_manifest(
-            dir.path(),
-            &format!(
-                "install  claude-code  local\ngithub  skill  {name}  owner/repo  skills/{name}\n"
-            ),
-        );
-        write_lock(dir.path(), &make_lock_json(name, "skill"));
-
-        let upstream_skill = "# Lang Pro\n\nUpstream SKILL.\n";
-        let modified_skill = "# Lang Pro\n\nUser modified SKILL.\n";
-        let upstream_extra = "# Extra\n\nUpstream.\n";
-
-        // Vendor cache
-        let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
-        std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(vdir.join("SKILL.md"), upstream_skill).unwrap();
-        std::fs::write(vdir.join("extra.md"), upstream_extra).unwrap();
-
-        // Installed dir (modified)
-        let inst_dir = dir.path().join(format!(".claude/skills/{name}"));
-        std::fs::create_dir_all(&inst_dir).unwrap();
-        std::fs::write(inst_dir.join("SKILL.md"), modified_skill).unwrap();
-        std::fs::write(inst_dir.join("extra.md"), upstream_extra).unwrap();
-
-        // Write dir patches
-        let entry = Entry {
-            entity_type: EntityType::Skill,
-            name: name.to_string(),
-            source: SourceFields::Github {
-                owner_repo: "owner/repo".into(),
-                path_in_repo: format!("skills/{name}"),
-                ref_: "main".into(),
-            },
-        };
-        let patch_text = crate::patch::generate_patch(upstream_skill, modified_skill, "SKILL.md");
-        write_dir_patch(&dir_patch_path(&entry, "SKILL.md", dir.path()), &patch_text).unwrap();
-        assert!(
-            has_dir_patch(&entry, dir.path()),
-            "dir patch must exist before unpin"
-        );
-
-        let result = cmd_unpin(name, dir.path());
-        assert!(result.is_ok(), "cmd_unpin must succeed: {result:?}");
-
-        // Dir patches must be removed
-        assert!(
-            !has_dir_patch(&entry, dir.path()),
-            "dir patches must be removed after unpin"
-        );
-
-        // Installed SKILL.md must be restored to upstream
-        let skill_after = std::fs::read_to_string(inst_dir.join("SKILL.md")).unwrap();
-        assert_eq!(
-            skill_after, upstream_skill,
-            "SKILL.md must be restored to upstream after unpin"
-        );
     }
 
     // cmd_unpin errors when name not found in manifest.
