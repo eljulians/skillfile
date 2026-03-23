@@ -39,7 +39,7 @@ cargo install skillfile
 ```bash
 skillfile init                                           # pick your platforms
 skillfile add                                            # guided wizard
-skillfile add github skill anthropics/courses skills/    # or add directly
+skillfile add github skill anthropics/skills skills/    # or add directly
 ```
 
 That's it. Skills are fetched, locked to exact SHAs, and deployed. On a fresh clone, `skillfile install` reproduces the exact same setup.
@@ -52,8 +52,8 @@ Run `skillfile add` for a guided wizard, or use the explicit CLI for any source:
 
 ```bash
 skillfile add                                            # wizard: GitHub, search, local, URL
-skillfile add github skill anthropics/courses            # discover all skills in a repo
-skillfile add github skill anthropics/courses skills/research  # add one specific skill
+skillfile add github skill anthropics/skills            # discover all skills in a repo
+skillfile add github skill anthropics/skills slack-gif-creator  # add one specific skill
 skillfile add local skill skills/my-custom/SKILL.md      # track a local file
 skillfile add url skill https://example.com/skill.md     # add from a URL
 ```
@@ -126,7 +126,7 @@ vim skills/our-coding-standards/SKILL.md
 skillfile add local skill skills/our-coding-standards/SKILL.md
 
 # Pull in a community skill too
-skillfile add github skill anthropics/courses skills/research
+skillfile add github skill anthropics/skills skills/slack-gif-creator
 
 # Commit everything
 git add Skillfile Skillfile.lock skills/
