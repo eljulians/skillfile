@@ -1,9 +1,9 @@
 # skillfile
 
 [![CI](https://img.shields.io/github/actions/workflow/status/eljulians/skillfile/ci.yml?style=flat-square&label=CI)](https://github.com/eljulians/skillfile/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/codecov/c/github/eljulians/skillfile?style=flat-square)](https://codecov.io/gh/eljulians/skillfile)
 [![Crates.io](https://img.shields.io/crates/v/skillfile?style=flat-square)](https://crates.io/crates/skillfile)
 [![MSRV](https://img.shields.io/badge/MSRV-1.82-blue?style=flat-square)](https://github.com/eljulians/skillfile)
-[![Coverage](https://img.shields.io/codecov/c/github/eljulians/skillfile?style=flat-square)](https://codecov.io/gh/eljulians/skillfile)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
 [![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square)]()
 

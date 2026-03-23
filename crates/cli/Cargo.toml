@@ -10,6 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 description = "Tool-agnostic AI skill & agent manager - the Brewfile for your AI tooling"
 readme = "../../README.md"
+exclude = ["tests/"]
 
 [[bin]]
 name = "skillfile"
@@ -45,3 +46,9 @@ pkg-fmt = "bin"
 
 [lints]
 workspace = true
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1

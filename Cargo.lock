@@ -1445,7 +1445,7 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "skillfile"
-version = "1.3.0"
+version = "1.4.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "skillfile-core"
-version = "1.3.0"
+version = "1.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "skillfile-deploy"
-version = "1.3.0"
+version = "1.4.1"
 dependencies = [
  "dirs",
  "serde_json",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "skillfile-sources"
-version = "1.3.0"
+version = "1.4.1"
 dependencies = [
  "html-escape",
  "serde",

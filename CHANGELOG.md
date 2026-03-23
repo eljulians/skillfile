@@ -4,6 +4,14 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.4.1 - 23-03-2026
+
+### Fixed
+
+- **`cargo install` binary bloat** - `cargo install skillfile` produced a 7.9 MB binary (nearly double the GitHub Release binary) because workspace-level `[profile.release]` settings are not included in published crates. Added the release profile directly to the CLI crate's `Cargo.toml` so all install methods now produce the same ~4 MB optimized binary with LTO and strip enabled.
+
+---
+
 ## v1.4.0 - 23-03-2026
 
 ### Added

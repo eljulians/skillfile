@@ -10,6 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 description = "Platform adapters and installation for skillfile"
 publish = true
+exclude = ["tests/"]
 
 [dependencies]
 skillfile-core = { workspace = true }
