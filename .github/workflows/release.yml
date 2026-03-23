@@ -74,6 +74,7 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build release binary
+        shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
             cross build --release --target ${{ matrix.target }}
@@ -82,9 +83,10 @@ jobs:
           fi
 
       - name: Package artifact
+        shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/skillfile dist/${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/skillfile${{ runner.os == 'Windows' && '.exe' || '' }} dist/${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
