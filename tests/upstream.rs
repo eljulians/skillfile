@@ -1,4 +1,4 @@
-/// Functional tests: invoke the compiled `skillfile` binary against real
+/// Upstream health tests: invoke the compiled `skillfile` binary against real
 /// network services (GitHub API, community registries).
 ///
 /// Tests that need a GitHub token call `require_github_token()` and skip
@@ -8,7 +8,7 @@
 /// Network calls are wrapped with `retry` to tolerate transient failures
 /// (rate limits, timeouts, DNS blips).
 ///
-/// Run with: cargo test -p skillfile-functional-tests --test functional
+/// Run with: cargo test -p skillfile-functional-tests --test upstream
 use predicates::prelude::*;
 use retry::{delay::Fixed, retry};
 use skillfile_functional_tests::sf;

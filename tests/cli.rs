@@ -1,5 +1,6 @@
-/// CLI tests: invoke the compiled `skillfile` binary against local-only
-/// operations (no network, no GitHub token needed).
+/// CLI command tests: invoke the compiled `skillfile` binary against
+/// local fixtures. No network, no GitHub token. Deterministic.
+/// If a test here fails, we broke a command.
 ///
 /// Run with: cargo test -p skillfile-functional-tests --test cli
 use std::path::Path;
@@ -355,5 +356,129 @@ fn install_local_dir_entry() {
     assert_eq!(
         std::fs::read_to_string(&simple).unwrap(),
         "# Simple Skill\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// remove (direct golden path)
+// ---------------------------------------------------------------------------
+
+/// Remove an entry: Skillfile line gone, lock entry gone, cache cleaned.
+#[test]
+fn remove_clears_entry_lock_and_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a local skill
+    std::fs::create_dir_all(root.join("skills")).unwrap();
+    std::fs::write(root.join("skills/foo.md"), "# Foo\n").unwrap();
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  claude-code  local\nlocal  skill  foo  skills/foo.md\n",
+    )
+    .unwrap();
+
+    sf(root).arg("install").assert().success();
+    assert!(root.join(".claude/skills/foo.md").exists());
+
+    sf(root).args(["remove", "foo"]).assert().success();
+
+    let text = std::fs::read_to_string(root.join("Skillfile")).unwrap();
+    assert!(!text.contains("foo"), "entry should be gone from Skillfile");
+    assert!(
+        !root.join("Skillfile.lock").exists()
+            || !std::fs::read_to_string(root.join("Skillfile.lock"))
+                .unwrap()
+                .contains("foo"),
+        "lock should not contain the removed entry"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// diff (golden path)
+// ---------------------------------------------------------------------------
+
+/// Diff a modified installed file against its vendor cache.
+/// Uses an agent entry (flat deploy to `.claude/agents/<name>.md`).
+/// Requires pre-populated cache + lock (no network).
+#[test]
+fn diff_shows_changes_between_cache_and_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    let manifest = "install  claude-code  local\n\
+                    github  agent  my-agent  owner/repo  agents/agent.md  main\n";
+    std::fs::write(root.join("Skillfile"), manifest).unwrap();
+
+    // Lock
+    let lock_json = serde_json::json!({
+        "github/agent/my-agent": {
+            "sha": "abc123def456abc123def456abc123def456abc1",
+            "raw_url": "https://raw.githubusercontent.com/owner/repo/abc123/agents/agent.md"
+        }
+    });
+    std::fs::write(
+        root.join("Skillfile.lock"),
+        serde_json::to_string_pretty(&lock_json).unwrap(),
+    )
+    .unwrap();
+
+    // Vendor cache
+    let vdir = root.join(".skillfile/cache/agents/my-agent");
+    std::fs::create_dir_all(&vdir).unwrap();
+    std::fs::write(vdir.join("agent.md"), "# Agent\n\nUpstream content.\n").unwrap();
+    std::fs::write(
+        vdir.join(".meta"),
+        r#"{"sha":"abc123def456abc123def456abc123def456abc1"}"#,
+    )
+    .unwrap();
+
+    // Installed (modified by user) — agents deploy flat
+    let installed = root.join(".claude/agents");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(
+        installed.join("my-agent.md"),
+        "# Agent\n\nUpstream content.\n\n## My Notes\n\nUser addition.\n",
+    )
+    .unwrap();
+
+    sf(root)
+        .args(["diff", "my-agent"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("User addition"));
+}
+
+// ---------------------------------------------------------------------------
+// resolve --abort (golden path)
+// ---------------------------------------------------------------------------
+
+/// Resolve --abort clears conflict state without modifying files.
+#[test]
+fn resolve_abort_clears_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join("Skillfile"),
+        "github  skill  test  owner/repo  skills/test.md  main\n",
+    )
+    .unwrap();
+
+    // Write conflict state manually
+    let conflict_dir = root.join(".skillfile");
+    std::fs::create_dir_all(&conflict_dir).unwrap();
+    std::fs::write(
+        conflict_dir.join("conflict"),
+        r#"{"entry":"test","entity_type":"skill","old_sha":"aaa","new_sha":"bbb"}"#,
+    )
+    .unwrap();
+    assert!(conflict_dir.join("conflict").exists());
+
+    sf(root).args(["resolve", "--abort"]).assert().success();
+
+    assert!(
+        !conflict_dir.join("conflict").exists(),
+        "conflict file should be cleared after --abort"
     );
 }

@@ -4,7 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/skillfile?style=flat-square)](https://crates.io/crates/skillfile)
 [![MSRV](https://img.shields.io/badge/MSRV-1.82-blue?style=flat-square)](https://github.com/eljulians/skillfile)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
-[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey?style=flat-square)]()
+[![platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square)]()
 
 **Track AI skills and agents declaratively, like dependencies. Pin them. Patch them. Deploy everywhere.**
 
@@ -202,8 +202,8 @@ Review what you install. The risk profile is the same as `git clone`.
 ## Development
 
 ```bash
-cargo test --workspace                     # unit + integration tests
-cargo test --test functional              # network tests (needs GITHUB_TOKEN)
+cargo test --workspace                     # unit + integration + upstream tests
+cargo test --test upstream                 # upstream API health tests (needs GITHUB_TOKEN)
 cargo clippy --all-targets -- -D warnings  # lint
 cargo fmt --check                          # format check
 ```

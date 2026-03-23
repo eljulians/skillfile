@@ -9,8 +9,8 @@ name = "cli"
 path = "cli.rs"
 
 [[test]]
-name = "functional"
-path = "functional.rs"
+name = "upstream"
+path = "upstream.rs"
 
 [dependencies]
 assert_cmd = { workspace = true }
