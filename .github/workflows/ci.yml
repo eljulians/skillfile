@@ -94,7 +94,9 @@ jobs:
       - name: Tests with coverage
         env:
           GITHUB_TOKEN: ${{ secrets.FUNCTIONAL_TESTS_GITHUB_TOKEN }}
-        run: cargo llvm-cov --workspace --html --lcov --output-path lcov.info
+        run: |
+          cargo llvm-cov --workspace --html
+          cargo llvm-cov --workspace --no-run --lcov --output-path lcov.info
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
