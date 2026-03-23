@@ -69,10 +69,24 @@ resolve_version() {
     log "Fetching latest release..."
     LATEST_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
+    AUTH_HEADER=""
+    TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+    if [ -n "$TOKEN" ]; then
+        AUTH_HEADER="Authorization: token ${TOKEN}"
+    fi
+
     if has curl; then
-        VERSION="$(curl -fsSL "$LATEST_URL" | parse_tag_name)"
+        if [ -n "$AUTH_HEADER" ]; then
+            VERSION="$(curl -fsSL -H "$AUTH_HEADER" "$LATEST_URL" | parse_tag_name)"
+        else
+            VERSION="$(curl -fsSL "$LATEST_URL" | parse_tag_name)"
+        fi
     elif has wget; then
-        VERSION="$(wget -qO- "$LATEST_URL" | parse_tag_name)"
+        if [ -n "$AUTH_HEADER" ]; then
+            VERSION="$(wget -qO- --header="$AUTH_HEADER" "$LATEST_URL" | parse_tag_name)"
+        else
+            VERSION="$(wget -qO- "$LATEST_URL" | parse_tag_name)"
+        fi
     else
         err "Neither curl nor wget found. Install one and retry."
         exit 1
