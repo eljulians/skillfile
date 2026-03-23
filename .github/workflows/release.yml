@@ -30,6 +30,7 @@ jobs:
       - name: Run install.sh against previous release
         env:
           SKILLFILE_INSTALL_DIR: ${{ runner.temp }}/skillfile-test
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: sh install.sh
 
       - name: Verify binary runs
