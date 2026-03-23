@@ -239,7 +239,7 @@ pub fn cmd_unpin(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skillfile_core::models::{EntityType, InstallTarget, Scope, SourceFields};
+    use skillfile_core::models::{EntityType, SourceFields};
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
@@ -448,14 +448,6 @@ mod tests {
         let result = cmd_pin("nonexistent", dir.path(), false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("nonexistent"));
-    }
-
-    // Helper: ensure target is set up for installed_path to work
-    fn _make_install_target() -> InstallTarget {
-        InstallTarget {
-            adapter: "claude-code".into(),
-            scope: Scope::Local,
-        }
     }
 
     // -----------------------------------------------------------------------

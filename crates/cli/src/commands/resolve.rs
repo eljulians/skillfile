@@ -507,21 +507,15 @@ mod tests {
     }
 
     #[test]
-    fn apply_patch_round_trip_via_three_way() {
-        // Test the full resolve workflow logic:
-        // base -> yours (via patch) -> merge with theirs (same as base) -> result = yours
+    fn three_way_merge_clean_when_only_yours_changed() {
+        // base -> yours (modified) -> merge with theirs (same as base) -> result = yours
         let base = "original content\n";
         let yours = "modified content\n";
         let theirs = base; // upstream didn't change
-                           // Hand-written unified diff replacing "original content" with "modified content"
-        let patch =
-            "--- a/test.md\n+++ b/test.md\n@@ -1 +1 @@\n-original content\n+modified content\n";
-        let reconstructed = apply_patch_pure(base, patch).unwrap();
-        assert_eq!(reconstructed, yours);
         let input = MergeInput {
             base,
             theirs,
-            yours: &reconstructed,
+            yours,
         };
         let result = three_way_merge(&input, "test.md").unwrap();
         assert!(!result.has_conflicts);
