@@ -344,7 +344,7 @@ fn search_skillhub_club_no_key() {
 /// Uses `iannuttall/claude-agents` (from the test Skillfile) which has
 /// multiple agent .md files under an `agents/` directory.
 #[test]
-fn list_repo_skill_entries_real_multi_file_repo() {
+fn add_discovery_multi_file_repo() {
     if !require_github_token() {
         return;
     }
@@ -377,7 +377,7 @@ fn list_repo_skill_entries_real_multi_file_repo() {
 
 /// list_repo_skill_entries returns entries from a known repo.
 #[test]
-fn list_repo_skill_entries_real_another_repo() {
+fn add_discovery_another_repo() {
     if !require_github_token() {
         return;
     }
@@ -400,7 +400,7 @@ fn list_repo_skill_entries_real_another_repo() {
 
 /// list_repo_skill_entries returns empty for a non-existent repo.
 #[test]
-fn list_repo_skill_entries_real_nonexistent_repo() {
+fn add_discovery_nonexistent_repo() {
     if !require_github_token() {
         return;
     }
@@ -424,7 +424,7 @@ fn list_repo_skill_entries_real_nonexistent_repo() {
 /// must resolve to `skills/kubernetes-specialist` (a directory entry),
 /// NOT list every individual .md file inside it.
 #[test]
-fn skill_entry_resolution_multi_skill_repo() {
+fn add_discovery_resolution_multi_skill() {
     if !require_github_token() {
         return;
     }
@@ -475,7 +475,7 @@ fn skill_entry_resolution_multi_skill_repo() {
 
 /// Scoped discovery on a flat repo: prefix filtering + no-prefix-overlap invariant.
 #[test]
-fn scoped_discovery_flat_repo() {
+fn add_discovery_scoped_flat_repo() {
     if !require_github_token() {
         return;
     }
@@ -516,7 +516,7 @@ fn scoped_discovery_flat_repo() {
 /// Both parent and child are valid independent skills (both have SKILL.md).
 /// Non-SKILL.md descendants must NOT produce separate entries.
 #[test]
-fn scoped_discovery_nested_repo() {
+fn add_discovery_scoped_nested_repo() {
     if !require_github_token() {
         return;
     }
@@ -576,7 +576,7 @@ fn scoped_discovery_nested_repo() {
 /// without `source_path` either have a `source_repo` pointing to a real
 /// GitHub repo, or have `source_repo = None`.
 #[test]
-fn agentskill_search_no_slug_leak_in_source_repo() {
+fn search_agentskill_no_slug_leak() {
     if !require_github_token() {
         return;
     }
@@ -618,7 +618,7 @@ fn agentskill_search_no_slug_leak_in_source_repo() {
 
 /// End-to-end: single-skill repo with SKILL.md at root resolves to ".".
 #[test]
-fn skill_entry_resolution_single_skill_repo() {
+fn add_discovery_resolution_single_skill() {
     if !require_github_token() {
         return;
     }

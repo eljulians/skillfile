@@ -152,7 +152,7 @@ fn write_local_manifest(dir: &Path) {
 }
 
 #[test]
-fn first_run_shows_platform_hint() {
+fn install_first_run_shows_platform_hint() {
     let dir = tempfile::tempdir().unwrap();
     write_local_manifest(dir.path());
 
@@ -180,7 +180,7 @@ fn first_run_shows_platform_hint() {
 }
 
 #[test]
-fn second_run_no_platform_hint() {
+fn install_second_run_no_platform_hint() {
     let dir = tempfile::tempdir().unwrap();
     write_local_manifest(dir.path());
 
@@ -254,7 +254,7 @@ fn add_github_normal_path_no_bulk() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn bare_add_without_tty_fails_with_helpful_message() {
+fn add_wizard_without_tty_fails() {
     // `skillfile add` with no subcommand and no TTY should fail
     // with a message pointing the user to explicit subcommands.
     let dir = tempfile::tempdir().unwrap();
@@ -275,7 +275,7 @@ fn bare_add_without_tty_fails_with_helpful_message() {
 }
 
 #[test]
-fn explicit_add_subcommands_still_work() {
+fn add_local_subcommand_works() {
     // `skillfile add github ...` should still route to the explicit handler,
     // not the wizard. Regression check for the Option<AddSource> change.
     let dir = tempfile::tempdir().unwrap();
