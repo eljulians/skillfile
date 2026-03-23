@@ -29,14 +29,13 @@ skillfile fixes all of that. One manifest, one lock file, every platform.
 curl -fsSL https://github.com/eljulians/skillfile/releases/latest/download/install.sh | sh
 ```
 
-Or pick your preferred method:
+Or with cargo:
 
 ```bash
-cargo binstall skillfile            # pre-built binary via cargo-binstall (seconds)
-cargo install skillfile             # build from source via cargo
+cargo install skillfile
 ```
 
-Pre-built binaries for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows (x86_64) are available on [GitHub Releases](https://github.com/eljulians/skillfile/releases/latest). Single binary, ~3.5 MB, no runtime dependencies.
+Pre-built binaries for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows (x86_64) are available on [GitHub Releases](https://github.com/eljulians/skillfile/releases/latest). Single binary, no runtime dependencies.
 
 > **GitHub token recommended.** skillfile uses the GitHub API to resolve commits. Without a token you're limited to 60 req/hour. Set `GITHUB_TOKEN`, `GH_TOKEN`, or run `gh auth login`.
 
