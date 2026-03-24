@@ -22,7 +22,7 @@ fn skillfile_bin_from_test_dir() -> Option<PathBuf> {
 ///    `CARGO_TARGET_DIR` or the workspace-root `target/` directory. CI must
 ///    pre-build the binary (`cargo build -p skillfile`) so this fallback
 ///    finds a fresh binary, not a stale cached one.
-fn skillfile_bin() -> PathBuf {
+pub fn skillfile_bin() -> PathBuf {
     // Try same target dir as the running test binary.
     if let Some(bin) = skillfile_bin_from_test_dir() {
         return bin;

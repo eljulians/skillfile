@@ -12,6 +12,10 @@ path = "cli.rs"
 name = "upstream"
 path = "upstream.rs"
 
+[[test]]
+name = "interactive"
+path = "interactive.rs"
+
 [dependencies]
 assert_cmd = { workspace = true }
 
@@ -21,6 +25,9 @@ tempfile = { workspace = true }
 serde_json = { workspace = true }
 skillfile-sources = { workspace = true }
 retry = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+rexpect = { workspace = true }
 
 [lints]
 workspace = true

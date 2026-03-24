@@ -1395,4 +1395,43 @@ mod tests {
             other => panic!("expected NotAvailable after poll, got {other:?}"),
         }
     }
+
+    // -- Rendering tests (TestBackend) -----------------------------------------
+
+    use crate::commands::test_support::buffer_text;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn render_initial_state() {
+        let items = sample_items();
+        let mut app = App::new(&items, 3);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    #[test]
+    fn render_filtered() {
+        let items = sample_items();
+        let mut app = App::new(&items, 3);
+        app.filter = "docker".to_string();
+        app.refilter();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    #[test]
+    fn render_empty_filter() {
+        let items = sample_items();
+        let mut app = App::new(&items, 3);
+        app.filter = "zzz_nonexistent_zzz".to_string();
+        app.refilter();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
 }

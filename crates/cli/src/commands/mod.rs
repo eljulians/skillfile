@@ -11,3 +11,6 @@ pub mod search_tui;
 pub mod skill_preview;
 pub mod status;
 pub mod validate;
+
+#[cfg(test)]
+pub(crate) mod test_support;

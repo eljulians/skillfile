@@ -1,0 +1,28 @@
+---
+source: crates/cli/src/commands/search_tui.rs
+expression: buffer_text(terminal.backend().buffer())
+---
+ filter: zzz_nonexistent_zzz_   0/3
+┌ Results ─────────────────────┐┌ Preview ─────────────────────────────────────┐
+│                              ││No results match the filter.                  │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+└──────────────────────────────┘└──────────────────────────────────────────────┘
