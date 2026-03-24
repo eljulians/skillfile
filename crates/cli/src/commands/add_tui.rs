@@ -1223,4 +1223,45 @@ mod tests {
             "skills/debugging/"
         );
     }
+
+    // -- Rendering tests (TestBackend) -----------------------------------------
+
+    use crate::commands::test_support::buffer_text;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn render_initial_state() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    #[test]
+    fn render_selected_items() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        app.selected.insert(0);
+        app.selected.insert(2);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    #[test]
+    fn render_filtered_with_selections() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        app.selected.insert(0);
+        app.selected.insert(2);
+        app.filter = "code".to_string();
+        app.refilter();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
 }

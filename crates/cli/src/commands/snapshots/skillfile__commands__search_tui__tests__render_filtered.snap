@@ -1,0 +1,28 @@
+---
+source: crates/cli/src/commands/search_tui.rs
+expression: buffer_text(terminal.backend().buffer())
+---
+ filter: docker_   1/3
+┌ Results ─────────────────────┐┌ Preview ─────────────────────────────────────┐
+│> docker-helper  ★500  skills.││docker-helper                                 │
+│                              ││                                              │
+│                              ││Registry:       skills.sh                     │
+│                              ││Owner:          dockerfan                     │
+│                              ││Stars:          500                           │
+│                              ││Source:         dockerfan/docker-helper       │
+│                              ││URL:                                          │
+│                              ││https://skills.sh/dockerfan/docker-helper/dock│
+│                              ││er-helper                                     │
+│                              ││                                              │
+│                              ││No description available.                     │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+└──────────────────────────────┘└──────────────────────────────────────────────┘
