@@ -1226,17 +1226,13 @@ mod tests {
 
     // -- Rendering tests (TestBackend) -----------------------------------------
 
-    use crate::commands::test_support::buffer_text;
-    use ratatui::backend::TestBackend;
+    use crate::commands::test_support::render_to_text;
 
     #[test]
     fn render_initial_state() {
         let items = sample_items();
         let mut app = App::new(&items, "owner/repo", "main");
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     #[test]
@@ -1245,10 +1241,7 @@ mod tests {
         let mut app = App::new(&items, "owner/repo", "main");
         app.selected.insert(0);
         app.selected.insert(2);
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     #[test]
@@ -1259,10 +1252,7 @@ mod tests {
         app.selected.insert(2);
         app.filter = "code".to_string();
         app.refilter();
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     /// Preview title shows scroll offset when `preview_scroll > 0`.
@@ -1271,10 +1261,7 @@ mod tests {
         let items = sample_items();
         let mut app = App::new(&items, "owner/repo", "main");
         app.preview_scroll = 5;
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     /// Preview shows "No entries match" when filter produces empty list.
@@ -1284,10 +1271,7 @@ mod tests {
         let mut app = App::new(&items, "owner/repo", "main");
         app.filter = "zzz_nonexistent".to_string();
         app.refilter();
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     /// Preview pane shows loaded SKILL.md content from cache.
@@ -1305,10 +1289,7 @@ mod tests {
                 body_excerpt: Some("## Usage\n- Navigate pages".into()),
             }),
         );
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     /// Preview pane shows failure state when fetch failed.
@@ -1318,9 +1299,6 @@ mod tests {
         let mut app = App::new(&items, "owner/repo", "main");
         app.preview_cache
             .insert("skills/browser".to_string(), PreviewState::Failed);
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 }

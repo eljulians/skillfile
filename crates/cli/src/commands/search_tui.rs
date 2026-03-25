@@ -1398,17 +1398,13 @@ mod tests {
 
     // -- Rendering tests (TestBackend) -----------------------------------------
 
-    use crate::commands::test_support::buffer_text;
-    use ratatui::backend::TestBackend;
+    use crate::commands::test_support::render_to_text;
 
     #[test]
     fn render_initial_state() {
         let items = sample_items();
         let mut app = App::new(&items, 3);
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     #[test]
@@ -1417,10 +1413,7 @@ mod tests {
         let mut app = App::new(&items, 3);
         app.filter = "docker".to_string();
         app.refilter();
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     #[test]
@@ -1429,10 +1422,7 @@ mod tests {
         let mut app = App::new(&items, 3);
         app.filter = "zzz_nonexistent_zzz".to_string();
         app.refilter();
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     /// Status bar shows "(of N total)" when total exceeds displayed items.
@@ -1440,10 +1430,7 @@ mod tests {
     fn render_total_exceeds_displayed() {
         let items = sample_items();
         let mut app = App::new(&items, 42);
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     /// List items show audit pass/fail icons when `audit_cache` is populated.
@@ -1451,8 +1438,6 @@ mod tests {
     fn render_with_loaded_audits() {
         let items = sample_items();
         let mut app = App::new(&items, 3);
-        // docker-helper (skills.sh) has no security_score — the audit
-        // cache branch in `build_list_item_audit_spans` activates here.
         let url = items[1].url.clone();
         app.audit_cache.insert(
             url,
@@ -1467,10 +1452,7 @@ mod tests {
                 },
             ]),
         );
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     /// Preview pane shows SKILL.md content when cache is populated.
@@ -1489,10 +1471,7 @@ mod tests {
                 body_excerpt: Some("## When to use\n- PR review".into()),
             }),
         );
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     /// Preview shows failure state when audit fetch failed.
@@ -1500,13 +1479,9 @@ mod tests {
     fn render_with_failed_audits() {
         let items = sample_items();
         let mut app = App::new(&items, 3);
-        // Highlight docker-helper (skills.sh, index 1) to show failed audits.
         app.list_state.select(Some(1));
         let url = items[1].url.clone();
         app.audit_cache.insert(url, AuditState::Failed);
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 }
