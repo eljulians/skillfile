@@ -89,7 +89,7 @@ fn init_wizard_renders_platform_prompt() {
 /// The signal delivery test above confirms the PTY is functional.
 /// Revisit when `console` or `rexpect` address this incompatibility.
 #[test]
-#[ignore = "console 0.15 TCSADRAIN blocks in rexpect PTY — keystrokes don't reach cliclack"]
+#[ignore = "console TCSADRAIN blocks in rexpect PTY — keystrokes don't reach cliclack"]
 fn init_wizard_golden_path() {
     let dir = tempfile::tempdir().unwrap();
 
