@@ -1,0 +1,28 @@
+---
+source: crates/cli/src/commands/add_tui.rs
+expression: buffer_text(terminal.backend().buffer())
+---
+ filter: zzz_nonexistent_  0/5
+┌ owner/repo ──────────────────┐┌ Preview ↑↓Tab ───────────────────────────────┐
+│                              ││No entries match the filter.                  │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+└──────────────────────────────┘└──────────────────────────────────────────────┘

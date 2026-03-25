@@ -1264,4 +1264,63 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
     }
+
+    /// Preview title shows scroll offset when `preview_scroll > 0`.
+    #[test]
+    fn render_with_preview_scroll() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        app.preview_scroll = 5;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    /// Preview shows "No entries match" when filter produces empty list.
+    #[test]
+    fn render_empty_filter() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        app.filter = "zzz_nonexistent".to_string();
+        app.refilter();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    /// Preview pane shows loaded SKILL.md content from cache.
+    #[test]
+    fn render_with_loaded_preview() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        app.preview_cache.insert(
+            "skills/browser".to_string(),
+            PreviewState::Loaded(PreviewContent {
+                name: Some("Browser Automation".into()),
+                description: Some("Automate browsing".into()),
+                risk: Some("medium".into()),
+                source: Some("community".into()),
+                body_excerpt: Some("## Usage\n- Navigate pages".into()),
+            }),
+        );
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    /// Preview pane shows failure state when fetch failed.
+    #[test]
+    fn render_with_failed_preview() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        app.preview_cache
+            .insert("skills/browser".to_string(), PreviewState::Failed);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
 }
