@@ -1,0 +1,28 @@
+---
+source: crates/cli/src/commands/search_tui.rs
+expression: buffer_text(terminal.backend().buffer())
+---
+ type to filter, Enter to select, Esc to cancel   3/3
+┌ Results ─────────────────────┐┌ Preview ─────────────────────────────────────┐
+│> code-reviewer  ★150  🛡 92  a││code-reviewer                                 │
+│  docker-helper  ★500  skills.││                                              │
+│  testing-pro  ★75  🛡 88  skil││Registry:       agentskill.sh                 │
+│                              ││Owner:          alice                         │
+│                              ││Stars:          150                           │
+│                              ││Security Score: 92/100                        │
+│                              ││Source:         alice/code-reviewer           │
+│                              ││URL:                                          │
+│                              ││https://agentskill.sh/@alice/code-reviewer    │
+│                              ││                                              │
+│                              ││Description:                                  │
+│                              ││                                              │
+│                              ││Review code changes automatically             │
+│                              ││                                              │
+│                              ││──────────────────────────────                │
+│                              ││                                              │
+│                              ││SKILL.md:                                     │
+│                              ││                                              │
+│                              ││Name:        Code Reviewer                    │
+│                              ││Description: Automated review                 │
+│                              ││Risk:        ✓ low                            │
+└──────────────────────────────┘└──────────────────────────────────────────────┘

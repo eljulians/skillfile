@@ -1434,4 +1434,79 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
     }
+
+    /// Status bar shows "(of N total)" when total exceeds displayed items.
+    #[test]
+    fn render_total_exceeds_displayed() {
+        let items = sample_items();
+        let mut app = App::new(&items, 42);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    /// List items show audit pass/fail icons when `audit_cache` is populated.
+    #[test]
+    fn render_with_loaded_audits() {
+        let items = sample_items();
+        let mut app = App::new(&items, 3);
+        // docker-helper (skills.sh) has no security_score — the audit
+        // cache branch in `build_list_item_audit_spans` activates here.
+        let url = items[1].url.clone();
+        app.audit_cache.insert(
+            url,
+            AuditState::Loaded(vec![
+                SecurityAudit {
+                    provider: "Socket".into(),
+                    passed: true,
+                },
+                SecurityAudit {
+                    provider: "Snyk".into(),
+                    passed: false,
+                },
+            ]),
+        );
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    /// Preview pane shows SKILL.md content when cache is populated.
+    #[test]
+    fn render_with_loaded_skill_preview() {
+        let items = sample_items();
+        let mut app = App::new(&items, 3);
+        let url = items[0].url.clone();
+        app.skill_preview_cache.insert(
+            url,
+            SkillPreviewState::Loaded(PreviewContent {
+                name: Some("Code Reviewer".into()),
+                description: Some("Automated review".into()),
+                risk: Some("low".into()),
+                source: None,
+                body_excerpt: Some("## When to use\n- PR review".into()),
+            }),
+        );
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
+
+    /// Preview shows failure state when audit fetch failed.
+    #[test]
+    fn render_with_failed_audits() {
+        let items = sample_items();
+        let mut app = App::new(&items, 3);
+        // Highlight docker-helper (skills.sh, index 1) to show failed audits.
+        app.list_state.select(Some(1));
+        let url = items[1].url.clone();
+        app.audit_cache.insert(url, AuditState::Failed);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        insta::assert_snapshot!(buffer_text(terminal.backend().buffer()));
+    }
 }

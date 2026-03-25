@@ -1,0 +1,28 @@
+---
+source: crates/cli/src/commands/add_tui.rs
+expression: buffer_text(terminal.backend().buffer())
+---
+ Space toggle  a all  Tab scroll  Enter confirm  Esc cancel  5/5
+┌ owner/repo ──────────────────┐┌ Preview ↑↓Tab ───────────────────────────────┐
+│▶ ○ browser  📁   skills/      ││skills/browser                                │
+│  ○ code-review  📁   skills/  ││                                              │
+│  ○ commit  📁   skills/       ││✗ Preview not available                       │
+│  ○ SKILL.md  skills/debugging││                                              │
+│  ○ testing  📁   skills/      ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+└──────────────────────────────┘└──────────────────────────────────────────────┘
