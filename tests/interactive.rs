@@ -133,6 +133,12 @@ fn init_wizard_golden_path() {
 
 /// Verify the search TUI starts, renders, and exits cleanly on Esc.
 /// Requires network + GitHub token, so skips gracefully without one.
+///
+/// We match on the alternate screen escape sequence (`\x1b[?1049h`)
+/// rather than rendered text because ratatui redraws the full screen
+/// every 100ms, flooding the PTY stream with ANSI codes that split
+/// any plain-text needle like "filter" across multiple escape
+/// boundaries.
 #[test]
 fn search_tui_cancel_exits_cleanly() {
     // Skip without a GitHub token (same pattern as upstream.rs).
@@ -152,10 +158,15 @@ fn search_tui_cancel_exits_cleanly() {
     let mut session = rexpect::session::spawn_command(cmd, Some(TIMEOUT_MS))
         .expect("failed to spawn search in PTY");
 
-    // Wait for the TUI to render the filter hint.
-    session.exp_string("filter").expect("TUI should render");
+    // Wait for the TUI to enter alternate screen (proves crossterm init ran).
+    session
+        .exp_string("\x1b[?1049h")
+        .expect("TUI should enter alternate screen");
 
-    // Press Esc to cancel (crossterm reads raw bytes — no TCSADRAIN issue).
+    // Let the TUI stabilize (a few redraw cycles at 100ms poll interval).
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Press Esc to cancel.
     session.send("\x1b").expect("send Esc");
 
     // The process should exit cleanly.
