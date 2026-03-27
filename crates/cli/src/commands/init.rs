@@ -43,8 +43,6 @@ fn build_manifest_with_targets(existing: &str, new_targets: &[(String, String)])
     output
 }
 
-/// Compute gitignore lines to append (if any).
-/// Returns `None` if nothing needs to be added.
 fn gitignore_additions(existing: &str) -> Option<String> {
     let lines: Vec<&str> = existing.lines().collect();
 
@@ -103,7 +101,6 @@ fn update_gitignore(repo_root: &Path) -> Result<(), SkillfileError> {
     Ok(())
 }
 
-/// Return a human-readable hint for the entity types supported by a platform.
 fn supported_types_hint(adapter_name: &str) -> &'static str {
     let reg = adapters();
     match reg.get(adapter_name) {
@@ -117,7 +114,6 @@ fn supported_types_hint(adapter_name: &str) -> &'static str {
     }
 }
 
-/// Write targets to the user-global personal config file.
 fn write_personal_config(new_targets: &[(String, String)]) -> Result<(), SkillfileError> {
     use skillfile_core::models::{InstallTarget, Scope};
     let targets: Vec<InstallTarget> = new_targets
@@ -131,7 +127,6 @@ fn write_personal_config(new_targets: &[(String, String)]) -> Result<(), Skillfi
     Ok(())
 }
 
-/// Interactive platform + scope selection. Returns (adapter, scope) pairs.
 fn select_platforms_and_scope(
     existing_set: &std::collections::HashSet<&str>,
 ) -> Result<Option<Vec<(String, String)>>, SkillfileError> {
@@ -183,7 +178,6 @@ fn select_platforms_and_scope(
     Ok(Some(targets))
 }
 
-/// Interactive destination choice: Skillfile or personal config.
 fn select_destination() -> Result<&'static str, SkillfileError> {
     let config_location = crate::config::config_path().map_or_else(
         || "~/.config/skillfile/config.toml".into(),
@@ -232,7 +226,6 @@ fn detect_existing_token() -> bool {
         .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
 }
 
-/// Return `true` if the `gh` binary is available on PATH.
 fn gh_available() -> bool {
     Command::new("gh")
         .arg("--version")
@@ -240,7 +233,6 @@ fn gh_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-/// Validate a token with a lightweight GET to the GitHub API.
 fn validate_token(token: &str) -> bool {
     ureq::Agent::new_with_defaults()
         .get("https://api.github.com/user")
@@ -250,7 +242,6 @@ fn validate_token(token: &str) -> bool {
         .is_ok_and(|r| r.status() == 200)
 }
 
-/// Handle the "paste a token" branch of the init token wizard.
 fn handle_paste_token() -> Result<(), SkillfileError> {
     let token: String =
         cliclack::password("Paste your GitHub personal access token:").interact()?;
@@ -265,7 +256,6 @@ fn handle_paste_token() -> Result<(), SkillfileError> {
     Ok(())
 }
 
-/// Handle the "gh CLI" branch — prompt user to authenticate in another terminal.
 fn handle_gh_cli() -> Result<(), SkillfileError> {
     cliclack::log::info("Run `gh auth login` in another terminal, then press Enter.")?;
     let mut line = String::new();

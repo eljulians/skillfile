@@ -45,7 +45,6 @@ fn url_content_file(url: &str) -> String {
     }
 }
 
-/// Whether an entry represents a directory of files rather than a single file.
 #[must_use]
 pub fn is_dir_entry(entry: &Entry) -> bool {
     match &entry.source {
@@ -99,7 +98,6 @@ pub fn format_parts(entry: &Entry) -> Vec<String> {
     }
 }
 
-/// Read the SHA from a `.meta` file in a vendor directory.
 #[must_use]
 pub fn meta_sha(vdir: &Path) -> Option<String> {
     let meta_path = vdir.join(".meta");

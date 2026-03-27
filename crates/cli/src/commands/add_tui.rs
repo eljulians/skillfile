@@ -31,7 +31,6 @@ use super::skill_preview::{self, parse_skill_frontmatter, PreviewContent};
 // Model
 // ===========================================================================
 
-/// State of a preview fetch for a given path.
 #[derive(Debug, Clone)]
 pub enum PreviewState {
     Loading,
@@ -39,13 +38,11 @@ pub enum PreviewState {
     Failed,
 }
 
-/// Application state for the TUI event loop.
 pub struct App<'a> {
     /// Discovered entry paths (immutable after construction).
     items: &'a [String],
     /// Indices into `items` that match the current filter.
     filtered: Vec<usize>,
-    /// Current filter text typed by the user.
     filter: String,
     /// ListState tracks the currently highlighted row.
     list_state: ListState,
@@ -61,18 +58,15 @@ pub struct App<'a> {
     preview_rx: mpsc::Receiver<(String, PreviewState)>,
     /// Sender cloned into background fetch threads.
     preview_tx: mpsc::Sender<(String, PreviewState)>,
-    /// GitHub owner/repo for preview fetches.
     owner_repo: String,
     /// Git ref for preview fetches.
     ref_: String,
-    /// Vertical scroll offset for the preview pane.
     preview_scroll: u16,
     /// Previously highlighted index — used to reset scroll on highlight change.
     last_highlighted_idx: Option<usize>,
 }
 
 impl<'a> App<'a> {
-    /// Create a new App from discovered entry paths.
     pub fn new(items: &'a [String], owner_repo: &str, ref_: &str) -> Self {
         let filtered: Vec<usize> = (0..items.len()).collect();
         let mut list_state = ListState::default();
@@ -98,20 +92,17 @@ impl<'a> App<'a> {
         }
     }
 
-    /// The path of the currently highlighted item, if any.
     pub fn highlighted_path(&self) -> Option<&'a str> {
         let idx = self.list_state.selected()?;
         let original_idx = *self.filtered.get(idx)?;
         self.items.get(original_idx).map(String::as_str)
     }
 
-    /// The original index of the currently highlighted item.
     fn highlighted_index(&self) -> Option<usize> {
         let idx = self.list_state.selected()?;
         self.filtered.get(idx).copied()
     }
 
-    /// Recompute filtered indices from the current filter text.
     fn refilter(&mut self) {
         let query = self.filter.to_lowercase();
         self.filtered = self
@@ -129,12 +120,10 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Returns true when the event loop should exit.
     fn should_quit(&self) -> bool {
         self.confirmed || self.cancelled
     }
 
-    /// Returns the number of currently selected items.
     fn selection_count(&self) -> usize {
         self.selected.len()
     }
@@ -159,14 +148,12 @@ impl<'a> App<'a> {
         });
     }
 
-    /// Drain any completed preview fetches from the channel into the cache.
     fn poll_previews(&mut self) {
         while let Ok((path, state)) = self.preview_rx.try_recv() {
             self.preview_cache.insert(path, state);
         }
     }
 
-    /// Reset preview scroll when the highlighted item changes.
     fn reset_scroll_if_changed(&mut self) {
         let current = self.highlighted_index();
         if current != self.last_highlighted_idx {
@@ -176,7 +163,6 @@ impl<'a> App<'a> {
     }
 }
 
-/// Returns true if `path` matches `query` (empty query matches all).
 fn path_matches_query(path: &str, query: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -185,7 +171,6 @@ fn path_matches_query(path: &str, query: &str) -> bool {
     query.split_whitespace().all(|w| haystack.contains(w))
 }
 
-/// Returns true if the path has a `.md` extension.
 fn has_md_extension(path: &str) -> bool {
     Path::new(path)
         .extension()
@@ -203,7 +188,6 @@ pub fn resolve_preview_path(path: &str) -> String {
     }
 }
 
-/// Fetch and parse SKILL.md content for the preview pane.
 fn fetch_preview(owner_repo: &str, ref_: &str, path: &str) -> PreviewState {
     let client = skillfile_sources::http::UreqClient::new();
     let gh = skillfile_sources::resolver::GithubFetch {
@@ -221,12 +205,10 @@ fn fetch_preview(owner_repo: &str, ref_: &str, path: &str) -> PreviewState {
     }
 }
 
-/// Returns true if the path represents a directory entry (no .md extension).
 fn is_dir_entry(path: &str) -> bool {
     !has_md_extension(path) && path != "."
 }
 
-/// Extract a display label from a path (last segment).
 fn display_label(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -235,10 +217,8 @@ fn display_label(path: &str) -> &str {
 // Update
 // ===========================================================================
 
-/// Number of lines to scroll per Tab/Shift+Tab press.
 const SCROLL_STEP: u16 = 3;
 
-/// Process a single key event and mutate app state.
 pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
     match key.code {
         KeyCode::Esc => app.cancelled = true,
@@ -287,7 +267,6 @@ fn handle_key_enter(app: &mut App<'_>) {
     }
 }
 
-/// Toggle selection on the highlighted item (Space key).
 fn handle_key_space(app: &mut App<'_>) {
     if let Some(idx) = app.highlighted_index() {
         if app.selected.contains(&idx) {
@@ -298,7 +277,6 @@ fn handle_key_space(app: &mut App<'_>) {
     }
 }
 
-/// Toggle all currently filtered items (a key).
 fn handle_key_toggle_all(app: &mut App<'_>) {
     let all_selected = app.filtered.iter().all(|idx| app.selected.contains(idx));
     if all_selected {
@@ -312,14 +290,12 @@ fn handle_key_toggle_all(app: &mut App<'_>) {
     }
 }
 
-/// Jump to the first item (Home / g key).
 fn handle_key_jump_top(app: &mut App<'_>) {
     if !app.filtered.is_empty() {
         app.list_state.select(Some(0));
     }
 }
 
-/// Jump to the last item (End / G key).
 fn handle_key_jump_bottom(app: &mut App<'_>) {
     if !app.filtered.is_empty() {
         app.list_state.select(Some(app.filtered.len() - 1));
@@ -360,7 +336,6 @@ pub fn draw(frame: &mut Frame, app: &mut App<'_>) {
     draw_preview(frame, panes[1], app);
 }
 
-/// Top status bar: keybindings + selection count + filter count.
 fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
     let sel_count = app.selection_count();
     let count = format!("{}/{}", app.filtered.len(), app.items.len());
@@ -411,7 +386,6 @@ fn parent_hint(path: &str) -> &str {
     }
 }
 
-/// Left pane: filterable list with checkboxes.
 fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
     let items: Vec<ListItem<'_>> = app
         .filtered
@@ -478,7 +452,6 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-/// Right pane: SKILL.md preview for the highlighted entry.
 fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     let scroll_hint = if app.preview_scroll > 0 {
         format!(" Preview (scroll: {}) ", app.preview_scroll)
@@ -509,7 +482,6 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     frame.render_widget(para, area);
 }
 
-/// Build the loaded-content section of the preview pane (all owned).
 fn build_loaded_preview_lines(content: &PreviewContent, url: &str) -> Vec<Line<'static>> {
     let label_style = Style::default().fg(Color::DarkGray);
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -528,7 +500,6 @@ fn build_loaded_preview_lines(content: &PreviewContent, url: &str) -> Vec<Line<'
     lines
 }
 
-/// Build a GitHub URL for the entry.
 fn build_github_url(owner_repo: &str, ref_: &str, path: &str) -> String {
     if path == "." {
         return format!("https://github.com/{owner_repo}/tree/{ref_}");
@@ -537,7 +508,6 @@ fn build_github_url(owner_repo: &str, ref_: &str, path: &str) -> String {
     format!("https://github.com/{owner_repo}/{kind}/{ref_}/{path}")
 }
 
-/// Build the preview text for a highlighted entry.
 fn build_preview_lines(path: &str, state: Option<&PreviewState>, url: &str) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(16);
 
@@ -574,7 +544,6 @@ fn build_preview_lines(path: &str, state: Option<&PreviewState>, url: &str) -> V
 // Terminal lifecycle
 // ===========================================================================
 
-/// Resolve confirmed selections into paths.
 fn resolve_selections(app: &App<'_>) -> Vec<String> {
     let mut selected: Vec<usize> = app.selected.iter().copied().collect();
     selected.sort_unstable();
@@ -584,7 +553,6 @@ fn resolve_selections(app: &App<'_>) -> Vec<String> {
         .collect()
 }
 
-/// Handle a single terminal event.
 fn process_terminal_event(app: &mut App<'_>) -> Result<(), std::io::Error> {
     if let Event::Key(key) = event::read()? {
         handle_key(app, key);
@@ -592,7 +560,6 @@ fn process_terminal_event(app: &mut App<'_>) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// Resolve the final result from the event loop.
 fn resolve_result(app: &App<'_>) -> Vec<String> {
     if app.confirmed {
         resolve_selections(app)

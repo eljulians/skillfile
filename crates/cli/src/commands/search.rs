@@ -19,24 +19,14 @@ use skillfile_sources::resolver::list_repo_skill_entries;
 
 use super::add::{cmd_add, entry_from_github, GithubEntryArgs};
 
-/// Configuration for the `skillfile search` command.
-///
-/// Groups all CLI arguments into a single parameter object to keep the
-/// public entry point clean (Parameter Object pattern).
+/// CLI arguments for `skillfile search` grouped as a Parameter Object.
 pub struct SearchConfig<'a> {
-    /// Search query string.
     pub query: &'a str,
-    /// Maximum number of results.
     pub limit: usize,
-    /// Minimum security score filter (0-100).
     pub min_score: Option<u8>,
-    /// Output results as JSON instead of a table.
     pub json: bool,
-    /// Query only this named registry.
     pub registry: Option<&'a str>,
-    /// Disable interactive selection, print plain text.
     pub no_interactive: bool,
-    /// Repository root for `cmd_add` delegation.
     pub repo_root: &'a Path,
 }
 
@@ -287,12 +277,9 @@ fn resolve_skill_path(
     prompt_result(inquire::Select::new("Select file:", list).prompt())
 }
 
-/// How well an entry path matches a skill name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MatchScore {
-    /// Last path segment (or file stem) exactly equals the skill name.
     Exact,
-    /// The path contains the skill name as a substring.
     Contains,
 }
 
@@ -342,7 +329,6 @@ fn prompt_result<T>(result: Result<T, inquire::InquireError>) -> Result<Option<T
 // Plain text output
 // ===========================================================================
 
-/// Append a separator then `text` to `meta`, only when `meta` is non-empty.
 fn append_meta_field(meta: &mut String, text: &str) {
     if !meta.is_empty() {
         meta.push_str("  ");
@@ -350,7 +336,6 @@ fn append_meta_field(meta: &mut String, text: &str) {
     meta.push_str(text);
 }
 
-/// Build the metadata line (owner / stars / security score) for one result.
 fn build_meta_line(item: &skillfile_sources::registry::SearchResult) -> String {
     use std::fmt::Write;
     let mut meta = String::new();
@@ -366,7 +351,6 @@ fn build_meta_line(item: &skillfile_sources::registry::SearchResult) -> String {
     meta
 }
 
-/// Print results as formatted text for terminal display.
 pub fn print_table(w: &mut dyn Write, resp: &SearchResponse, single_registry: Option<&str>) {
     if resp.items.is_empty() {
         let _ = writeln!(w, "No results found.");
@@ -412,7 +396,6 @@ pub fn print_table(w: &mut dyn Write, resp: &SearchResponse, single_registry: Op
     }
 }
 
-/// Print results as JSON.
 pub fn print_json(w: &mut dyn Write, resp: &SearchResponse) -> Result<(), SkillfileError> {
     let json = serde_json::to_string_pretty(resp)
         .map_err(|e| SkillfileError::Install(format!("failed to serialize search results: {e}")))?;

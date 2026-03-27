@@ -62,7 +62,6 @@ fn discover_github_token() -> Option<String> {
 // HttpClient trait — abstraction over HTTP GET for testability
 // ---------------------------------------------------------------------------
 
-/// Parameters for a POST request with a Bearer token.
 pub struct BearerPost<'a> {
     pub url: &'a str,
     pub body: &'a str,
@@ -81,8 +80,6 @@ pub struct BearerPost<'a> {
 /// - `get_json`: GitHub API calls that may return 4xx gracefully
 /// - `post_json`: POST with JSON body (used by some registry APIs)
 pub trait HttpClient: Send + Sync {
-    /// GET a URL and return the response body as raw bytes.
-    ///
     /// Returns `Err(SkillfileError::Network)` on HTTP errors (including 404).
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SkillfileError>;
 
@@ -142,7 +139,6 @@ impl UreqClient {
         }
     }
 
-    /// Build a GET request with standard headers.
     fn build_get(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
         let mut req = self.agent.get(url).header("User-Agent", "skillfile/1.0");
         if let Some(token) = github_token() {
@@ -151,7 +147,6 @@ impl UreqClient {
         req
     }
 
-    /// Build a POST request with standard headers.
     fn build_post(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         let mut req = self.agent.post(url).header("User-Agent", "skillfile/1.0");
         if let Some(token) = github_token() {

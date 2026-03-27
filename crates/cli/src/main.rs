@@ -456,7 +456,6 @@ fn run_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), Skil
     )
 }
 
-/// Dispatch content-management commands (validate through resolve).
 fn run_content_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileError> {
     match cmd {
         Command::Completions { shell } => {

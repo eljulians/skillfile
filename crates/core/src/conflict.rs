@@ -17,7 +17,6 @@ pub fn read_conflict(repo_root: &Path) -> Result<Option<ConflictState>, Skillfil
     Ok(Some(state))
 }
 
-/// Write conflict state to `.skillfile/conflict`.
 pub fn write_conflict(repo_root: &Path, state: &ConflictState) -> Result<(), SkillfileError> {
     let p = repo_root.join(CONFLICT_FILE);
     if let Some(parent) = p.parent() {
@@ -38,7 +37,6 @@ pub fn clear_conflict(repo_root: &Path) -> Result<(), SkillfileError> {
     Ok(())
 }
 
-/// Check whether a conflict file exists.
 #[must_use]
 pub fn has_conflict(repo_root: &Path) -> bool {
     repo_root.join(CONFLICT_FILE).exists()

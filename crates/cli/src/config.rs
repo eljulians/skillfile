@@ -41,15 +41,12 @@ use skillfile_core::parser::parse_manifest;
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Config {
-    /// Optional GitHub personal access token.
     #[serde(skip_serializing_if = "Option::is_none")]
     github_token: Option<String>,
-    /// Platform install targets.
     #[serde(default)]
     install: Vec<InstallEntry>,
 }
 
-/// A single `[[install]]` entry in the config file.
 #[derive(Debug, Serialize, Deserialize)]
 struct InstallEntry {
     platform: String,
@@ -159,10 +156,6 @@ fn write_config_to(config: &Config, path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// Write install targets to the user-global config file.
-///
-/// Returns `Ok(())` if successful, or an error if the config directory
-/// cannot be determined or the file cannot be written.
 pub fn write_user_targets(targets: &[InstallTarget]) -> Result<(), std::io::Error> {
     match config_path() {
         Some(path) => write_user_targets_to(targets, &path),

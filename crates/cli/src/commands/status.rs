@@ -99,7 +99,6 @@ fn is_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -> bo
     check_single_file_modified(entry, manifest, repo_root).unwrap_or(false)
 }
 
-/// Per-run context shared across all entry status computations.
 struct StatusContext<'a> {
     manifest: &'a Manifest,
     repo_root: &'a Path,

@@ -56,7 +56,6 @@ pub enum RegistryId {
 }
 
 impl RegistryId {
-    /// String representation matching the registry's domain name.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::AgentskillSh => "agentskill.sh",
@@ -91,7 +90,6 @@ impl std::str::FromStr for RegistryId {
     }
 }
 
-/// Options for a registry search query.
 #[derive(Debug, Clone)]
 pub struct SearchOptions {
     /// Maximum number of results to return.
@@ -109,22 +107,14 @@ impl Default for SearchOptions {
     }
 }
 
-/// A single search result from a registry.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
-    /// Skill/agent name.
     pub name: String,
-    /// Owner (GitHub user or org).
     pub owner: String,
-    /// Human-readable description.
     pub description: Option<String>,
-    /// Security score (0-100).
     pub security_score: Option<u8>,
-    /// GitHub stars.
     pub stars: Option<u32>,
-    /// Link to the skill page.
     pub url: String,
-    /// Registry that provided this result.
     pub registry: RegistryId,
     /// GitHub `owner/repo` if known from the registry metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,7 +124,6 @@ pub struct SearchResult {
     pub source_path: Option<String>,
 }
 
-/// The response from a registry search.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResponse {
     /// Matching results (up to `limit`).
@@ -147,23 +136,17 @@ pub struct SearchResponse {
 // Registry trait
 // ===========================================================================
 
-/// Parameters for a registry search call.
 pub(crate) struct SearchQuery<'a> {
     pub client: &'a dyn HttpClient,
     pub query: &'a str,
     pub opts: &'a SearchOptions,
 }
 
-/// A searchable registry backend.
 pub(crate) trait Registry: Send + Sync {
-    /// Human-readable name shown in output (e.g. "agentskill.sh").
     fn name(&self) -> &str;
 
-    /// Search this registry. Returns a unified [`SearchResponse`].
     fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError>;
 
-    /// Fetch raw SKILL.md content for a search result.
-    ///
     /// Each registry extracts the content from its own data source:
     /// agentskill.sh scrapes Nuxt hydration data, skills.sh fetches from
     /// `raw.githubusercontent.com`. Default returns `None` (not supported).
@@ -193,9 +176,7 @@ pub const REGISTRY_NAMES: &[&str] = &["agentskill.sh", "skills.sh", "skillhub.cl
 // Public search functions
 // ===========================================================================
 
-/// Search all registries and aggregate results.
-///
-/// Iterates over all registries, collects results (skipping registries that
+/// Iterates over all registries, collecting results (skipping registries that
 /// fail with a warning), applies `min_score` filter, and returns combined
 /// results.
 pub fn search_all(query: &str, opts: &SearchOptions) -> Result<SearchResponse, SkillfileError> {

@@ -8,13 +8,11 @@ use skillfile_core::error::SkillfileError;
 use super::scrape::{html_to_markdown, json_string_end, urlencoded};
 use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
 
-/// Base URL for the skills.sh search API.
 const SKILLSSH_API: &str = "https://skills.sh/api/search";
 
 /// The skills.sh registry (public, no auth, minimal fields).
 pub struct SkillsSh;
 
-/// Base URL for raw file fetches from GitHub (no API, no auth required).
 const GITHUB_RAW: &str = "https://raw.githubusercontent.com";
 
 #[derive(Deserialize)]

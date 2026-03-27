@@ -23,7 +23,6 @@ use crate::paths::{installed_dir_files, installed_path, source_path};
 // Patch application helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a patch application error into PatchConflict for the given entry.
 fn to_patch_conflict(err: &SkillfileError, entry_name: &str) -> SkillfileError {
     SkillfileError::PatchConflict {
         message: err.to_string(),
@@ -31,7 +30,6 @@ fn to_patch_conflict(err: &SkillfileError, entry_name: &str) -> SkillfileError {
     }
 }
 
-/// Bundles the entry being patched with the repo root for patch operations.
 struct PatchCtx<'a> {
     entry: &'a Entry,
     repo_root: &'a Path,
@@ -148,8 +146,6 @@ fn patch_already_covers(patch_text: &str, cache_text: &str, installed_text: &str
     }
 }
 
-/// Return `true` if the stored patch already describes the installed content,
-/// meaning no re-pin is needed.
 fn should_skip_pin(ctx: &PatchCtx<'_>, cache_text: &str, installed_text: &str) -> bool {
     if !has_patch(ctx.entry, ctx.repo_root) {
         return false;
@@ -160,7 +156,6 @@ fn should_skip_pin(ctx: &PatchCtx<'_>, cache_text: &str, installed_text: &str) -
     patch_already_covers(&pt, cache_text, installed_text)
 }
 
-/// Compare installed vs cache; write patch if they differ. Silent on missing prerequisites.
 fn auto_pin_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
     if entry.source_type() == "local" {
         return;
@@ -219,9 +214,6 @@ fn auto_pin_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
     }
 }
 
-/// Check a single cache file against its installed counterpart and generate/update
-/// the patch if the user has modified the installed copy. Returns the filename if
-/// a new patch was written.
 struct AutoPinCtx<'a> {
     vdir: &'a Path,
     entry: &'a Entry,
@@ -278,7 +270,6 @@ fn try_auto_pin_file(cache_file: &Path, ctx: &AutoPinCtx<'_>) -> Option<String> 
     }
 }
 
-/// Auto-pin each modified file in a directory entry's installed copy.
 fn auto_pin_dir_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
     let vdir = &vendor_dir_for(entry, repo_root);
     if !vdir.is_dir() {
@@ -315,18 +306,11 @@ fn auto_pin_dir_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
 // Core install entry point
 // ---------------------------------------------------------------------------
 
-/// Context for the `install_entry` public API.
 pub struct InstallCtx<'a> {
     pub repo_root: &'a Path,
     pub opts: Option<&'a InstallOptions>,
 }
 
-/// Deploy one entry to its installed path via the platform adapter.
-///
-/// The adapter owns all platform-specific logic (target dirs, flat vs. nested).
-/// This function handles cross-cutting concerns: source resolution,
-/// missing-source warnings, and patch application.
-///
 /// Returns `Err(PatchConflict)` if a stored patch fails to apply cleanly.
 pub fn install_entry(
     entry: &Entry,
@@ -409,7 +393,6 @@ fn check_preconditions(manifest: &Manifest, repo_root: &Path) -> Result<(), Skil
 // Deploy all entries, handling patch conflicts
 // ---------------------------------------------------------------------------
 
-/// Format a SHA transition hint for conflict error messages.
 fn sha_transition_hint(old_sha: &str, new_sha: &str) -> String {
     if !old_sha.is_empty() && !new_sha.is_empty() && old_sha != new_sha {
         format!(
@@ -422,20 +405,17 @@ fn sha_transition_hint(old_sha: &str, new_sha: &str) -> String {
     }
 }
 
-/// Shared lock maps threaded through `deploy_all` and `handle_patch_conflict`.
 struct LockMaps<'a> {
     locked: &'a std::collections::BTreeMap<String, skillfile_core::models::LockEntry>,
     old_locked: &'a std::collections::BTreeMap<String, skillfile_core::models::LockEntry>,
 }
 
-/// Context threaded through the deploy pipeline.
 struct DeployCtx<'a> {
     repo_root: &'a Path,
     opts: &'a InstallOptions,
     maps: LockMaps<'a>,
 }
 
-/// Handle a patch conflict during deployment: write conflict state and return an error.
 fn handle_patch_conflict(
     entry: &Entry,
     entry_name: &str,
@@ -474,7 +454,6 @@ fn handle_patch_conflict(
     )))
 }
 
-/// Install one entry and translate a `PatchConflict` into a full conflict error.
 fn install_entry_or_conflict(
     entry: &Entry,
     target: &InstallTarget,
@@ -519,8 +498,6 @@ fn deploy_all(manifest: &Manifest, ctx: &DeployCtx<'_>) -> Result<(), SkillfileE
 // cmd_install
 // ---------------------------------------------------------------------------
 
-/// Populate `manifest.install_targets` from `extra_targets` when the manifest
-/// has none of its own. Emits a progress message when targets are injected.
 fn apply_extra_targets(manifest: &mut Manifest, extra_targets: Option<&[InstallTarget]>) {
     let Some(targets) = extra_targets else {
         return;
@@ -531,9 +508,6 @@ fn apply_extra_targets(manifest: &mut Manifest, extra_targets: Option<&[InstallT
     manifest.install_targets = targets.to_vec();
 }
 
-/// Parse the manifest, apply extra targets if the Skillfile has none, and
-/// return the parsed manifest. Extracted to reduce cognitive complexity of
-/// `cmd_install`.
 fn load_manifest(
     repo_root: &Path,
     extra_targets: Option<&[InstallTarget]>,
@@ -561,14 +535,12 @@ fn load_manifest(
     Ok(manifest)
 }
 
-/// Run the auto-pin pass over all entries when `--update` is requested.
 fn auto_pin_all(manifest: &Manifest, repo_root: &Path) {
     for entry in &manifest.entries {
         auto_pin_entry(entry, manifest, repo_root);
     }
 }
 
-/// Print the first-install hint listing the configured platforms.
 fn print_first_install_hint(manifest: &Manifest) {
     let platforms: Vec<String> = manifest
         .install_targets
@@ -579,7 +551,6 @@ fn print_first_install_hint(manifest: &Manifest) {
     progress!("  Run `skillfile init` to add or change platforms.");
 }
 
-/// Options for `cmd_install` beyond the common `repo_root`.
 pub struct CmdInstallOpts<'a> {
     pub dry_run: bool,
     pub update: bool,

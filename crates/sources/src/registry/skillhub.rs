@@ -6,7 +6,6 @@ use skillfile_core::error::SkillfileError;
 
 use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
 
-/// Base URL for the skillhub.club search API.
 const SKILLHUB_API: &str = "https://www.skillhub.club/api/v1/skills/search";
 
 /// The skillhub.club registry (requires `SKILLHUB_API_KEY` env var).

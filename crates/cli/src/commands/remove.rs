@@ -5,7 +5,6 @@ use skillfile_core::lock::{lock_key, read_lock, write_lock};
 use skillfile_core::parser::{find_entry_in, parse_manifest, MANIFEST_NAME};
 use skillfile_sources::sync::vendor_dir_for;
 
-/// Attempt to parse a manifest line and return the entry name.
 fn name_from_line(line: &str) -> Option<String> {
     let result = skillfile_core::parser::parse_manifest_line(line);
     result.map(|entry| entry.name)

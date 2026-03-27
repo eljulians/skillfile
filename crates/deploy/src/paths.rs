@@ -8,7 +8,6 @@ use skillfile_sources::sync::vendor_dir_for;
 
 use crate::adapter::{adapters, AdapterScope, PlatformAdapter};
 
-/// Resolve absolute deploy directory for (adapter, entity_type, scope).
 pub fn resolve_target_dir(
     adapter_name: &str,
     entity_type: EntityType,
@@ -48,7 +47,6 @@ pub fn installed_dir_files(
     Ok(adapter.installed_dir_files(entry, &ctx))
 }
 
-/// Resolve the cache or local source path for an entry.
 #[must_use]
 pub fn source_path(entry: &Entry, repo_root: &Path) -> Option<PathBuf> {
     match &entry.source {
@@ -59,7 +57,6 @@ pub fn source_path(entry: &Entry, repo_root: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Resolve cache path for a remote (GitHub/URL) entry.
 fn source_path_remote(entry: &Entry, repo_root: &Path) -> Option<PathBuf> {
     let vdir = vendor_dir_for(entry, repo_root);
     if is_dir_entry(entry) {
@@ -70,7 +67,6 @@ fn source_path_remote(entry: &Entry, repo_root: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Return the adapter for the first install target, or error.
 fn first_target(manifest: &Manifest) -> Result<&'static dyn PlatformAdapter, SkillfileError> {
     if manifest.install_targets.is_empty() {
         return Err(SkillfileError::Manifest(

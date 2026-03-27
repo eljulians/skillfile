@@ -12,7 +12,6 @@ use skillfile_deploy::install::install_entry;
 use skillfile_sources::strategy::format_parts;
 use skillfile_sources::sync::{sync_entry, SyncContext};
 
-/// Format an entry as a Skillfile line.
 fn format_line(entry: &Entry) -> String {
     let mut parts = vec![
         entry.source_type().to_string(),
@@ -22,7 +21,6 @@ fn format_line(entry: &Entry) -> String {
     parts.join("  ")
 }
 
-/// Sync a single entry and install it to all configured targets.
 fn sync_and_install(
     entry: &Entry,
     repo_root: &Path,
@@ -56,7 +54,6 @@ fn sync_and_install(
     Ok(())
 }
 
-/// CLI arguments for building a GitHub entry.
 pub struct GithubEntryArgs<'a> {
     pub entity_type: &'a str,
     pub owner_repo: &'a str,
@@ -65,7 +62,6 @@ pub struct GithubEntryArgs<'a> {
     pub name: Option<&'a str>,
 }
 
-/// Build an Entry from CLI arguments for a github source.
 pub fn entry_from_github(args: &GithubEntryArgs<'_>) -> Entry {
     let inferred = infer_name(args.path);
     Entry {
@@ -79,7 +75,6 @@ pub fn entry_from_github(args: &GithubEntryArgs<'_>) -> Entry {
     }
 }
 
-/// Build an Entry from CLI arguments for a local source.
 pub fn entry_from_local(entity_type: &str, path: &str, name: Option<&str>) -> Entry {
     let inferred = infer_name(path);
     Entry {
@@ -91,7 +86,6 @@ pub fn entry_from_local(entity_type: &str, path: &str, name: Option<&str>) -> En
     }
 }
 
-/// Build an Entry from CLI arguments for a url source.
 pub fn entry_from_url(entity_type: &str, url: &str, name: Option<&str>) -> Entry {
     let inferred = infer_name(url);
     Entry {
@@ -103,7 +97,6 @@ pub fn entry_from_url(entity_type: &str, url: &str, name: Option<&str>) -> Entry
     }
 }
 
-/// Arguments for [`cmd_add_bulk`].
 pub struct BulkAddArgs<'a> {
     pub entity_type: &'a str,
     pub owner_repo: &'a str,
@@ -149,7 +142,6 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
     Ok(())
 }
 
-/// Interactive or automatic entry selection.
 fn select_entries(
     entries: &[String],
     args: &BulkAddArgs<'_>,
@@ -171,7 +163,6 @@ fn select_entries(
     Ok(selected)
 }
 
-/// Add each selected path to the manifest, collecting results.
 fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
     let mut added = 0usize;
     let mut skipped = 0usize;
@@ -322,7 +313,6 @@ pub fn cmd_add_interactive(repo_root: &Path) -> Result<(), SkillfileError> {
     }
 }
 
-/// Validate that a GitHub repo exists. Returns `Ok(())` or a user-facing error.
 fn validate_github_repo(owner_repo: &str) -> Result<(), SkillfileError> {
     use skillfile_sources::http::HttpClient;
     let client = skillfile_sources::http::UreqClient::new();
@@ -402,7 +392,6 @@ fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
     )
 }
 
-/// Search wizard flow: query → delegates to `cmd_search`.
 fn wizard_search(repo_root: &Path) -> Result<(), SkillfileError> {
     let query: String = cliclack::input("Search query")
         .placeholder("code review")
@@ -421,7 +410,6 @@ fn wizard_search(repo_root: &Path) -> Result<(), SkillfileError> {
     })
 }
 
-/// Local file wizard flow: entity type → path → `cmd_add`.
 fn wizard_local(repo_root: &Path) -> Result<(), SkillfileError> {
     let entity_type: &str = cliclack::select("What are you adding?")
         .item("skill", "Skill", "")
@@ -436,7 +424,6 @@ fn wizard_local(repo_root: &Path) -> Result<(), SkillfileError> {
     cmd_add(&entry, repo_root)
 }
 
-/// URL wizard flow: entity type → URL → optional name → `cmd_add`.
 fn wizard_url(repo_root: &Path) -> Result<(), SkillfileError> {
     let entity_type: &str = cliclack::select("What are you adding?")
         .item("skill", "Skill", "")

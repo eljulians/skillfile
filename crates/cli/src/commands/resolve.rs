@@ -18,14 +18,12 @@ use crate::patch::{
 /// Map of filename to file content used during dir-entry merge operations.
 type FileMap = std::collections::HashMap<String, String>;
 
-/// Three versions to merge.
 struct MergeInput<'a> {
     base: &'a str,
     theirs: &'a str,
     yours: &'a str,
 }
 
-/// Result of a three-way merge.
 struct MergeResult {
     merged: String,
     has_conflicts: bool,
@@ -37,7 +35,6 @@ struct ResolveEntryCtx<'a> {
     repo_root: &'a Path,
 }
 
-/// Context for dir-entry merge and write-back operations.
 struct DirMergeCtx<'a> {
     entry: &'a skillfile_core::models::Entry,
     installed: &'a std::collections::HashMap<String, std::path::PathBuf>,
@@ -121,7 +118,6 @@ fn open_in_editor(content: &str, filename: &str) -> Result<String, SkillfileErro
     Ok(result)
 }
 
-/// Reconstruct the user's version ("yours") for a single-file entry.
 fn reconstruct_yours_single(
     ctx: &ResolveEntryCtx<'_>,
     base: &str,
@@ -223,7 +219,6 @@ fn resolve_single_file(
     Ok(())
 }
 
-/// Upstream base and new versions for dir-entry merge.
 struct UpstreamVersions<'a> {
     filenames: &'a [String],
     base: &'a FileMap,
@@ -276,7 +271,6 @@ fn merge_all_files(
     Ok(Some((merged_results, any_conflict)))
 }
 
-/// Write merged results to installed paths and update patch files.
 fn write_merged_results(
     merged_results: &FileMap,
     theirs_files: &FileMap,

@@ -18,16 +18,12 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-/// How often to check for updates (24 hours).
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// GitHub API endpoint for the latest release.
 const RELEASES_URL: &str = "https://api.github.com/repos/eljulians/skillfile/releases/latest";
 
-/// Current version of this binary (set at compile time from Cargo.toml).
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// A notice to display when an update is available.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateNotice {
     pub current: String,
@@ -45,14 +41,12 @@ impl std::fmt::Display for UpdateNotice {
     }
 }
 
-/// Cached state from the last update check.
 #[derive(Debug, Serialize, Deserialize)]
 struct CacheEntry {
     /// Unix timestamp (seconds since epoch) of last check.
     last_check: String,
     /// Latest version string (without `v` prefix).
     latest_version: String,
-    /// URL to the release page.
     release_url: String,
 }
 
@@ -68,12 +62,6 @@ pub fn cache_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|d| d.join("skillfile").join("update-check.json"))
 }
 
-/// Determine whether the update check should run.
-///
-/// Returns `false` if any opt-out condition is met:
-/// - `SKILLFILE_NO_UPDATE_NOTIFIER` env var is set and non-empty
-/// - `CI` env var is `true` or `1`
-/// - stderr is not a TTY (piped output)
 pub fn should_check() -> bool {
     if std::env::var("SKILLFILE_NO_UPDATE_NOTIFIER").is_ok_and(|v| !v.is_empty()) {
         return false;
@@ -116,7 +104,6 @@ fn read_cache_from(path: &std::path::Path) -> Option<CacheEntry> {
     }
 }
 
-/// Read the cached update-check entry from the default cache path.
 fn read_cache() -> Option<CacheEntry> {
     read_cache_from(&cache_path()?)
 }
@@ -131,7 +118,6 @@ fn write_cache_to(path: &std::path::Path, entry: &CacheEntry) {
     }
 }
 
-/// Write a cache entry to the default cache path. Errors are silently ignored.
 fn write_cache(entry: &CacheEntry) {
     if let Some(path) = cache_path() {
         write_cache_to(&path, entry);
@@ -229,7 +215,6 @@ pub fn spawn_check() -> mpsc::Receiver<Option<UpdateNotice>> {
 // Timestamp helpers (no chrono dependency needed)
 // ---------------------------------------------------------------------------
 
-/// Return the current time as a Unix timestamp string (seconds since epoch).
 fn now_timestamp() -> String {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -238,7 +223,6 @@ fn now_timestamp() -> String {
         .to_string()
 }
 
-/// Parse a Unix timestamp string back to [`SystemTime`].
 fn parse_timestamp(s: &str) -> Option<SystemTime> {
     let secs: u64 = s.parse().ok()?;
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))

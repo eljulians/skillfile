@@ -16,7 +16,6 @@ use crate::strategy::{content_file, is_dir_entry, meta_sha};
 
 pub const VENDOR_DIR: &str = ".skillfile/cache";
 
-/// Options for sync/install operations.
 pub struct SyncContext {
     pub repo_root: PathBuf,
     pub dry_run: bool,
@@ -25,7 +24,6 @@ pub struct SyncContext {
     pub locked: BTreeMap<String, LockEntry>,
 }
 
-/// Compute the vendor cache directory for an entry.
 #[must_use]
 pub fn vendor_dir_for(entry: &Entry, repo_root: &Path) -> PathBuf {
     repo_root
@@ -47,7 +45,6 @@ fn dir_has_content(vdir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if content exists in the vendor directory for an entry.
 fn content_exists(entry: &Entry, vdir: &Path) -> bool {
     match &entry.source {
         SourceFields::Github { .. } => {
@@ -66,7 +63,6 @@ fn content_exists(entry: &Entry, vdir: &Path) -> bool {
     }
 }
 
-/// Cache the SHA for a GitHub entry after a successful sync result.
 fn cache_github_sha(ctx: &mut SyncContext, entry: &Entry, sha: &str) {
     let SourceFields::Github {
         owner_repo, ref_, ..
@@ -124,7 +120,6 @@ struct SyncParams<'a> {
     locked: &'a BTreeMap<String, LockEntry>,
 }
 
-/// Resolved coordinates for a GitHub entry.
 struct GithubRef<'a> {
     owner_repo: &'a str,
     path_in_repo: &'a str,
@@ -227,7 +222,6 @@ fn fetch_and_write_github(op: &FetchOp<'_>, is_dir: bool) -> Result<String, Skil
     }
 }
 
-/// All fields needed to write the `.meta` file for a GitHub entry.
 struct GithubMeta<'a> {
     vdir: &'a Path,
     owner_repo: &'a str,
@@ -427,7 +421,6 @@ fn sync_github_core(
     Ok(Some((key, LockEntry { sha, raw_url })))
 }
 
-/// Parameters for a URL sync operation.
 struct UrlSyncOp<'a> {
     client: &'a dyn HttpClient,
     entry: &'a Entry,
@@ -503,7 +496,6 @@ fn sync_entry_core(
     }
 }
 
-/// A `(owner_repo, ref_)` pair for SHA resolution checks.
 struct RepoRef<'a> {
     owner_repo: &'a str,
     ref_: &'a str,
@@ -571,7 +563,6 @@ fn collect_pairs_to_resolve(
     need_resolve
 }
 
-/// Context for parallel SHA resolution: entries, locked map, and update flag.
 struct ResolveCtx<'a> {
     entries: &'a [&'a Entry],
     locked: &'a BTreeMap<String, LockEntry>,
@@ -613,7 +604,6 @@ fn resolve_shas_parallel(
     Ok(cache)
 }
 
-/// Bundles state for the parallel and sequential sync execution paths.
 struct SyncJob<'a> {
     client: &'a UreqClient,
     repo_root: &'a Path,
@@ -772,9 +762,7 @@ fn run_parallel_sync(job: SyncJob<'_>) -> Result<(), SkillfileError> {
     Ok(())
 }
 
-/// Fetch the text content of a single-file GitHub entry at a specific SHA.
 /// Used by `diff` and `resolve` in conflict mode.
-///
 /// Returns the file content as a UTF-8 string, or an error for binary files.
 pub fn fetch_file_at_sha(
     client: &dyn HttpClient,
@@ -801,8 +789,6 @@ pub fn fetch_file_at_sha(
         .map_err(|_| SkillfileError::Network(format!("binary file at sha {sha}")))
 }
 
-/// Fetch all text files in a directory GitHub entry at a specific SHA.
-///
 /// Returns a map of `relative_path -> content`. Binary files are silently skipped.
 /// Used by `diff` and `resolve` in conflict mode.
 pub fn fetch_dir_at_sha(

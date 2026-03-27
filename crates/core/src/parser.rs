@@ -40,7 +40,6 @@ fn is_valid_name(name: &str) -> bool {
             .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_')
 }
 
-/// Push `current` into `parts` if non-empty, leaving `current` empty.
 fn flush_token(current: &mut String, parts: &mut Vec<String>) {
     if !current.is_empty() {
         parts.push(std::mem::take(current));
@@ -71,7 +70,6 @@ fn split_line(line: &str) -> Vec<String> {
     parts
 }
 
-/// Remove inline comment (# ...) from field list.
 fn strip_inline_comment(parts: Vec<String>) -> Vec<String> {
     if let Some(pos) = parts.iter().position(|p| p.starts_with('#')) {
         parts[..pos].to_vec()
@@ -129,7 +127,6 @@ fn parse_github_entry(
     (Some(entry), warnings)
 }
 
-/// Parse a local entry line.
 fn parse_local_entry(parts: &[String], entity_type: EntityType) -> (Option<Entry>, Vec<String>) {
     let warnings = Vec::new();
 
@@ -170,7 +167,6 @@ fn parse_local_entry(parts: &[String], entity_type: EntityType) -> (Option<Entry
     }
 }
 
-/// Parse a url entry line.
 fn parse_url_entry(
     parts: &[String],
     entity_type: EntityType,
@@ -208,7 +204,6 @@ fn parse_url_entry(
     }
 }
 
-/// Accumulator for manifest parsing state passed to helper functions.
 struct ParseAccumulator {
     entries: Vec<Entry>,
     install_targets: Vec<InstallTarget>,
@@ -216,7 +211,6 @@ struct ParseAccumulator {
     seen_names: HashSet<String>,
 }
 
-/// Process an `install` line, pushing a target or a warning.
 fn parse_install_line(parts: &[String], lineno: usize, acc: &mut ParseAccumulator) {
     if parts.len() < 3 {
         acc.warnings.push(format!(
@@ -243,7 +237,6 @@ fn parse_install_line(parts: &[String], lineno: usize, acc: &mut ParseAccumulato
     }
 }
 
-/// Validate an entry name and insert it into the accumulator, warning on problems.
 fn validate_and_push_entry(entry: Entry, lineno: usize, acc: &mut ParseAccumulator) {
     if !is_valid_name(&entry.name) {
         acc.warnings.push(format!(
@@ -263,7 +256,6 @@ fn validate_and_push_entry(entry: Entry, lineno: usize, acc: &mut ParseAccumulat
     }
 }
 
-/// Dispatch a known-source line to the appropriate parser and return the result.
 fn parse_source_entry(
     parts: &[String],
     lineno: usize,
@@ -292,8 +284,6 @@ fn parse_source_entry(
     }
 }
 
-/// Parse and accumulate a known-source line: dispatch, collect warnings, push entry.
-/// `parts[0]` must be a known source type (`github`, `local`, or `url`).
 fn process_source_line(parts: &[String], lineno: usize, acc: &mut ParseAccumulator) {
     let source_type = parts[0].as_str();
     let (entry_opt, mut entry_warnings) = parse_source_entry(parts, lineno, source_type);
@@ -303,7 +293,6 @@ fn process_source_line(parts: &[String], lineno: usize, acc: &mut ParseAccumulat
     }
 }
 
-/// Parse a Skillfile manifest from the given path.
 pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileError> {
     let raw_bytes = std::fs::read(manifest_path)?;
 
@@ -357,7 +346,6 @@ pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileErro
     })
 }
 
-/// Try to parse a single manifest line as an entry. Returns `Some(entry)` on success.
 #[must_use]
 pub fn parse_manifest_line(line: &str) -> Option<Entry> {
     let parts = split_line(line);
@@ -379,7 +367,6 @@ pub fn parse_manifest_line(line: &str) -> Option<Entry> {
     entry_opt
 }
 
-/// Find an entry by name in a manifest.
 pub fn find_entry_in<'a>(name: &str, manifest: &'a Manifest) -> Result<&'a Entry, SkillfileError> {
     manifest
         .entries

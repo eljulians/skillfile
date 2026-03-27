@@ -9,7 +9,6 @@ pub const PATCHES_DIR: &str = ".skillfile/patches";
 // Path helpers
 // ---------------------------------------------------------------------------
 
-/// Root directory for all patches: `.skillfile/patches/`.
 #[must_use]
 pub fn patches_root(repo_root: &Path) -> PathBuf {
     repo_root.join(PATCHES_DIR)
@@ -23,15 +22,11 @@ pub fn patch_path(entry: &Entry, repo_root: &Path) -> PathBuf {
         .join(format!("{}.patch", entry.name))
 }
 
-/// Check whether a single-file patch exists for this entry.
-///
-/// Returns `true` if `.skillfile/patches/<type>s/<name>.patch` exists.
 #[must_use]
 pub fn has_patch(entry: &Entry, repo_root: &Path) -> bool {
     patch_path(entry, repo_root).exists()
 }
 
-/// Write a single-file patch for the given entry.
 pub fn write_patch(
     entry: &Entry,
     patch_text: &str,
@@ -45,7 +40,6 @@ pub fn write_patch(
     Ok(())
 }
 
-/// Read the patch text for a single-file entry.
 pub fn read_patch(entry: &Entry, repo_root: &Path) -> Result<String, SkillfileError> {
     let p = patch_path(entry, repo_root);
     Ok(std::fs::read_to_string(&p)?)
@@ -75,7 +69,6 @@ pub fn dir_patch_path(entry: &Entry, filename: &str, repo_root: &Path) -> PathBu
         .join(format!("{filename}.patch"))
 }
 
-/// Check whether any directory patches exist for this entry.
 #[must_use]
 pub fn has_dir_patch(entry: &Entry, repo_root: &Path) -> bool {
     let d = patches_root(repo_root)
@@ -89,12 +82,6 @@ pub fn has_dir_patch(entry: &Entry, repo_root: &Path) -> bool {
         .any(|p| p.extension().is_some_and(|e| e == "patch"))
 }
 
-/// Write a per-file patch for a directory entry.
-///
-/// # Arguments
-///
-/// * `patch_path` - Destination path (from [`dir_patch_path`]).
-/// * `patch_text` - Unified diff text to persist.
 pub fn write_dir_patch(patch_path: &Path, patch_text: &str) -> Result<(), SkillfileError> {
     if let Some(parent) = patch_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -257,9 +244,6 @@ fn parse_hunks(patch_text: &str) -> Result<Vec<Hunk>, SkillfileError> {
     Ok(hunks)
 }
 
-/// Collect the body lines of a single hunk, advancing `pi` past them.
-///
-/// Stops at the next `@@ `, `--- `, or `+++ ` line. Skips "\ No newline" markers.
 fn collect_hunk_body(lines: &[&str], pi: &mut usize) -> Vec<String> {
     let mut body: Vec<String> = Vec::new();
     while *pi < lines.len() {
@@ -348,7 +332,6 @@ impl<'a> PatchState<'a> {
         }
     }
 
-    /// Apply a single hunk body line (`hl`) from a unified diff, updating `output` and `pos`.
     fn apply_line(&mut self, hl: &str) {
         let Some(prefix) = hl.as_bytes().first() else {
             return;
@@ -364,7 +347,6 @@ impl<'a> PatchState<'a> {
         }
     }
 
-    /// Apply all body lines of a hunk, updating `output` and `pos`.
     fn apply_hunk(&mut self, hunk: &Hunk) {
         for hl in &hunk.body {
             self.apply_line(hl);

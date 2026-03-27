@@ -8,7 +8,6 @@ use skillfile_core::error::SkillfileError;
 use super::scrape::urlencoded;
 use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
 
-/// Base URL for the agentskill.sh search API.
 const AGENTSKILL_API: &str = "https://agentskill.sh/api/agent/search";
 
 /// The agentskill.sh registry (110K+ skills, public, no auth).
@@ -131,11 +130,9 @@ impl Registry for AgentskillSh {
 pub struct AgentskillGithubMeta {
     /// GitHub `owner/repo` (e.g. `openclaw/skills`).
     pub source_repo: String,
-    /// Path to the skill file within the repo.
     pub source_path: String,
 }
 
-/// Base URL for the agentskill.sh skills detail API.
 const AGENTSKILL_SKILLS_API: &str = "https://agentskill.sh/api/skills";
 
 #[derive(Deserialize)]

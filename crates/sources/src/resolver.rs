@@ -5,7 +5,6 @@ use crate::http::HttpClient;
 // Re-export so existing callers (`use crate::resolver::github_token`) keep working.
 pub use crate::http::github_token;
 
-/// Perform an HTTP GET and return the response body as bytes.
 pub fn http_get(client: &dyn HttpClient, url: &str) -> Result<Vec<u8>, SkillfileError> {
     client.get_bytes(url)
 }
@@ -127,7 +126,6 @@ pub struct GithubFetch<'a> {
     pub ref_: &'a str,
 }
 
-/// Fetch raw file bytes from `raw.githubusercontent.com`.
 pub fn fetch_github_file(
     gh: &GithubFetch<'_>,
     path_in_repo: &str,
@@ -166,11 +164,6 @@ fn is_repo_meta_file(path: &str) -> bool {
         || path.to_ascii_lowercase().starts_with(".github/")
 }
 
-/// Convert raw `.md` file paths into deduplicated Skillfile entry paths.
-///
-/// Follows the Skillfile convention:
-/// Map a root-level filename to its Skillfile entry path.
-///
 /// `SKILL.md` (case-insensitive) becomes `"."`, everything else stays as-is.
 fn root_entry_path(filename: &str) -> String {
     if filename.eq_ignore_ascii_case("SKILL.md") {
@@ -210,7 +203,6 @@ fn collapse_to_entries(md_files: &[String]) -> Vec<String> {
     entries
 }
 
-/// Find directories containing SKILL.md (case-insensitive).
 fn find_skill_roots(md_files: &[String]) -> std::collections::BTreeSet<&str> {
     let mut roots = std::collections::BTreeSet::new();
     for path in md_files {
@@ -258,7 +250,6 @@ fn find_unclaimed_files<'a>(
         .collect()
 }
 
-/// Group unclaimed files by parent dir and collapse per the original heuristic.
 fn collapse_by_heuristic(unclaimed: &[&str]) -> Vec<String> {
     use std::collections::BTreeMap;
 
@@ -362,7 +353,6 @@ fn list_md_files_with_ref(
     Some(files)
 }
 
-/// A file entry from a GitHub directory listing.
 #[derive(Debug, Clone)]
 pub struct DirEntry {
     pub relative_path: String,
@@ -468,7 +458,6 @@ pub fn decode_safe(raw: Vec<u8>) -> Result<String, Vec<u8>> {
     String::from_utf8(raw).map_err(std::string::FromUtf8Error::into_bytes)
 }
 
-/// File content: either decoded text or raw binary bytes.
 #[derive(Debug, Clone)]
 pub enum FileContent {
     Text(String),
@@ -513,8 +502,6 @@ fn fetch_batch(
     })
 }
 
-/// Download a single file and return `(relative_path, content)`.
-///
 /// Extracted to reduce nesting inside the `thread::scope` closure in
 /// [`fetch_files_parallel`].
 fn download_one(
@@ -526,7 +513,6 @@ fn download_one(
     Ok((rel.to_string(), FileContent::from_bytes(bytes)))
 }
 
-/// Fetch multiple files in parallel using threads.
 pub fn fetch_files_parallel(
     client: &dyn HttpClient,
     files: &[DirEntry],

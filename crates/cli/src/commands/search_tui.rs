@@ -32,14 +32,12 @@ use super::skill_preview::{
 // Model
 // ===========================================================================
 
-/// A single security audit result (provider + pass/fail).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityAudit {
     pub provider: String,
     pub passed: bool,
 }
 
-/// State of an audit fetch for a given skill URL.
 #[derive(Debug, Clone)]
 pub enum AuditState {
     Loading,
@@ -47,26 +45,20 @@ pub enum AuditState {
     Failed,
 }
 
-/// State of a SKILL.md preview fetch for a given search result URL.
 #[derive(Debug, Clone)]
 pub enum SkillPreviewState {
-    /// Fetch in progress.
     Loading,
-    /// Successfully fetched and parsed.
     Loaded(PreviewContent),
-    /// No GitHub coordinates available — nothing to fetch.
+    /// No GitHub coordinates available — cannot fetch SKILL.md preview.
     NotAvailable,
-    /// Fetch attempted but failed.
     Failed,
 }
 
-/// Application state for the TUI event loop.
 pub struct App<'a> {
     /// All search results (immutable after construction).
     items: &'a [SearchResult],
     /// Indices into `items` that match the current filter.
     filtered: Vec<usize>,
-    /// Current filter text typed by the user.
     filter: String,
     /// ListState tracks the currently highlighted row.
     list_state: ListState,
@@ -91,7 +83,6 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    /// Create a new App from search results.
     pub fn new(items: &'a [SearchResult], total: usize) -> Self {
         let filtered: Vec<usize> = (0..items.len()).collect();
         let mut list_state = ListState::default();
@@ -117,14 +108,12 @@ impl<'a> App<'a> {
         }
     }
 
-    /// The currently selected SearchResult, if any.
     pub fn selected(&self) -> Option<&'a SearchResult> {
         let idx = self.list_state.selected()?;
         let original_idx = *self.filtered.get(idx)?;
         self.items.get(original_idx)
     }
 
-    /// Recompute filtered indices from the current filter text.
     fn refilter(&mut self) {
         let query = self.filter.to_lowercase();
         self.filtered = self
@@ -143,7 +132,6 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Returns true when the event loop should exit.
     fn should_quit(&self) -> bool {
         self.confirmed || self.cancelled
     }
@@ -167,7 +155,6 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Drain any completed audit fetches from the channel into the cache.
     fn poll_audits(&mut self) {
         while let Ok((url, state)) = self.audit_rx.try_recv() {
             self.audit_cache.insert(url, state);
@@ -196,7 +183,6 @@ impl<'a> App<'a> {
         });
     }
 
-    /// Drain any completed SKILL.md preview fetches from the channel into the cache.
     fn poll_skill_previews(&mut self) {
         while let Ok((url, state)) = self.skill_preview_rx.try_recv() {
             self.skill_preview_cache.insert(url, state);
@@ -204,7 +190,6 @@ impl<'a> App<'a> {
     }
 }
 
-/// Returns true if `item` matches `query` (empty query matches all).
 fn item_matches_query(item: &SearchResult, query: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -221,7 +206,6 @@ fn item_matches_query(item: &SearchResult, query: &str) -> bool {
     query.split_whitespace().all(|w| haystack.contains(w))
 }
 
-/// Fetch SKILL.md content via the per-registry Strategy dispatch.
 fn fetch_skill_preview_for_item(item: &SearchResult) -> SkillPreviewState {
     match skillfile_sources::registry::fetch_skill_content_for(item) {
         Some(content) => SkillPreviewState::Loaded(parse_skill_frontmatter(&content)),
@@ -229,7 +213,6 @@ fn fetch_skill_preview_for_item(item: &SearchResult) -> SkillPreviewState {
     }
 }
 
-/// Spawn a background thread to fetch audit results for `url`.
 fn spawn_audit_fetch(url: String, tx: mpsc::Sender<(String, AuditState)>) {
     std::thread::spawn(move || {
         let state = match fetch_skillssh_audits(&url) {
@@ -244,7 +227,6 @@ fn spawn_audit_fetch(url: String, tx: mpsc::Sender<(String, AuditState)>) {
 // Update
 // ===========================================================================
 
-/// Process a single key event and mutate app state.
 pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
     match key.code {
         KeyCode::Esc => app.cancelled = true,
@@ -277,21 +259,18 @@ pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
     }
 }
 
-/// Confirm the current selection (Enter key).
 fn handle_key_enter(app: &mut App<'_>) {
     if app.selected().is_some() {
         app.confirmed = true;
     }
 }
 
-/// Jump to the first item (Home / g key).
 fn handle_key_jump_top(app: &mut App<'_>) {
     if !app.filtered.is_empty() {
         app.list_state.select(Some(0));
     }
 }
 
-/// Jump to the last item (End / G key).
 fn handle_key_jump_bottom(app: &mut App<'_>) {
     if !app.filtered.is_empty() {
         app.list_state.select(Some(app.filtered.len() - 1));
@@ -333,7 +312,6 @@ pub fn draw(frame: &mut Frame, app: &mut App<'_>) {
     draw_preview(frame, panes[1], app);
 }
 
-/// Top status bar: filter input + result count.
 fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
     let filter_display = if app.filter.is_empty() {
         String::from(" type to filter, Enter to select, Esc to cancel")
@@ -360,7 +338,6 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
     frame.render_widget(Paragraph::new(bar), area);
 }
 
-/// Build the spans for a single list item's audit/security indicator.
 fn build_list_item_audit_spans<'a>(
     item: &'a SearchResult,
     audit_cache: &HashMap<String, AuditState>,
@@ -399,7 +376,6 @@ fn audit_provider_icon(passed: bool) -> (&'static str, Color) {
     }
 }
 
-/// Left pane: filterable list of results.
 fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
     let items: Vec<ListItem<'_>> = app
         .filtered
@@ -440,7 +416,6 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-/// Right pane: detail preview for the highlighted result.
 fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     let block = Block::default().borders(Borders::ALL).title(" Preview ");
 
@@ -459,7 +434,6 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     frame.render_widget(para, area);
 }
 
-/// Build the spans for a single audit entry in the preview pane.
 fn build_single_audit_spans(
     audit: &SecurityAudit,
     label_style: Style,
@@ -477,7 +451,6 @@ fn build_single_audit_spans(
     spans
 }
 
-/// Render the security audit section for the preview.
 fn build_audit_lines(registry: RegistryId, audit_state: Option<&AuditState>) -> Vec<Line<'_>> {
     if !registry.has_security_audits() {
         return Vec::new();
@@ -507,7 +480,6 @@ fn build_audit_lines(registry: RegistryId, audit_state: Option<&AuditState>) -> 
     }
 }
 
-/// Render the description section for the preview.
 fn build_description_lines<'a>(description: Option<&'a str>) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'a>> = vec![Line::from("")];
     if let Some(desc) = description {
@@ -531,7 +503,6 @@ fn build_description_lines<'a>(description: Option<&'a str>) -> Vec<Line<'a>> {
     lines
 }
 
-/// Render the SKILL.md preview section for the preview pane.
 fn build_skill_preview_section(state: Option<&SkillPreviewState>) -> Vec<Line<'static>> {
     let header_style = Style::default()
         .fg(Color::DarkGray)
@@ -580,7 +551,6 @@ fn build_skill_preview_section(state: Option<&SkillPreviewState>) -> Vec<Line<'s
     }
 }
 
-/// Build the preview text for a single search result.
 fn build_preview_lines<'a>(
     item: &'a SearchResult,
     audit_state: Option<&'a AuditState>,
@@ -718,7 +688,6 @@ fn parse_skillssh_audits(html: &str) -> Vec<SecurityAudit> {
     audits
 }
 
-/// Map a registry to its display color.
 fn registry_color(registry: RegistryId) -> Color {
     match registry {
         RegistryId::AgentskillSh => Color::Magenta,
@@ -740,14 +709,12 @@ fn score_color(score: u8) -> Color {
 // Terminal lifecycle
 // ===========================================================================
 
-/// Resolve the confirmed selection index from the app state.
 fn resolve_selection(app: &App<'_>) -> Option<usize> {
     app.list_state
         .selected()
         .and_then(|i| app.filtered.get(i).copied())
 }
 
-/// Handle a single key event from the terminal.
 fn process_terminal_event(app: &mut App<'_>) -> Result<(), std::io::Error> {
     if let Event::Key(key) = event::read()? {
         handle_key(app, key);

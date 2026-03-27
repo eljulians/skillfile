@@ -24,7 +24,6 @@ pub(crate) fn json_string_end(s: &str) -> Option<usize> {
     None
 }
 
-/// Map an HTML tag name to its markdown equivalent.
 fn emit_markdown_for_tag(tag: &str, out: &mut String) {
     let name = tag.split_whitespace().next().unwrap_or("");
     match name {
@@ -76,7 +75,6 @@ pub(crate) fn html_to_markdown(html: &str) -> String {
     collapse_blank_lines(&decoded)
 }
 
-/// Collapse 3+ consecutive newlines to 2 and trim leading newlines.
 fn collapse_blank_lines(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut consecutive = 0_u8;
@@ -94,7 +92,6 @@ fn collapse_blank_lines(s: &str) -> String {
     out.trim_start_matches('\n').to_string()
 }
 
-/// Percent-encode a single character that requires escaping in a URL query component.
 fn percent_encode_char(c: char, out: &mut String) {
     use std::fmt::Write;
     let mut buf = [0u8; 4];
@@ -103,7 +100,6 @@ fn percent_encode_char(c: char, out: &mut String) {
     }
 }
 
-/// Minimal URL encoding for query parameters.
 pub(crate) fn urlencoded(s: &str) -> String {
     let s = s.trim();
     let mut out = String::with_capacity(s.len());

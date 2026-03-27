@@ -4,12 +4,10 @@ use std::sync::Arc;
 
 static QUIET: AtomicBool = AtomicBool::new(false);
 
-/// Enable or disable quiet mode (suppresses progress output).
 pub fn set_quiet(quiet: bool) {
     QUIET.store(quiet, Ordering::Relaxed);
 }
 
-/// Returns `true` if quiet mode is active.
 pub fn is_quiet() -> bool {
     QUIET.load(Ordering::Relaxed)
 }
@@ -80,10 +78,6 @@ pub struct Spinner {
 }
 
 impl Spinner {
-    /// Start a spinner with the given message.
-    ///
-    /// Returns immediately. The spinner animates on a background thread until
-    /// dropped or [`Spinner::finish`] is called.
     pub fn new(message: &str) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
 

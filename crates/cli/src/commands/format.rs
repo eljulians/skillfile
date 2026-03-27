@@ -21,7 +21,6 @@ fn section_headers(entity_type: &str) -> Vec<&'static str> {
     }
 }
 
-/// Format an entry as a Skillfile line.
 pub fn format_line(entry: &Entry) -> String {
     let mut parts = vec![
         entry.source_type().to_string(),
@@ -77,7 +76,6 @@ fn group_by_repo<'a>(entries: &'a [&'a Entry]) -> Vec<Vec<&'a Entry>> {
     groups
 }
 
-/// Extract entry-adjacent comments from raw manifest text.
 fn extract_entry_comments(raw_text: &str) -> std::collections::HashMap<String, Vec<String>> {
     let mut attached = std::collections::HashMap::new();
     let mut pending: Vec<String> = Vec::new();

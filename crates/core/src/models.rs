@@ -8,7 +8,6 @@ pub const DEFAULT_REF: &str = "main";
 // Scope — typed replacement for bare "global"/"local" strings
 // ---------------------------------------------------------------------------
 
-/// Install scope: either the user's global config directory or the local repo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
     Global,
@@ -16,7 +15,6 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// All valid scope values, in alphabetical order.
     pub const ALL: &[Scope] = &[Scope::Global, Scope::Local];
 
     /// Parse a scope string. Returns `None` for unrecognised values.
@@ -56,7 +54,6 @@ impl fmt::Display for Scope {
 // EntityType — typed replacement for bare "skill"/"agent" strings
 // ---------------------------------------------------------------------------
 
-/// Entity type: either a skill or an agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntityType {
@@ -65,7 +62,6 @@ pub enum EntityType {
 }
 
 impl EntityType {
-    /// All valid entity type values, in alphabetical order.
     pub const ALL: &[EntityType] = &[EntityType::Agent, EntityType::Skill];
 
     /// Parse an entity type string. Returns `None` for unrecognised values.
@@ -159,7 +155,6 @@ impl SourceFields {
         }
     }
 
-    /// Access GitHub-specific fields. Returns `None` for non-GitHub sources.
     #[must_use]
     pub fn as_github(&self) -> Option<(&str, &str, &str)> {
         match self {
@@ -172,7 +167,6 @@ impl SourceFields {
         }
     }
 
-    /// Access the local path. Returns `None` for non-Local sources.
     #[must_use]
     pub fn as_local(&self) -> Option<&str> {
         match self {
@@ -181,7 +175,6 @@ impl SourceFields {
         }
     }
 
-    /// Access the URL. Returns `None` for non-Url sources.
     #[must_use]
     pub fn as_url(&self) -> Option<&str> {
         match self {
@@ -195,7 +188,6 @@ impl SourceFields {
 // Entry — a single manifest entry
 // ---------------------------------------------------------------------------
 
-/// A single entry in the Skillfile manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub entity_type: EntityType,
@@ -204,7 +196,6 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Shorthand: the source type identifier.
     #[must_use]
     pub fn source_type(&self) -> &str {
         self.source.source_type()
@@ -272,7 +263,6 @@ impl fmt::Display for InstallTarget {
 // LockEntry
 // ---------------------------------------------------------------------------
 
-/// A lock file entry recording resolved SHA and download URL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockEntry {
     pub sha: String,
@@ -283,7 +273,6 @@ pub struct LockEntry {
 // Manifest
 // ---------------------------------------------------------------------------
 
-/// The fully parsed Skillfile manifest.
 #[derive(Debug, Clone, Default)]
 pub struct Manifest {
     pub entries: Vec<Entry>,
@@ -294,7 +283,6 @@ pub struct Manifest {
 // InstallOptions
 // ---------------------------------------------------------------------------
 
-/// Options controlling install behavior.
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
     pub dry_run: bool,

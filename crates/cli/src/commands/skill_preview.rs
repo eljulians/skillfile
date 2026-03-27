@@ -12,7 +12,6 @@ use ratatui::{
 // Types
 // ===========================================================================
 
-/// Parsed SKILL.md frontmatter + body excerpt for the preview pane.
 #[derive(Debug, Clone)]
 pub struct PreviewContent {
     pub name: Option<String>,
@@ -64,7 +63,6 @@ fn is_multiline_indicator(value: &str) -> bool {
     matches!(value, ">" | "|" | ">-" | "|-")
 }
 
-/// Set a known frontmatter field, ignoring empty values and unknown keys.
 fn set_field(content: &mut PreviewContent, key: &str, value: &str) {
     if value.is_empty() {
         return;
@@ -96,7 +94,6 @@ fn append_field(content: &mut PreviewContent, key: &str, extra: &str) {
     }
 }
 
-/// Append a YAML continuation line (indented) to the last known key.
 fn append_continuation(content: &mut PreviewContent, key: &str, line: &str) {
     let trimmed = line.trim();
     if !trimmed.is_empty() && !key.is_empty() {
@@ -149,11 +146,9 @@ fn extract_body_excerpt(body: &str) -> Option<String> {
 // Rendering
 // ===========================================================================
 
-/// Horizontal rule for separating metadata from body content.
 pub(super) const PREVIEW_HR: &str =
     "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
 
-/// Map a risk level to an icon and color.
 pub(super) fn risk_icon(risk: &str) -> (&'static str, Color) {
     match risk.to_lowercase().as_str() {
         "low" => ("\u{2713}", Color::Green),     // ✓
@@ -224,7 +219,6 @@ pub(super) fn style_markdown_line(line: &str) -> Line<'static> {
     }
 }
 
-/// Style an unordered list line (`- ` or `* `) with a gray bullet.
 fn style_list_line(line: &str, trimmed: &str) -> Line<'static> {
     let indent = line.len() - trimmed.len();
     let prefix = " ".repeat(indent);
@@ -275,7 +269,6 @@ pub(super) fn build_skill_content_lines(content: &PreviewContent) -> Vec<Line<'s
     lines
 }
 
-/// Append body excerpt (with HR separator) or fallback message.
 fn append_body_and_fallback(lines: &mut Vec<Line<'static>>, content: &PreviewContent) {
     if let Some(body) = &content.body_excerpt {
         lines.push(Line::from(""));

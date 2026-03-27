@@ -30,13 +30,11 @@ pub enum DirInstallMode {
 /// - Directory entries: keys are paths relative to the source directory
 pub type DeployResult = HashMap<String, PathBuf>;
 
-/// Bundles scope and repo root for adapter operations.
 pub struct AdapterScope<'a> {
     pub scope: Scope,
     pub repo_root: &'a Path,
 }
 
-/// All parameters needed to deploy a single entry.
 pub struct DeployRequest<'a> {
     pub entry: &'a Entry,
     pub source: &'a Path,
@@ -53,28 +51,20 @@ pub struct DeployRequest<'a> {
 ///
 /// The trait is object-safe so adapters can be stored in a heterogeneous registry.
 pub trait PlatformAdapter: Send + Sync + fmt::Debug {
-    /// The adapter identifier (e.g. `"claude-code"`, `"gemini-cli"`).
     fn name(&self) -> &str;
 
-    /// Whether this platform supports the given entity type.
     fn supports(&self, entity_type: EntityType) -> bool;
 
-    /// Resolve the absolute target directory for an entity type + scope.
     fn target_dir(&self, entity_type: EntityType, ctx: &AdapterScope<'_>) -> PathBuf;
 
-    /// The install mode for directory entries of this entity type.
     fn dir_mode(&self, entity_type: EntityType) -> Option<DirInstallMode>;
 
-    /// Deploy a single entry from `source` to its platform-specific location.
-    ///
     /// Returns `{patch_key: installed_path}` for every file that was placed.
     /// Returns an empty map for dry-run or when deployment is skipped.
     fn deploy_entry(&self, req: &DeployRequest<'_>) -> DeployResult;
 
-    /// The installed path for a single-file entry.
     fn installed_path(&self, entry: &Entry, ctx: &AdapterScope<'_>) -> PathBuf;
 
-    /// Map of `{relative_path: absolute_path}` for all installed files of a directory entry.
     fn installed_dir_files(
         &self,
         entry: &Entry,
@@ -86,7 +76,6 @@ pub trait PlatformAdapter: Send + Sync + fmt::Debug {
 // EntityConfig — per-entity-type path configuration
 // ---------------------------------------------------------------------------
 
-/// Paths and install mode for one entity type within a platform.
 #[derive(Debug, Clone)]
 pub struct EntityConfig {
     pub global_path: String,
@@ -98,8 +87,6 @@ pub struct EntityConfig {
 // FileSystemAdapter — the concrete implementation of PlatformAdapter
 // ---------------------------------------------------------------------------
 
-/// Filesystem-based platform adapter.
-///
 /// Each instance is configured with a name and a map of `EntityConfig`s.
 /// All built-in adapters (claude-code, factory, gemini-cli, etc.) are instances
 /// of this struct with different configurations — the `PlatformAdapter` trait
@@ -234,7 +221,6 @@ fn forward_slash(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// Build `{relative_path: absolute_path}` for all non-.meta files in a deployed directory.
 fn collect_dir_deploy_result(source: &Path, dest: &Path) -> DeployResult {
     let mut result = HashMap::new();
     for file in walkdir(source) {
@@ -249,7 +235,6 @@ fn collect_dir_deploy_result(source: &Path, dest: &Path) -> DeployResult {
     result
 }
 
-/// Build `{relative_path: absolute_path}` for nested-mode installed dir.
 /// Returns empty map when the installed directory does not exist.
 fn collect_nested_installed(entry: &Entry, target_dir: &Path) -> HashMap<String, PathBuf> {
     let installed_dir = target_dir.join(&entry.name);
@@ -259,7 +244,6 @@ fn collect_nested_installed(entry: &Entry, target_dir: &Path) -> HashMap<String,
     collect_walkdir_relative(&installed_dir)
 }
 
-/// Build `{relative_path: target_path}` for flat-mode installed files.
 /// Returns empty map when the vendor cache directory does not exist.
 fn collect_flat_installed_checked(vdir: &Path, target_dir: &Path) -> HashMap<String, PathBuf> {
     if !vdir.is_dir() {
@@ -268,7 +252,6 @@ fn collect_flat_installed_checked(vdir: &Path, target_dir: &Path) -> HashMap<Str
     collect_flat_installed(vdir, target_dir)
 }
 
-/// Build `{relative_path: absolute_path}` from a walkdir rooted at `base`.
 fn collect_walkdir_relative(base: &Path) -> HashMap<String, PathBuf> {
     let mut result = HashMap::new();
     for file in walkdir(base) {
@@ -280,8 +263,6 @@ fn collect_walkdir_relative(base: &Path) -> HashMap<String, PathBuf> {
     result
 }
 
-/// Build `{relative_path: target_path}` for `.md` files in a flat-mode vendor dir
-/// that have corresponding deployed files in `target_dir`.
 fn collect_flat_installed(vdir: &Path, target_dir: &Path) -> HashMap<String, PathBuf> {
     let mut result = HashMap::new();
     for file in walkdir(vdir) {
@@ -302,7 +283,6 @@ fn collect_flat_installed(vdir: &Path, target_dir: &Path) -> HashMap<String, Pat
     result
 }
 
-/// Deploy each `.md` in `source_dir` as an individual file in `target_dir` (flat mode).
 fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> DeployResult {
     let mut md_files: Vec<PathBuf> = walkdir(source_dir)
         .into_iter()
@@ -352,7 +332,6 @@ struct PlaceOp<'a> {
     is_dir: bool,
 }
 
-/// Copy `source` to `dest`. Returns `true` if placed, `false` if skipped.
 fn place_file(op: &PlaceOp<'_>, opts: &InstallOptions) -> bool {
     if !opts.overwrite && !opts.dry_run {
         if op.is_dir && op.dest.is_dir() {
@@ -430,7 +409,6 @@ pub struct AdapterRegistry {
 }
 
 impl AdapterRegistry {
-    /// Create a registry from a vec of boxed adapters.
     pub fn new(adapters: Vec<Box<dyn PlatformAdapter>>) -> Self {
         let map = adapters
             .into_iter()
@@ -439,7 +417,6 @@ impl AdapterRegistry {
         Self { adapters: map }
     }
 
-    /// Create the built-in registry with all known platform adapters.
     pub fn builtin() -> Self {
         Self::new(
             BUILTIN_ADAPTERS
@@ -449,17 +426,14 @@ impl AdapterRegistry {
         )
     }
 
-    /// Look up an adapter by name.
     pub fn get(&self, name: &str) -> Option<&dyn PlatformAdapter> {
         self.adapters.get(name).map(|b| &**b)
     }
 
-    /// Check if an adapter with this name exists.
     pub fn contains(&self, name: &str) -> bool {
         self.adapters.contains_key(name)
     }
 
-    /// Sorted list of all adapter names.
     pub fn names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.adapters.keys().map(String::as_str).collect();
         names.sort_unstable();
@@ -479,7 +453,6 @@ impl fmt::Debug for AdapterRegistry {
 // Built-in adapter specifications — declarative configuration table
 // ---------------------------------------------------------------------------
 
-/// Specification for one entity type within a platform adapter.
 struct EntitySpec {
     entity_type: EntityType,
     global_path: &'static str,
@@ -487,7 +460,7 @@ struct EntitySpec {
     dir_mode: DirInstallMode,
 }
 
-/// Specification for a platform adapter. Adding a new platform is one table entry.
+/// Adding a new platform is one table entry.
 struct AdapterSpec {
     name: &'static str,
     entities: &'static [EntitySpec],
@@ -628,7 +601,6 @@ const BUILTIN_ADAPTERS: &[AdapterSpec] = &[
     },
 ];
 
-/// Construct a `FileSystemAdapter` from a declarative spec.
 fn build_adapter(spec: &AdapterSpec) -> FileSystemAdapter {
     let entities = spec
         .entities
@@ -651,14 +623,12 @@ fn build_adapter(spec: &AdapterSpec) -> FileSystemAdapter {
 // Global registry accessor (backward-compatible convenience)
 // ---------------------------------------------------------------------------
 
-/// Get the global adapter registry (lazily initialized).
 #[must_use]
 pub fn adapters() -> &'static AdapterRegistry {
     static REGISTRY: OnceLock<AdapterRegistry> = OnceLock::new();
     REGISTRY.get_or_init(AdapterRegistry::builtin)
 }
 
-/// Sorted list of known adapter names.
 #[must_use]
 pub fn known_adapters() -> Vec<&'static str> {
     adapters().names()

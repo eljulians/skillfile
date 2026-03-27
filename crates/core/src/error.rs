@@ -22,5 +22,4 @@ pub enum SkillfileError {
     Io(#[from] std::io::Error),
 }
 
-/// Convenience alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, SkillfileError>;
