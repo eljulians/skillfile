@@ -161,3 +161,51 @@ fn install_mixed_local_entries_normalize_consistently() {
     assert!(!root.join(".claude/skills/file-skill.md").exists());
     assert!(!root.join(".claude/skills/dir-skill.md").exists());
 }
+
+// ---------------------------------------------------------------------------
+// Test 5: Re-installing over a legacy flat file removes the old orphan
+// ---------------------------------------------------------------------------
+//
+// Simulates a project that was previously managed by an older version of
+// skillfile which deployed skills as flat .md files (e.g. .claude/skills/my-skill.md).
+// After upgrading and re-running `skillfile install`, the old flat file must be
+// removed so agents that scan the directory broadly do not load both versions.
+
+#[test]
+fn install_removes_orphan_flat_file_on_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    // Create local skill source
+    std::fs::create_dir_all(root.join("skills")).unwrap();
+    std::fs::write(root.join("skills/my-skill.md"), "# My Skill\n").unwrap();
+
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  claude-code  local\n\
+         local  skill  my-skill  skills/my-skill.md\n",
+    )
+    .unwrap();
+
+    // Pre-create the legacy flat file as if placed by an older skillfile version
+    std::fs::create_dir_all(root.join(".claude/skills")).unwrap();
+    std::fs::write(
+        root.join(".claude/skills/my-skill.md"),
+        "# My Skill (old flat version)\n",
+    )
+    .unwrap();
+
+    sf(root).arg("install").assert().success();
+
+    // New directory-layout file must be present
+    assert!(
+        root.join(".claude/skills/my-skill/SKILL.md").exists(),
+        "skill must be deployed as directory layout"
+    );
+
+    // Legacy flat file must have been removed to prevent duplicate loading
+    assert!(
+        !root.join(".claude/skills/my-skill.md").exists(),
+        "legacy flat .md file must be removed on migration"
+    );
+}

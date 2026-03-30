@@ -185,6 +185,21 @@ impl PlatformAdapter for FileSystemAdapter {
             return HashMap::new();
         }
 
+        // Migration: if we just deployed a single-file skill as {name}/SKILL.md (nested mode),
+        // remove any leftover flat {name}.md from a previous install to prevent agents that
+        // do broad directory scans from loading both the old and new versions simultaneously.
+        if !is_dir
+            && self
+                .entities
+                .get(&req.entry.entity_type)
+                .is_some_and(|c| c.dir_mode == DirInstallMode::Nested)
+        {
+            let orphan = target_dir.join(format!("{}.md", req.entry.name));
+            if orphan.is_file() {
+                std::fs::remove_file(&orphan).ok();
+            }
+        }
+
         if is_dir {
             collect_dir_deploy_result(req.source, &dest)
         } else {
