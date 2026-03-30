@@ -71,10 +71,26 @@ fn source_path_remote(entry: &Entry, repo_root: &Path) -> Option<PathBuf> {
 // Untracked file detection
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UntrackedKind {
+    File,
+    Directory,
+}
+
+impl UntrackedKind {
+    #[must_use]
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::File => "",
+            Self::Directory => "/",
+        }
+    }
+}
+
 pub struct UntrackedFile {
     pub entity_type: EntityType,
     pub path: PathBuf,
-    pub is_dir: bool,
+    pub kind: UntrackedKind,
 }
 
 fn covered_paths(manifest: &Manifest, repo_root: &Path) -> HashSet<PathBuf> {
@@ -166,25 +182,22 @@ impl<'a> DirScanner<'a> {
     }
 
     fn scan_adapter(&mut self, adapter: &dyn PlatformAdapter, ctx: &AdapterScope<'_>) {
-        let specs: Vec<_> = EntityType::ALL
+        let specs = EntityType::ALL
             .iter()
             .filter(|&&et| adapter.supports(et))
-            .map(|&et| {
+            .filter_map(|&et| {
                 let dir = adapter.target_dir(et, ctx);
                 let mode = adapter.dir_mode(et).unwrap_or(DirInstallMode::Nested);
-                (
+                dir.is_dir().then_some((
                     dir,
                     ScanSpec {
                         entity_type: et,
                         mode,
                     },
-                )
-            })
-            .filter(|(dir, _)| dir.is_dir())
-            .collect();
-
-        for (dir, spec) in &specs {
-            scan_target_dir(dir, *spec, self);
+                ))
+            });
+        for (dir, spec) in specs {
+            scan_target_dir(&dir, spec, self);
         }
     }
 
@@ -208,10 +221,15 @@ fn scan_target_dir(target_dir: &Path, spec: ScanSpec, scanner: &mut DirScanner<'
         if scanner.covered.contains(&path) || !scanner.seen.insert(path.clone()) {
             continue;
         }
+        let kind = if is_nested_dir {
+            UntrackedKind::Directory
+        } else {
+            UntrackedKind::File
+        };
         scanner.items.push(UntrackedFile {
             entity_type: spec.entity_type,
             path: relative_to(scanner.repo_root, &path),
-            is_dir: is_nested_dir,
+            kind,
         });
     }
 }
@@ -639,7 +657,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert!(result[0].path.ends_with("rogue.md"));
         assert_eq!(result[0].entity_type, EntityType::Agent);
-        assert!(!result[0].is_dir);
+        assert_eq!(result[0].kind, UntrackedKind::File);
     }
 
     #[test]
@@ -656,7 +674,7 @@ mod tests {
         let result = find_untracked(&manifest, tmp.path()).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].path.ends_with("docker"));
-        assert!(result[0].is_dir);
+        assert_eq!(result[0].kind, UntrackedKind::Directory);
     }
 
     #[test]

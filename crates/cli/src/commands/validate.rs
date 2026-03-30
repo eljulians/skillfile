@@ -6,7 +6,7 @@ use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{Manifest, Scope, SourceFields};
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_deploy::adapter::adapters;
-use skillfile_deploy::paths::find_untracked;
+use skillfile_deploy::paths::{find_untracked, UntrackedFile};
 
 fn check_duplicate_names(manifest: &Manifest, errors: &mut Vec<String>) {
     let mut seen: HashMap<String, String> = HashMap::new();
@@ -80,18 +80,27 @@ fn check_orphaned_locks(
     Ok(())
 }
 
-fn check_untracked(
-    manifest: &Manifest,
-    repo_root: &Path,
-    warnings: &mut Vec<String>,
+fn print_untracked_warnings(
+    untracked: &[UntrackedFile],
+    strict: bool,
 ) -> Result<(), SkillfileError> {
-    for f in find_untracked(manifest, repo_root)? {
+    if untracked.is_empty() {
+        return Ok(());
+    }
+    let prefix = if strict { "error" } else { "warning" };
+    eprintln!("{prefix}: untracked files in install targets:");
+    for f in untracked {
         let entity = f.entity_type;
         let path = f.path.display();
-        let suffix = if f.is_dir { "/" } else { "" };
-        warnings.push(format!(
-            "{entity}  {path}{suffix}  (add: skillfile add local {entity} {path})"
-        ));
+        let suffix = f.kind.suffix();
+        eprintln!("  {entity}  {path}{suffix}  (add: skillfile add local {entity} {path})");
+    }
+    if strict {
+        eprintln!(
+            "\n{} untracked file(s). Add to Skillfile or remove from disk.",
+            untracked.len()
+        );
+        return Err(SkillfileError::Manifest(String::new()));
     }
     Ok(())
 }
@@ -118,8 +127,7 @@ pub fn cmd_validate(repo_root: &Path, strict: bool) -> Result<(), SkillfileError
     check_duplicate_targets(&manifest, &mut errors);
     check_orphaned_locks(&manifest, repo_root, &mut errors)?;
 
-    let mut warnings: Vec<String> = Vec::new();
-    check_untracked(&manifest, repo_root, &mut warnings)?;
+    let untracked = find_untracked(&manifest, repo_root)?;
 
     if !errors.is_empty() {
         for msg in &errors {
@@ -128,29 +136,16 @@ pub fn cmd_validate(repo_root: &Path, strict: bool) -> Result<(), SkillfileError
         return Err(SkillfileError::Manifest(String::new()));
     }
 
-    if !warnings.is_empty() {
-        let prefix = if strict { "error" } else { "warning" };
-        eprintln!("{prefix}: untracked files in install targets:");
-        for w in &warnings {
-            eprintln!("  {w}");
-        }
-        if strict {
-            eprintln!(
-                "\n{} untracked file(s). Add to Skillfile or remove from disk.",
-                warnings.len()
-            );
-            return Err(SkillfileError::Manifest(String::new()));
-        }
-    }
+    print_untracked_warnings(&untracked, strict)?;
 
     let n = manifest.entries.len();
     let t = manifest.install_targets.len();
     let entry_word = if n == 1 { "entry" } else { "entries" };
     let target_word = if t == 1 { "target" } else { "targets" };
-    let untracked_suffix = if warnings.is_empty() {
+    let untracked_suffix = if untracked.is_empty() {
         String::new()
     } else {
-        format!(" ({} untracked)", warnings.len())
+        format!(" ({} untracked)", untracked.len())
     };
     println!("Skillfile OK — {n} {entry_word}, {t} install {target_word}{untracked_suffix}");
 

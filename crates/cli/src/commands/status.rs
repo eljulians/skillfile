@@ -254,7 +254,7 @@ fn print_untracked(manifest: &Manifest, repo_root: &Path) -> Result<(), Skillfil
     println!();
     println!("Untracked:");
     for f in &untracked {
-        let suffix = if f.is_dir { "/" } else { "" };
+        let suffix = f.kind.suffix();
         println!("  {}  {}{suffix}", f.entity_type, f.path.display());
     }
     Ok(())
