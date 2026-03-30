@@ -77,7 +77,7 @@ pub struct UntrackedFile {
     pub is_dir: bool,
 }
 
-pub fn covered_paths(manifest: &Manifest, repo_root: &Path) -> HashSet<PathBuf> {
+fn covered_paths(manifest: &Manifest, repo_root: &Path) -> HashSet<PathBuf> {
     let mut covered = HashSet::new();
     for_each_local_adapter(manifest, repo_root, |adapter, ctx| {
         for entry in manifest
@@ -189,7 +189,7 @@ impl<'a> DirScanner<'a> {
     }
 
     fn into_sorted(mut self) -> Vec<UntrackedFile> {
-        self.items.sort_by(|a, b| a.path.cmp(&b.path));
+        self.items.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         self.items
     }
 }
