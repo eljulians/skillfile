@@ -112,16 +112,29 @@ fn entry_covered_paths(
     ctx: &AdapterScope<'_>,
     entry: &Entry,
 ) -> Vec<PathBuf> {
-    let installed = if is_dir_entry(entry) {
-        adapter.target_dir(entry.entity_type, ctx).join(&entry.name)
+    let is_dir = is_dir_entry(entry) || is_local_dir(entry, ctx.repo_root);
+    let mode = adapter
+        .dir_mode(entry.entity_type)
+        .unwrap_or(DirInstallMode::Nested);
+    let mut paths = if is_dir && mode == DirInstallMode::Flat {
+        // Flat dir: individual files are deployed directly into target_dir
+        adapter
+            .installed_dir_files(entry, ctx)
+            .into_values()
+            .collect()
+    } else if is_dir {
+        vec![adapter.target_dir(entry.entity_type, ctx).join(&entry.name)]
     } else {
-        adapter.installed_path(entry, ctx)
+        vec![adapter.installed_path(entry, ctx)]
     };
-    let mut paths = vec![installed];
     if let SourceFields::Local { path } = &entry.source {
         paths.push(ctx.repo_root.join(path));
     }
     paths
+}
+
+fn is_local_dir(entry: &Entry, repo_root: &Path) -> bool {
+    matches!(&entry.source, SourceFields::Local { path } if repo_root.join(path).is_dir())
 }
 
 pub fn find_untracked(
@@ -529,6 +542,18 @@ mod tests {
         }
     }
 
+    fn github_agent_dir(name: &str) -> Entry {
+        Entry {
+            entity_type: EntityType::Agent,
+            name: name.into(),
+            source: SourceFields::Github {
+                owner_repo: "o/r".into(),
+                path_in_repo: format!("agents/{name}"),
+                ref_: "main".into(),
+            },
+        }
+    }
+
     fn local_skill(name: &str, path: &str) -> Entry {
         Entry {
             entity_type: EntityType::Skill,
@@ -766,5 +791,63 @@ mod tests {
 
         let result = find_untracked(&manifest, tmp.path()).unwrap();
         assert_eq!(result.len(), 1, "should deduplicate across targets");
+    }
+
+    // -- BUG reproductions ---------------------------------------------------
+
+    #[test]
+    fn flat_agent_dir_entry_no_false_positives() {
+        // BUG 1: Flat-deployed dir entry files must be in covered set.
+        // A github agent dir entry deploys individual .md files flat into
+        // the agents dir. Those files must not be flagged as untracked.
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            entries: vec![github_agent_dir("my-agents")],
+            install_targets: vec![local_target()],
+        };
+        // Create vendor cache (installed_dir_files reads this for flat mode)
+        let vdir = tmp.path().join(".skillfile/cache/agents/my-agents");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("a.md"), "# A").unwrap();
+        std::fs::write(vdir.join("b.md"), "# B").unwrap();
+        // Create the flat-deployed files in the agents target dir
+        let agents = tmp.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("a.md"), "# A").unwrap();
+        std::fs::write(agents.join("b.md"), "# B").unwrap();
+
+        let result = find_untracked(&manifest, tmp.path()).unwrap();
+        assert!(
+            result.is_empty(),
+            "flat-deployed dir entry files should not be flagged as untracked, got: {:?}",
+            result.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn local_dir_skill_not_false_positive() {
+        // BUG 2: Local dir entry where source is outside the target dir.
+        // is_dir_entry() returns false for Local entries, so covered_paths
+        // computes the wrong installed path (name.md instead of name/).
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            entries: vec![local_skill("docker", "skills/docker")],
+            install_targets: vec![local_target()],
+        };
+        // Create source dir (outside target dir)
+        let source = tmp.path().join("skills/docker");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("SKILL.md"), "# Docker").unwrap();
+        // Create installed nested dir in target
+        let installed = tmp.path().join(".claude/skills/docker");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("SKILL.md"), "# Docker").unwrap();
+
+        let result = find_untracked(&manifest, tmp.path()).unwrap();
+        assert!(
+            result.is_empty(),
+            "local dir skill should not be flagged as untracked, got: {:?}",
+            result.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
     }
 }
