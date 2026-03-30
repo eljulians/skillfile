@@ -350,12 +350,20 @@ fn install_local_dir_entry() {
         "must not create my-local-skill.md for a directory source"
     );
 
-    // Single-file entry: still works as before
-    let simple = dir.path().join(".claude/skills/simple.md");
-    assert!(simple.is_file());
+    // Single-file entry: now normalized to directory structure
+    let simple_file = dir.path().join(".claude/skills/simple/SKILL.md");
+    assert!(
+        simple_file.exists(),
+        "single-file entry must be normalized to directory structure"
+    );
     assert_eq!(
-        std::fs::read_to_string(&simple).unwrap(),
+        std::fs::read_to_string(&simple_file).unwrap(),
         "# Simple Skill\n"
+    );
+    // Flat .md file must not exist
+    assert!(
+        !dir.path().join(".claude/skills/simple.md").exists(),
+        "flat .md file must not exist for normalized single-file entry"
     );
 }
 
@@ -379,7 +387,10 @@ fn remove_clears_entry_lock_and_cache() {
     .unwrap();
 
     sf(root).arg("install").assert().success();
-    assert!(root.join(".claude/skills/foo.md").exists());
+    assert!(
+        root.join(".claude/skills/foo/SKILL.md").exists(),
+        "single-file skill entry must be deployed as directory"
+    );
 
     sf(root).args(["remove", "foo"]).assert().success();
 

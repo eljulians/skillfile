@@ -161,7 +161,16 @@ impl PlatformAdapter for FileSystemAdapter {
         let dest = if is_dir {
             target_dir.join(&req.entry.name)
         } else {
-            target_dir.join(format!("{}.md", req.entry.name))
+            // Single files in nested mode deploy as {name}/SKILL.md; in flat mode as {name}.md
+            let is_flat_mode = self
+                .entities
+                .get(&req.entry.entity_type)
+                .is_some_and(|c| c.dir_mode == DirInstallMode::Flat);
+            if is_flat_mode {
+                target_dir.join(format!("{}.md", req.entry.name))
+            } else {
+                target_dir.join(&req.entry.name).join("SKILL.md")
+            }
         };
 
         if !place_file(
@@ -184,8 +193,19 @@ impl PlatformAdapter for FileSystemAdapter {
     }
 
     fn installed_path(&self, entry: &Entry, ctx: &AdapterScope<'_>) -> PathBuf {
-        self.target_dir(entry.entity_type, ctx)
-            .join(format!("{}.md", entry.name))
+        let target_dir = self.target_dir(entry.entity_type, ctx);
+        let is_flat_mode = self
+            .entities
+            .get(&entry.entity_type)
+            .is_some_and(|c| c.dir_mode == DirInstallMode::Flat);
+
+        if is_flat_mode {
+            // Flat mode: skill is at {target}/name.md
+            target_dir.join(format!("{}.md", entry.name))
+        } else {
+            // Nested mode: skill is at {target}/name/SKILL.md
+            target_dir.join(&entry.name).join("SKILL.md")
+        }
     }
 
     fn installed_dir_files(
@@ -1266,7 +1286,7 @@ mod tests {
         std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
         std::fs::write(&source_file, "# New").unwrap();
 
-        let dest = dir.path().join(".claude/skills/my-skill.md");
+        let dest = dir.path().join(".claude/skills/my-skill/SKILL.md");
         std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
         std::fs::write(&dest, "# Old").unwrap();
 

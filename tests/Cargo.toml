@@ -16,6 +16,10 @@ path = "upstream.rs"
 name = "interactive"
 path = "interactive.rs"
 
+[[test]]
+name = "install_directory_layout"
+path = "install_directory_layout.rs"
+
 [dependencies]
 assert_cmd = { workspace = true }
 
