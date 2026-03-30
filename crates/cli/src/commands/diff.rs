@@ -387,9 +387,9 @@ mod tests {
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("test.md"), content).unwrap();
 
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(".claude/skills/test");
         std::fs::create_dir_all(&installed_dir).unwrap();
-        std::fs::write(installed_dir.join("test.md"), content).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), content).unwrap();
 
         // Should succeed (prints "is clean")
         let result = cmd_diff("test", dir.path());
@@ -409,9 +409,9 @@ mod tests {
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("test.md"), "original\n").unwrap();
 
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(".claude/skills/test");
         std::fs::create_dir_all(&installed_dir).unwrap();
-        std::fs::write(installed_dir.join("test.md"), "modified\n").unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), "modified\n").unwrap();
 
         // Should succeed (diff goes to stdout)
         let result = cmd_diff("test", dir.path());

@@ -353,9 +353,9 @@ mod tests {
         std::fs::write(vdir.join("test.md"), content).unwrap();
 
         // Create installed = same as cache
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(".claude/skills/test");
         std::fs::create_dir_all(&installed_dir).unwrap();
-        std::fs::write(installed_dir.join("test.md"), content).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), content).unwrap();
 
         let entry = github_entry_skill("test", "skills/test.md");
         let result = pin_entry(&entry, dir.path(), false).unwrap();
@@ -377,10 +377,10 @@ mod tests {
         std::fs::write(vdir.join("test.md"), "# Test\n\nOriginal content.\n").unwrap();
 
         // Create installed (modified)
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(".claude/skills/test");
         std::fs::create_dir_all(&installed_dir).unwrap();
         std::fs::write(
-            installed_dir.join("test.md"),
+            installed_dir.join("SKILL.md"),
             "# Test\n\nModified content.\n",
         )
         .unwrap();
@@ -410,9 +410,9 @@ mod tests {
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("test.md"), "original\n").unwrap();
 
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(".claude/skills/test");
         std::fs::create_dir_all(&installed_dir).unwrap();
-        std::fs::write(installed_dir.join("test.md"), "modified\n").unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), "modified\n").unwrap();
 
         let entry = github_entry_skill("test", "skills/test.md");
         let result = pin_entry(&entry, dir.path(), true).unwrap();
@@ -471,9 +471,9 @@ mod tests {
         std::fs::write(vdir.join("myskill.md"), "# MySkill\n\nOriginal.\n").unwrap();
 
         // Installed (modified)
-        let inst_dir = dir.path().join(".claude/skills");
+        let inst_dir = dir.path().join(".claude/skills/myskill");
         std::fs::create_dir_all(&inst_dir).unwrap();
-        std::fs::write(inst_dir.join("myskill.md"), "# MySkill\n\nModified.\n").unwrap();
+        std::fs::write(inst_dir.join("SKILL.md"), "# MySkill\n\nModified.\n").unwrap();
 
         // cmd_pin itself returns Ok — we can't capture stdout in unit tests easily,
         // but we can verify it returns Ok and the patch was written (proving the
@@ -499,9 +499,9 @@ mod tests {
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("myskill.md"), "original\n").unwrap();
 
-        let inst_dir = dir.path().join(".claude/skills");
+        let inst_dir = dir.path().join(".claude/skills/myskill");
         std::fs::create_dir_all(&inst_dir).unwrap();
-        std::fs::write(inst_dir.join("myskill.md"), "modified\n").unwrap();
+        std::fs::write(inst_dir.join("SKILL.md"), "modified\n").unwrap();
 
         // dry_run = true — "Would pin" branch
         let result = cmd_pin("myskill", dir.path(), true);
@@ -527,9 +527,9 @@ mod tests {
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("myskill.md"), content).unwrap();
 
-        let inst_dir = dir.path().join(".claude/skills");
+        let inst_dir = dir.path().join(".claude/skills/myskill");
         std::fs::create_dir_all(&inst_dir).unwrap();
-        std::fs::write(inst_dir.join("myskill.md"), content).unwrap();
+        std::fs::write(inst_dir.join("SKILL.md"), content).unwrap();
 
         let result = cmd_pin("myskill", dir.path(), false);
         assert!(result.is_ok(), "cmd_pin must return Ok when nothing to pin");

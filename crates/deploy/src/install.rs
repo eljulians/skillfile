@@ -743,7 +743,7 @@ mod tests {
         )
         .unwrap();
 
-        let dest = dir.path().join(".claude/skills/my-skill.md");
+        let dest = dir.path().join(".claude/skills/my-skill/SKILL.md");
         assert!(dest.exists());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# My Skill");
     }
@@ -810,7 +810,7 @@ mod tests {
         )
         .unwrap();
 
-        let dest = dir.path().join(".claude/skills/my-skill.md");
+        let dest = dir.path().join(".claude/skills/my-skill/SKILL.md");
         assert!(!dest.exists());
     }
 
@@ -821,9 +821,9 @@ mod tests {
         std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
         std::fs::write(&source_file, "# New content").unwrap();
 
-        let dest_dir = dir.path().join(".claude/skills");
+        let dest_dir = dir.path().join(".claude/skills/my-skill");
         std::fs::create_dir_all(&dest_dir).unwrap();
-        let dest = dest_dir.join("my-skill.md");
+        let dest = dest_dir.join("SKILL.md");
         std::fs::write(&dest, "# Old content").unwrap();
 
         let entry = make_local_entry("my-skill", "skills/my-skill.md");
@@ -1000,7 +1000,7 @@ mod tests {
         )
         .unwrap();
 
-        let dest = dir.path().join(".claude/skills/test.md");
+        let dest = dir.path().join(".claude/skills/test/SKILL.md");
         assert_eq!(
             std::fs::read_to_string(&dest).unwrap(),
             "# Test\n\nModified.\n"
@@ -1031,10 +1031,10 @@ mod tests {
         write_patch_fixture(dir.path(), &entry, bad_patch);
 
         // Deploy the entry
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(".claude/skills/test");
         std::fs::create_dir_all(&installed_dir).unwrap();
         std::fs::write(
-            installed_dir.join("test.md"),
+            installed_dir.join("SKILL.md"),
             "totally different\ncontent\n",
         )
         .unwrap();
@@ -1074,7 +1074,7 @@ mod tests {
         )
         .unwrap();
 
-        let dest = dir.path().join(".gemini/skills/my-skill.md");
+        let dest = dir.path().join(".gemini/skills/my-skill/SKILL.md");
         assert!(dest.exists());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# My Skill");
     }
@@ -1098,7 +1098,7 @@ mod tests {
         )
         .unwrap();
 
-        let dest = dir.path().join(".codex/skills/my-skill.md");
+        let dest = dir.path().join(".codex/skills/my-skill/SKILL.md");
         assert!(dest.exists());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# My Skill");
     }
@@ -1171,7 +1171,7 @@ mod tests {
                 "codex" => ".codex",
                 _ => unreachable!(),
             };
-            let dest = dir.path().join(format!("{prefix}/skills/my-skill.md"));
+            let dest = dir.path().join(format!("{prefix}/skills/my-skill/SKILL.md"));
             assert!(dest.exists(), "Failed for adapter {adapter}");
             assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# Multi Skill");
         }
@@ -1243,7 +1243,7 @@ mod tests {
         )
         .unwrap();
 
-        let dest = dir.path().join(".claude/skills/foo.md");
+        let dest = dir.path().join(".claude/skills/foo/SKILL.md");
         assert!(
             dest.exists(),
             "extra_targets must be used when Skillfile has none"
@@ -1277,7 +1277,7 @@ mod tests {
         .unwrap();
 
         // claude-code (from Skillfile) should be deployed.
-        assert!(dir.path().join(".claude/skills/foo.md").exists());
+        assert!(dir.path().join(".claude/skills/foo/SKILL.md").exists());
         // gemini-cli (from extra_targets) should NOT be deployed.
         assert!(!dir.path().join(".gemini").exists());
     }
@@ -1335,9 +1335,9 @@ mod tests {
         .unwrap();
 
         // skill deployed to all three adapters
-        assert!(dir.path().join(".claude/skills/foo.md").exists());
-        assert!(dir.path().join(".gemini/skills/foo.md").exists());
-        assert!(dir.path().join(".codex/skills/foo.md").exists());
+        assert!(dir.path().join(".claude/skills/foo/SKILL.md").exists());
+        assert!(dir.path().join(".gemini/skills/foo/SKILL.md").exists());
+        assert!(dir.path().join(".codex/skills/foo/SKILL.md").exists());
 
         // agent deployed to claude-code and gemini-cli but NOT codex
         assert!(dir.path().join(".claude/agents/bar.md").exists());
@@ -1518,9 +1518,9 @@ mod tests {
         setup_github_skill_repo(dir.path(), name, cache_content);
 
         // Place a modified installed file.
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(format!(".claude/skills/{name}"));
         std::fs::create_dir_all(&installed_dir).unwrap();
-        std::fs::write(installed_dir.join(format!("{name}.md")), installed_content).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), installed_content).unwrap();
 
         let entry = make_skill_entry(name);
         let manifest = Manifest {
@@ -1537,7 +1537,7 @@ mod tests {
 
         // Verify the patch round-trips: reset the installed file to cache_content and
         // reinstall — the patch must produce installed_content.
-        std::fs::write(installed_dir.join(format!("{name}.md")), cache_content).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), cache_content).unwrap();
         let target = make_target("claude-code", Scope::Local);
         install_entry(
             &entry,
@@ -1549,7 +1549,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            std::fs::read_to_string(installed_dir.join(format!("{name}.md"))).unwrap(),
+            std::fs::read_to_string(installed_dir.join("SKILL.md")).unwrap(),
             installed_content,
         );
     }
@@ -1576,9 +1576,9 @@ mod tests {
         write_patch_fixture(dir.path(), &entry, patch_text);
 
         // Write installed file that matches what the patch produces.
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(format!(".claude/skills/{name}"));
         std::fs::create_dir_all(&installed_dir).unwrap();
-        std::fs::write(installed_dir.join(format!("{name}.md")), installed_content).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), installed_content).unwrap();
 
         // Record mtime of patch so we can detect if it changed.
         let patch_path = patch_fixture_path(dir.path(), &entry);
@@ -1618,15 +1618,15 @@ mod tests {
         write_patch_fixture(dir.path(), &entry, old_patch);
 
         // But the actual installed file has further edits.
-        let installed_dir = dir.path().join(".claude/skills");
+        let installed_dir = dir.path().join(format!(".claude/skills/{name}"));
         std::fs::create_dir_all(&installed_dir).unwrap();
-        std::fs::write(installed_dir.join(format!("{name}.md")), new_installed).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), new_installed).unwrap();
 
         auto_pin_entry(&entry, &manifest, dir.path());
 
         // The patch was re-written to reflect new_installed. Verify by resetting the
         // installed file to cache_content and reinstalling — must yield new_installed.
-        std::fs::write(installed_dir.join(format!("{name}.md")), cache_content).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), cache_content).unwrap();
         let target = make_target("claude-code", Scope::Local);
         install_entry(
             &entry,
@@ -1638,7 +1638,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            std::fs::read_to_string(installed_dir.join(format!("{name}.md"))).unwrap(),
+            std::fs::read_to_string(installed_dir.join("SKILL.md")).unwrap(),
             new_installed,
             "updated patch must describe the latest installed content"
         );
