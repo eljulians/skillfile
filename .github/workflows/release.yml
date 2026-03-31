@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*-rc"]
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -19,7 +19,6 @@ jobs:
   verify-install:
     name: Verify install script (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: [ci]
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -39,10 +38,67 @@ jobs:
           "${{ runner.temp }}/skillfile-test/skillfile" --version
           "${{ runner.temp }}/skillfile-test/skillfile" --help
 
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    needs: [ci, verify-install]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: skillfile-x86_64-linux
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: skillfile-aarch64-linux
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: skillfile-x86_64-macos
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: skillfile-aarch64-macos
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: skillfile-x86_64-windows.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (Linux aarch64)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/skillfile${{ runner.os == 'Windows' && '.exe' || '' }} dist/${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: [ci, verify-install]
+    needs: [build]
     steps:
       - uses: actions/checkout@v4
 
@@ -62,60 +118,34 @@ jobs:
           cargo publish -p skillfile
 
   release:
-    name: Promote RC to Release
+    name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [publish]
+    needs: [build, publish]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+          merge-multiple: true
 
-      - name: Download binaries from RC pre-release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RC_TAG="${GITHUB_REF_NAME}"
-
-          # Download all assets from the RC pre-release
-          mkdir -p dist
-          gh release download "$RC_TAG" -D dist
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum skillfile-* > checksums-sha256.txt
 
       - name: Extract changelog for this version
         id: changelog
         run: |
-          # Remove -rc suffix to get the actual version
+          # Extract the section between the first ## and the next ## (or EOF)
           VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION%-rc}"
+          awk '/^## v'"$VERSION"'/{found=1; next} found && /^## /{exit} found{print}' CHANGELOG.md > release-notes.md
 
-          if [ -f CHANGELOG.md ]; then
-            awk '/^## v'"$VERSION"'/{found=1; next} found && /^## /{exit} found{print}' CHANGELOG.md > release-notes.md
-          else
-            echo "Release version ${VERSION}" > release-notes.md
-          fi
-
-      - name: Create release tag and promote to full release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RC_TAG="${GITHUB_REF_NAME}"
-          VERSION="${RC_TAG#v}"
-          VERSION="${VERSION%-rc}"
-          RELEASE_TAG="v${VERSION}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Create the release tag pointing to the same commit as the RC tag
-          git tag "$RELEASE_TAG"
-          git push origin "$RELEASE_TAG"
-
-          # Create a new full release with the same assets
-          gh release create "$RELEASE_TAG" \
-            --title "$RELEASE_TAG" \
-            --notes-file release-notes.md \
-            dist/*
-
-          # Delete the RC pre-release and tag
-          gh release delete "$RC_TAG" --yes
-          git push --delete origin "$RC_TAG"
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            dist/skillfile-*
+            dist/checksums-sha256.txt
+            install.sh
