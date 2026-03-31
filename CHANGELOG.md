@@ -4,6 +4,19 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.4.2 - 31-03-2026
+
+### Security
+
+- **GitHub tokens no longer sent to third-party registries** - `build_get` and `build_post` unconditionally attached `Authorization: Bearer` headers to every HTTP request, sending GitHub tokens to agentskill.sh, skills.sh, and skillhub.club. Tokens are now wrapped in an opaque `GithubToken` newtype whose only extraction method gates on an exact-host allowlist (`api.github.com`, `raw.githubusercontent.com`). The inner field is private with no `Debug`/`Clone`/`Deref`, making accidental leakage structurally impossible.
+
+### Changed
+
+- **Dependencies updated** - bumped `console` (0.16.3), `cliclack` (0.5.2), `crossterm` (0.29.0), `insta` (1.47.1), and `assert_cmd` (2.2.0).
+- **CI reliability** - upstream GitHub API tests now run sequentially with exponential backoff, eliminating rate-limit flakes on PRs.
+
+---
+
 ## v1.4.1 - 23-03-2026
 
 ### Fixed
