@@ -1171,7 +1171,9 @@ mod tests {
                 "codex" => ".codex",
                 _ => unreachable!(),
             };
-            let dest = dir.path().join(format!("{prefix}/skills/my-skill/SKILL.md"));
+            let dest = dir
+                .path()
+                .join(format!("{prefix}/skills/my-skill/SKILL.md"));
             assert!(dest.exists(), "Failed for adapter {adapter}");
             assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# Multi Skill");
         }
