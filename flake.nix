@@ -1,5 +1,5 @@
 {
-  description = "Skillfile development environment";
+  description = "A declarative package manager for AI agent skills and configurations";
 
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
@@ -15,14 +15,35 @@
         };
       in
       {
+        packages.default = pkgs.rustPlatform.buildRustPackage {
+          pname = "skillfile";
+          version = "1.4.1";
+
+          src = ./.;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
+
+          nativeBuildInputs = [ pkgs.git ];
+
+          meta = with pkgs.lib; {
+            description = "A declarative package manager for AI agent skills and configurations";
+            homepage = "https://github.com/eljulians/skillfile";
+            license = licenses.asl20;
+            maintainers = [ ];
+            mainProgram = "skillfile";
+          };
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = [
             pkgs.rustc
             pkgs.cargo
             pkgs.rustfmt
             pkgs.clippy
-          pkgs.git
-        ];
+            pkgs.git
+          ];
         };
       }
     );
