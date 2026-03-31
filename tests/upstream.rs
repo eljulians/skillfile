@@ -10,7 +10,8 @@
 ///
 /// Run with: cargo test -p skillfile-functional-tests --test upstream
 use predicates::prelude::*;
-use retry::{delay::Fixed, retry};
+use retry::{delay::Exponential, retry};
+use serial_test::serial;
 use skillfile_functional_tests::sf;
 
 // ---------------------------------------------------------------------------
@@ -27,9 +28,11 @@ github  agent  code-refactorer  iannuttall/claude-agents  agents/code-refactorer
 github  skill  requesting-code-review  obra/superpowers  skills/requesting-code-review\n\
 ";
 
-/// Retry config: 3 attempts total (initial + 2 retries), 2s between each.
+/// Retry config: 4 attempts total (initial + 3 retries), exponential backoff
+/// (2s, 4s, 8s). Total window ≈ 14s — enough to survive transient rate-limit
+/// blips without making the suite painfully slow on genuine failures.
 fn retry_delays() -> impl Iterator<Item = std::time::Duration> {
-    Fixed::from_millis(2000).take(2)
+    Exponential::from_millis(2000).take(3)
 }
 
 /// Assert that no entry is a strict path-prefix of another entry.
@@ -102,6 +105,7 @@ fn require_github_token() -> bool {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[serial]
 fn sync_golden_path() {
     if !require_github_token() {
         return;
@@ -125,6 +129,7 @@ fn sync_golden_path() {
 }
 
 #[test]
+#[serial]
 fn install_golden_path() {
     if !require_github_token() {
         return;
@@ -155,6 +160,7 @@ fn install_golden_path() {
 }
 
 #[test]
+#[serial]
 fn install_dry_run() {
     if !require_github_token() {
         return;
@@ -179,6 +185,7 @@ fn install_dry_run() {
 }
 
 #[test]
+#[serial]
 fn install_update() {
     if !require_github_token() {
         return;
@@ -196,6 +203,7 @@ fn install_update() {
 }
 
 #[test]
+#[serial]
 fn pin_then_unpin() {
     if !require_github_token() {
         return;
@@ -233,6 +241,7 @@ fn pin_then_unpin() {
 }
 
 #[test]
+#[serial]
 fn status_after_install() {
     if !require_github_token() {
         return;
@@ -344,6 +353,7 @@ fn search_skillhub_club_no_key() {
 /// Uses `iannuttall/claude-agents` (from the test Skillfile) which has
 /// multiple agent .md files under an `agents/` directory.
 #[test]
+#[serial]
 fn add_discovery_multi_file_repo() {
     if !require_github_token() {
         return;
@@ -377,6 +387,7 @@ fn add_discovery_multi_file_repo() {
 
 /// list_repo_skill_entries returns entries from a known repo.
 #[test]
+#[serial]
 fn add_discovery_another_repo() {
     if !require_github_token() {
         return;
@@ -400,6 +411,7 @@ fn add_discovery_another_repo() {
 
 /// list_repo_skill_entries returns empty for a non-existent repo.
 #[test]
+#[serial]
 fn add_discovery_nonexistent_repo() {
     if !require_github_token() {
         return;
@@ -424,6 +436,7 @@ fn add_discovery_nonexistent_repo() {
 /// must resolve to `skills/kubernetes-specialist` (a directory entry),
 /// NOT list every individual .md file inside it.
 #[test]
+#[serial]
 fn add_discovery_resolution_multi_skill() {
     if !require_github_token() {
         return;
@@ -475,6 +488,7 @@ fn add_discovery_resolution_multi_skill() {
 
 /// Scoped discovery on a flat repo: prefix filtering + no-prefix-overlap invariant.
 #[test]
+#[serial]
 fn add_discovery_scoped_flat_repo() {
     if !require_github_token() {
         return;
@@ -516,6 +530,7 @@ fn add_discovery_scoped_flat_repo() {
 /// Both parent and child are valid independent skills (both have SKILL.md).
 /// Non-SKILL.md descendants must NOT produce separate entries.
 #[test]
+#[serial]
 fn add_discovery_scoped_nested_repo() {
     if !require_github_token() {
         return;
@@ -576,6 +591,7 @@ fn add_discovery_scoped_nested_repo() {
 /// without `source_path` either have a `source_repo` pointing to a real
 /// GitHub repo, or have `source_repo = None`.
 #[test]
+#[serial]
 fn search_agentskill_no_slug_leak() {
     if !require_github_token() {
         return;
@@ -618,6 +634,7 @@ fn search_agentskill_no_slug_leak() {
 
 /// End-to-end: single-skill repo with SKILL.md at root resolves to ".".
 #[test]
+#[serial]
 fn add_discovery_resolution_single_skill() {
     if !require_github_token() {
         return;
