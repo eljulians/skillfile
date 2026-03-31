@@ -25,6 +25,7 @@ tempfile = { workspace = true }
 serde_json = { workspace = true }
 skillfile-sources = { workspace = true }
 retry = { workspace = true }
+serial_test = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 rexpect = { workspace = true }
