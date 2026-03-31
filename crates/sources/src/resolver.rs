@@ -2,9 +2,6 @@ use skillfile_core::error::SkillfileError;
 
 use crate::http::HttpClient;
 
-// Re-export so existing callers (`use crate::resolver::github_token`) keep working.
-pub use crate::http::github_token;
-
 pub fn http_get(client: &dyn HttpClient, url: &str) -> Result<Vec<u8>, SkillfileError> {
     client.get_bytes(url)
 }

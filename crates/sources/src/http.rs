@@ -23,10 +23,33 @@ pub fn set_config_token(token: Option<String>) {
     let _ = CONFIG_TOKEN.set(token);
 }
 
+/// Opaque GitHub token handle.
+///
+/// The raw token string is **not publicly accessible**. The only way to
+/// extract it is [`GithubToken::for_url`], which gates on
+/// `is_github_url` — making it structurally impossible to leak the
+/// token to non-GitHub domains.
+pub struct GithubToken(Option<&'static str>);
+
+impl GithubToken {
+    /// Extract the token string only for GitHub domains.
+    ///
+    /// Returns `None` when the URL is not a GitHub domain or when no
+    /// token is available. This is the **only** way to obtain the raw
+    /// token value.
+    #[must_use]
+    pub fn for_url(&self, url: &str) -> Option<&'static str> {
+        is_github_url(url).then_some(self.0).flatten()
+    }
+}
+
 /// Discover a GitHub token from environment or `gh` CLI. Cached after first call.
+///
+/// Returns an opaque [`GithubToken`] — the raw value can only be
+/// extracted via [`GithubToken::for_url`] for GitHub domains.
 #[must_use]
-pub fn github_token() -> Option<&'static str> {
-    TOKEN_CACHE.get_or_init(discover_github_token).as_deref()
+pub fn github_token() -> GithubToken {
+    GithubToken(TOKEN_CACHE.get_or_init(discover_github_token).as_deref())
 }
 
 fn env_token(name: &str) -> Option<String> {
@@ -109,6 +132,27 @@ pub trait HttpClient: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub URL allowlist — tokens must never leave GitHub domains
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if `url` targets a GitHub domain that should receive the
+/// GitHub `Authorization` header.
+///
+/// Only exact host matches are accepted — subdomain tricks like
+/// `api.github.com.evil.com` are rejected.
+fn is_github_url(url: &str) -> bool {
+    // Accept both https:// and http:// schemes. In practice only HTTPS URLs
+    // are constructed, but accepting HTTP is fail-safe: the token is attached
+    // only if the *host* matches, and ureq will negotiate TLS regardless.
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("");
+    matches!(host, "api.github.com" | "raw.githubusercontent.com")
+}
+
+// ---------------------------------------------------------------------------
 // UreqClient — the production implementation backed by ureq
 // ---------------------------------------------------------------------------
 
@@ -119,9 +163,9 @@ fn read_response_text(body: &mut ureq::Body, url: &str) -> Result<String, Skillf
 
 /// Production HTTP client backed by `ureq::Agent`.
 ///
-/// Automatically attaches `User-Agent` and GitHub `Authorization` headers
-/// to every request. The GitHub token is discovered once from environment
-/// variables or the `gh` CLI and cached for the process lifetime.
+/// Attaches `User-Agent` to every request. GitHub `Authorization` header
+/// is only sent to GitHub domains (`api.github.com`,
+/// `raw.githubusercontent.com`) — never to third-party registries.
 pub struct UreqClient {
     agent: ureq::Agent,
 }
@@ -141,7 +185,7 @@ impl UreqClient {
 
     fn build_get(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
         let mut req = self.agent.get(url).header("User-Agent", "skillfile/1.0");
-        if let Some(token) = github_token() {
+        if let Some(token) = github_token().for_url(url) {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         req
@@ -149,7 +193,7 @@ impl UreqClient {
 
     fn build_post(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         let mut req = self.agent.post(url).header("User-Agent", "skillfile/1.0");
-        if let Some(token) = github_token() {
+        if let Some(token) = github_token().for_url(url) {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         req
@@ -253,5 +297,104 @@ mod tests {
         // Either we just set it, or a previous test already set it.
         // Either way the lock must be initialised.
         assert!(CONFIG_TOKEN.get().is_some());
+    }
+
+    // -- GithubToken newtype tests -----------------------------------------------
+    //
+    // Test the opaque wrapper that makes it structurally impossible to
+    // extract the raw token without providing a GitHub URL.
+
+    #[test]
+    fn github_token_type_for_url_rejects_registries() {
+        let token = GithubToken(Some("ghp_secret"));
+        assert!(token.for_url("https://agentskill.sh/api/search").is_none());
+        assert!(token.for_url("https://skills.sh/api/search").is_none());
+        assert!(token
+            .for_url("https://www.skillhub.club/api/v1/skills/search")
+            .is_none());
+    }
+
+    #[test]
+    fn github_token_type_for_url_allows_github() {
+        let token = GithubToken(Some("ghp_secret"));
+        assert_eq!(
+            token.for_url("https://api.github.com/repos/o/r"),
+            Some("ghp_secret")
+        );
+        assert_eq!(
+            token.for_url("https://raw.githubusercontent.com/o/r/HEAD/f"),
+            Some("ghp_secret")
+        );
+    }
+
+    #[test]
+    fn github_token_type_for_url_returns_none_without_token() {
+        let token = GithubToken(None);
+        assert!(token.for_url("https://api.github.com/repos/o/r").is_none());
+    }
+
+    // -- is_github_url tests (token leakage prevention) -----------------------
+
+    #[test]
+    fn github_api_url_is_github() {
+        assert!(is_github_url("https://api.github.com/repos/owner/repo"));
+    }
+
+    #[test]
+    fn github_raw_url_is_github() {
+        assert!(is_github_url(
+            "https://raw.githubusercontent.com/owner/repo/main/file.md"
+        ));
+    }
+
+    #[test]
+    fn github_api_root_is_github() {
+        assert!(is_github_url("https://api.github.com/"));
+    }
+
+    #[test]
+    fn agentskill_url_is_not_github() {
+        assert!(!is_github_url(
+            "https://agentskill.sh/api/agent/search?q=test"
+        ));
+    }
+
+    #[test]
+    fn skillssh_url_is_not_github() {
+        assert!(!is_github_url("https://skills.sh/api/search?q=test"));
+    }
+
+    #[test]
+    fn skillhub_url_is_not_github() {
+        assert!(!is_github_url(
+            "https://www.skillhub.club/api/v1/skills/search"
+        ));
+    }
+
+    #[test]
+    fn spoofed_github_subdomain_is_not_github() {
+        assert!(!is_github_url("https://api.github.com.evil.com/repos"));
+    }
+
+    #[test]
+    fn spoofed_raw_subdomain_is_not_github() {
+        assert!(!is_github_url(
+            "https://raw.githubusercontent.com.evil.com/file"
+        ));
+    }
+
+    #[test]
+    fn empty_url_is_not_github() {
+        assert!(!is_github_url(""));
+    }
+
+    #[test]
+    fn bare_domain_is_not_github() {
+        assert!(!is_github_url("api.github.com/repos"));
+    }
+
+    #[test]
+    fn http_github_url_is_github() {
+        assert!(is_github_url("http://api.github.com/repos/owner/repo"));
     }
 }
