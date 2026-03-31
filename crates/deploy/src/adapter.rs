@@ -104,6 +104,13 @@ impl FileSystemAdapter {
             entities,
         }
     }
+
+    /// Returns true if the entity type uses flat file layout (e.g., agents).
+    fn is_flat_mode(&self, entity_type: EntityType) -> bool {
+        self.entities
+            .get(&entity_type)
+            .is_some_and(|c| c.dir_mode == DirInstallMode::Flat)
+    }
 }
 
 impl PlatformAdapter for FileSystemAdapter {
@@ -160,17 +167,13 @@ impl PlatformAdapter for FileSystemAdapter {
 
         let dest = if is_dir {
             target_dir.join(&req.entry.name)
+        } else if self.is_flat_mode(req.entry.entity_type) {
+            // Single files in flat mode deploy as {name}.md
+            let name = &req.entry.name;
+            target_dir.join(format!("{name}.md"))
         } else {
-            // Single files in nested mode deploy as {name}/SKILL.md; in flat mode as {name}.md
-            let is_flat_mode = self
-                .entities
-                .get(&req.entry.entity_type)
-                .is_some_and(|c| c.dir_mode == DirInstallMode::Flat);
-            if is_flat_mode {
-                target_dir.join(format!("{}.md", req.entry.name))
-            } else {
-                target_dir.join(&req.entry.name).join("SKILL.md")
-            }
+            // Single files in nested mode deploy as {name}/SKILL.md
+            target_dir.join(&req.entry.name).join("SKILL.md")
         };
 
         if !place_file(
@@ -188,35 +191,25 @@ impl PlatformAdapter for FileSystemAdapter {
         // Migration: if we just deployed a single-file skill as {name}/SKILL.md (nested mode),
         // remove any leftover flat {name}.md from a previous install to prevent agents that
         // do broad directory scans from loading both the old and new versions simultaneously.
-        if !is_dir
-            && self
-                .entities
-                .get(&req.entry.entity_type)
-                .is_some_and(|c| c.dir_mode == DirInstallMode::Nested)
-        {
-            let orphan = target_dir.join(format!("{}.md", req.entry.name));
-            if orphan.is_file() {
-                std::fs::remove_file(&orphan).ok();
-            }
+        if !is_dir && !self.is_flat_mode(req.entry.entity_type) {
+            remove_orphan_flat_file(&req.entry.name, &target_dir);
         }
 
         if is_dir {
             collect_dir_deploy_result(req.source, &dest)
         } else {
-            HashMap::from([(format!("{}.md", req.entry.name), dest)])
+            let entry_name = &req.entry.name;
+            HashMap::from([(format!("{entry_name}.md"), dest)])
         }
     }
 
     fn installed_path(&self, entry: &Entry, ctx: &AdapterScope<'_>) -> PathBuf {
         let target_dir = self.target_dir(entry.entity_type, ctx);
-        let is_flat_mode = self
-            .entities
-            .get(&entry.entity_type)
-            .is_some_and(|c| c.dir_mode == DirInstallMode::Flat);
 
-        if is_flat_mode {
+        if self.is_flat_mode(entry.entity_type) {
             // Flat mode: skill is at {target}/name.md
-            target_dir.join(format!("{}.md", entry.name))
+            let name = &entry.name;
+            target_dir.join(format!("{name}.md"))
         } else {
             // Nested mode: skill is at {target}/name/SKILL.md
             target_dir.join(&entry.name).join("SKILL.md")
@@ -247,6 +240,15 @@ impl PlatformAdapter for FileSystemAdapter {
 // ---------------------------------------------------------------------------
 // Deployment helpers (used by FileSystemAdapter)
 // ---------------------------------------------------------------------------
+
+/// Remove legacy flat {name}.md file if it exists, warning on failure.
+/// Used during migration to prevent duplicate skill loading.
+fn remove_orphan_flat_file(entry_name: &str, target_dir: &Path) {
+    let orphan = target_dir.join(format!("{entry_name}.md"));
+    if orphan.is_file() && std::fs::remove_file(&orphan).is_err() {
+        eprintln!("warning: failed to remove {}", orphan.display());
+    }
+}
 
 /// Convert a [`Path`] to a forward-slash string for use as patch/deploy keys.
 ///

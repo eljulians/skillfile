@@ -7,7 +7,6 @@
 ///
 /// This normalization ensures compatibility with tools like Copilot and Claude Code
 /// that expect directory-based skill layouts.
-
 use skillfile_functional_tests::sf;
 
 // ---------------------------------------------------------------------------
@@ -38,7 +37,10 @@ fn install_local_file_entry_as_directory() {
         deployed_skill.exists(),
         "local file entry must deploy as my-skill/SKILL.md"
     );
-    assert_eq!(std::fs::read_to_string(&deployed_skill).unwrap(), "# My Skill\n");
+    assert_eq!(
+        std::fs::read_to_string(&deployed_skill).unwrap(),
+        "# My Skill\n"
+    );
 
     // Flat .md file must NOT exist
     assert!(
