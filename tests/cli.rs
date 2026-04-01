@@ -493,3 +493,91 @@ fn resolve_abort_clears_conflict() {
         "conflict file should be cleared after --abort"
     );
 }
+
+// ---------------------------------------------------------------------------
+// validate --strict / status --untracked (untracked file detection)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_warns_on_untracked_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  claude-code  local\n\
+         github  agent  tracked  owner/repo  agents/tracked.md\n",
+    )
+    .unwrap();
+
+    // Create an untracked agent file alongside the tracked one
+    let agents = root.join(".claude/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join("tracked.md"), "# Tracked").unwrap();
+    std::fs::write(agents.join("rogue.md"), "# Rogue").unwrap();
+
+    // Without --strict: succeeds but warns on stderr
+    let output = sf(root)
+        .arg("validate")
+        .output()
+        .expect("failed to execute");
+    assert!(output.status.success(), "validate should still pass");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("untracked"),
+        "should warn about untracked files, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("rogue.md"),
+        "warning should mention the file, got: {stderr}"
+    );
+}
+
+#[test]
+fn validate_strict_fails_on_untracked_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(root.join("Skillfile"), "install  claude-code  local\n").unwrap();
+
+    let agents = root.join(".claude/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join("rogue.md"), "# Rogue").unwrap();
+
+    sf(root).args(["validate", "--strict"]).assert().failure();
+}
+
+#[test]
+fn status_untracked_shows_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(root.join("Skillfile"), "install  claude-code  local\n").unwrap();
+
+    let skills = root.join(".claude/skills");
+    std::fs::create_dir_all(skills.join("docker")).unwrap();
+
+    sf(root)
+        .args(["status", "--untracked"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Untracked:"))
+        .stdout(predicate::str::contains("docker"));
+}
+
+#[test]
+fn status_without_untracked_flag_hides_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(root.join("Skillfile"), "install  claude-code  local\n").unwrap();
+
+    let skills = root.join(".claude/skills");
+    std::fs::create_dir_all(skills.join("docker")).unwrap();
+
+    sf(root)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Untracked:").not());
+}

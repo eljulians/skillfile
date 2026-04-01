@@ -6,6 +6,7 @@ use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{Manifest, Scope, SourceFields};
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_deploy::adapter::adapters;
+use skillfile_deploy::paths::{find_untracked, UntrackedFile};
 
 fn check_duplicate_names(manifest: &Manifest, errors: &mut Vec<String>) {
     let mut seen: HashMap<String, String> = HashMap::new();
@@ -79,7 +80,32 @@ fn check_orphaned_locks(
     Ok(())
 }
 
-pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
+fn print_untracked_warnings(
+    untracked: &[UntrackedFile],
+    strict: bool,
+) -> Result<(), SkillfileError> {
+    if untracked.is_empty() {
+        return Ok(());
+    }
+    let prefix = if strict { "error" } else { "warning" };
+    eprintln!("{prefix}: untracked files in install targets:");
+    for f in untracked {
+        let entity = f.entity_type;
+        let path = f.path.display();
+        let suffix = f.kind.suffix();
+        eprintln!("  {entity}  {path}{suffix}  (add: skillfile add local {entity} {path})");
+    }
+    if strict {
+        eprintln!(
+            "\n{} untracked file(s). Add to Skillfile or remove from disk.",
+            untracked.len()
+        );
+        return Err(SkillfileError::Manifest(String::new()));
+    }
+    Ok(())
+}
+
+pub fn cmd_validate(repo_root: &Path, strict: bool) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
         return Err(SkillfileError::Manifest(format!(
@@ -108,11 +134,19 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
         return Err(SkillfileError::Manifest(String::new()));
     }
 
+    let untracked = find_untracked(&manifest, repo_root)?;
+    print_untracked_warnings(&untracked, strict)?;
+
     let n = manifest.entries.len();
     let t = manifest.install_targets.len();
     let entry_word = if n == 1 { "entry" } else { "entries" };
     let target_word = if t == 1 { "target" } else { "targets" };
-    println!("Skillfile OK — {n} {entry_word}, {t} install {target_word}");
+    let untracked_suffix = if untracked.is_empty() {
+        String::new()
+    } else {
+        format!(" ({} untracked)", untracked.len())
+    };
+    println!("Skillfile OK — {n} {entry_word}, {t} install {target_word}{untracked_suffix}");
 
     Ok(())
 }
@@ -128,7 +162,7 @@ mod tests {
     #[test]
     fn no_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        let result = cmd_validate(dir.path());
+        let result = cmd_validate(dir.path(), false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -137,14 +171,14 @@ mod tests {
     fn valid_empty_manifest() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "");
-        cmd_validate(dir.path()).unwrap();
+        cmd_validate(dir.path(), false).unwrap();
     }
 
     #[test]
     fn valid_github_entry() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "github  agent  owner/repo  agents/agent.md\n");
-        cmd_validate(dir.path()).unwrap();
+        cmd_validate(dir.path(), false).unwrap();
     }
 
     #[test]
@@ -154,14 +188,14 @@ mod tests {
         std::fs::create_dir_all(source.parent().unwrap()).unwrap();
         std::fs::write(&source, "# Foo").unwrap();
         write_manifest(dir.path(), "local  skill  skills/foo.md\n");
-        cmd_validate(dir.path()).unwrap();
+        cmd_validate(dir.path(), false).unwrap();
     }
 
     #[test]
     fn valid_with_known_install_target() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "install  claude-code  global\n");
-        cmd_validate(dir.path()).unwrap();
+        cmd_validate(dir.path(), false).unwrap();
     }
 
     #[test]
@@ -171,7 +205,7 @@ mod tests {
             dir.path(),
             "local  skill  skills/foo.md\ngithub  agent  owner/repo  skills/foo.md\n",
         );
-        let result = cmd_validate(dir.path());
+        let result = cmd_validate(dir.path(), false);
         assert!(result.is_err());
     }
 
@@ -179,7 +213,7 @@ mod tests {
     fn missing_local_path_errors() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "local  skill  skills/nonexistent.md\n");
-        let result = cmd_validate(dir.path());
+        let result = cmd_validate(dir.path(), false);
         assert!(result.is_err());
     }
 
@@ -187,7 +221,7 @@ mod tests {
     fn unknown_platform_errors() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "install  unknown-platform  global\n");
-        let result = cmd_validate(dir.path());
+        let result = cmd_validate(dir.path(), false);
         assert!(result.is_err());
     }
 
@@ -198,7 +232,7 @@ mod tests {
             dir.path(),
             "install  unknown-platform  global\nlocal  skill  skills/missing.md\n",
         );
-        let result = cmd_validate(dir.path());
+        let result = cmd_validate(dir.path(), false);
         assert!(result.is_err());
     }
 
@@ -209,7 +243,7 @@ mod tests {
             dir.path(),
             "install  claude-code  global\ninstall  claude-code  global\n",
         );
-        let result = cmd_validate(dir.path());
+        let result = cmd_validate(dir.path(), false);
         assert!(result.is_err());
     }
 
@@ -220,7 +254,7 @@ mod tests {
             dir.path(),
             "install  claude-code  global\ninstall  claude-code  local\n",
         );
-        cmd_validate(dir.path()).unwrap();
+        cmd_validate(dir.path(), false).unwrap();
     }
 
     #[test]
@@ -238,7 +272,7 @@ mod tests {
             serde_json::to_string_pretty(&lock_data).unwrap(),
         )
         .unwrap();
-        let result = cmd_validate(dir.path());
+        let result = cmd_validate(dir.path(), false);
         assert!(result.is_err());
     }
 
@@ -254,6 +288,45 @@ mod tests {
             serde_json::to_string_pretty(&lock_data).unwrap(),
         )
         .unwrap();
-        cmd_validate(dir.path()).unwrap();
+        cmd_validate(dir.path(), false).unwrap();
+    }
+
+    #[test]
+    fn untracked_files_warn_but_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "install  claude-code  local\n");
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("rogue.md"), "# rogue").unwrap();
+
+        // Without strict, untracked files are warnings only → Ok
+        cmd_validate(dir.path(), false).unwrap();
+    }
+
+    #[test]
+    fn untracked_files_strict_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "install  claude-code  local\n");
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("rogue.md"), "# rogue").unwrap();
+
+        let result = cmd_validate(dir.path(), true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn no_untracked_no_warnings() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "github  agent  owner/repo  agents/helper.md\ninstall  claude-code  local\n",
+        );
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("helper.md"), "# tracked").unwrap();
+
+        // Validate should pass cleanly
+        cmd_validate(dir.path(), false).unwrap();
     }
 }

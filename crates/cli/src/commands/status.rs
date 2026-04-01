@@ -201,7 +201,11 @@ fn format_entry_status(
     Ok(format!("{name:<col_w$} {base_status}{annotation}"))
 }
 
-pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), SkillfileError> {
+pub fn cmd_status(
+    repo_root: &Path,
+    check_upstream: bool,
+    show_untracked: bool,
+) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
         return Err(SkillfileError::Manifest(format!(
@@ -235,6 +239,24 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
         println!("{line}");
     }
 
+    if show_untracked {
+        print_untracked(&manifest, repo_root)?;
+    }
+
+    Ok(())
+}
+
+fn print_untracked(manifest: &Manifest, repo_root: &Path) -> Result<(), SkillfileError> {
+    let untracked = skillfile_deploy::paths::find_untracked(manifest, repo_root)?;
+    if untracked.is_empty() {
+        return Ok(());
+    }
+    println!();
+    println!("Untracked:");
+    for f in &untracked {
+        let suffix = f.kind.suffix();
+        println!("  {}  {}{suffix}", f.entity_type, f.path.display());
+    }
     Ok(())
 }
 
@@ -343,7 +365,7 @@ mod tests {
     #[test]
     fn no_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        let result = cmd_status(dir.path(), false);
+        let result = cmd_status(dir.path(), false, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -355,7 +377,7 @@ mod tests {
         std::fs::create_dir_all(source.parent().unwrap()).unwrap();
         std::fs::write(&source, "# Foo").unwrap();
         write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
-        cmd_status(dir.path(), false).unwrap();
+        cmd_status(dir.path(), false, false).unwrap();
     }
 
     #[test]
@@ -363,7 +385,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(dir.path(), "local  skill  foo  skills/foo.md\n");
         // Missing path should not cause an error — status reports it inline
-        cmd_status(dir.path(), false).unwrap();
+        cmd_status(dir.path(), false, false).unwrap();
     }
 
     #[test]
@@ -373,7 +395,7 @@ mod tests {
             dir.path(),
             "github  agent  my-agent  owner/repo  agents/agent.md  main\n",
         );
-        cmd_status(dir.path(), false).unwrap();
+        cmd_status(dir.path(), false, false).unwrap();
     }
 
     #[test]
@@ -389,7 +411,7 @@ mod tests {
             &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
         );
         write_meta(dir.path(), &VE_AGENT, sha);
-        cmd_status(dir.path(), false).unwrap();
+        cmd_status(dir.path(), false, false).unwrap();
     }
 
     #[test]
@@ -405,7 +427,7 @@ mod tests {
             &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
         );
         // No .meta written
-        cmd_status(dir.path(), false).unwrap();
+        cmd_status(dir.path(), false, false).unwrap();
     }
 
     #[test]

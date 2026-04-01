@@ -168,13 +168,20 @@ Show the state of every entry: locked, unlocked, pinned, or missing.
 With --check-upstream, resolves the current upstream SHA for each entry
 and shows whether an update is available.
 
+With --untracked, lists files in install directories that are not tracked
+by any Skillfile entry.
+
 Examples:
   skillfile status
-  skillfile status --check-upstream")]
+  skillfile status --check-upstream
+  skillfile status --untracked")]
     Status {
         /// Check current upstream SHA (makes API calls)
         #[arg(long)]
         check_upstream: bool,
+        /// Show files in install directories not tracked by the Skillfile
+        #[arg(long)]
+        untracked: bool,
     },
 
     // -- Discovery (display_order 25-29) ----------------------------------------
@@ -227,15 +234,24 @@ Examples:
     },
 
     // -- Validation (display_order 30-39) -------------------------------------
-    /// Check the Skillfile for errors
+    /// Check the Skillfile for errors and warn about untracked files
     #[command(display_order = 30)]
     #[command(long_about = "\
 Parse the Skillfile and report any errors: syntax issues, unknown platforms,
 duplicate entry names, orphaned lock entries, and duplicate install targets.
 
+Also detects files in install directories (e.g. .claude/skills/) that are not
+tracked by any Skillfile entry. By default these are warnings on stderr.
+Use --strict to promote them to errors (useful as a CI gate).
+
 Examples:
-  skillfile validate")]
-    Validate,
+  skillfile validate
+  skillfile validate --strict     # CI: fail on untracked files")]
+    Validate {
+        /// Fail if untracked files exist in install target directories
+        #[arg(long)]
+        strict: bool,
+    },
 
     /// Format and sort entries in the Skillfile into a standard order
     #[command(display_order = 31)]
@@ -467,7 +483,7 @@ fn run_content_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileE
             );
             Ok(())
         }
-        Command::Validate => commands::validate::cmd_validate(repo_root),
+        Command::Validate { strict } => commands::validate::cmd_validate(repo_root, strict),
         Command::Format { dry_run } => commands::format::cmd_format(repo_root, dry_run),
         Command::Pin { name, dry_run } => commands::pin::cmd_pin(&name, repo_root, dry_run),
         Command::Unpin { name } => commands::pin::cmd_unpin(&name, repo_root),
@@ -491,9 +507,10 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
             entry_filter: entry.as_deref(),
             update,
         }),
-        Command::Status { check_upstream } => {
-            commands::status::cmd_status(repo_root, check_upstream)
-        }
+        Command::Status {
+            check_upstream,
+            untracked,
+        } => commands::status::cmd_status(repo_root, check_upstream, untracked),
         Command::Init => commands::init::cmd_init(repo_root),
         Command::Install { dry_run, update } => run_install(repo_root, dry_run, update),
         Command::Add {
