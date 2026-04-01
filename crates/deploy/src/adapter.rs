@@ -515,6 +515,7 @@ struct AdapterSpec {
 /// | windsurf    | yes    | no            | `~/.codeium/windsurf/`     | `.windsurf/`     |
 /// | opencode    | yes    | yes           | `~/.config/opencode/`      | `.opencode/`     |
 /// | copilot     | yes    | yes           | `~/.copilot/`              | `.github/`       |
+/// | antigravity | yes    | yes           | `~/.antigravity/`          | `.antigravity/`  |
 const BUILTIN_ADAPTERS: &[AdapterSpec] = &[
     AdapterSpec {
         name: "claude-code",
@@ -636,6 +637,23 @@ const BUILTIN_ADAPTERS: &[AdapterSpec] = &[
             },
         ],
     },
+    AdapterSpec {
+        name: "antigravity",
+        entities: &[
+            EntitySpec {
+                entity_type: EntityType::Skill,
+                global_path: "~/.antigravity/skills",
+                local_path: ".antigravity/skills",
+                dir_mode: DirInstallMode::Nested,
+            },
+            EntitySpec {
+                entity_type: EntityType::Agent,
+                global_path: "~/.antigravity/agents",
+                local_path: ".antigravity/agents",
+                dir_mode: DirInstallMode::Flat,
+            },
+        ],
+    },
 ];
 
 fn build_adapter(spec: &AdapterSpec) -> FileSystemAdapter {
@@ -706,6 +724,7 @@ mod tests {
         assert!(reg.contains("windsurf"));
         assert!(reg.contains("opencode"));
         assert!(reg.contains("copilot"));
+        assert!(reg.contains("antigravity"));
     }
 
     #[test]
@@ -719,7 +738,8 @@ mod tests {
         assert!(names.contains(&"windsurf"));
         assert!(names.contains(&"opencode"));
         assert!(names.contains(&"copilot"));
-        assert_eq!(names.len(), 8);
+        assert!(names.contains(&"antigravity"));
+        assert_eq!(names.len(), 9);
     }
 
     #[test]
