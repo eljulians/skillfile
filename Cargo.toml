@@ -42,7 +42,7 @@ dirs = "6"
 semver = "1"
 
 # Diff/patch
-similar = "2"
+similar = "3"
 
 # HTML entity decoding
 html-escape = "0.2"
