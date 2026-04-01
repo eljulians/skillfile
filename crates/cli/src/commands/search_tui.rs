@@ -693,6 +693,7 @@ fn registry_color(registry: RegistryId) -> Color {
         RegistryId::AgentskillSh => Color::Magenta,
         RegistryId::SkillsSh => Color::Cyan,
         RegistryId::SkillhubClub => Color::Green,
+        RegistryId::McpMarket => Color::Cyan
     }
 }
 
