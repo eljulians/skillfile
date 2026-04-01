@@ -287,8 +287,7 @@ pub fn fetch_skill_content_for(item: &SearchResult) -> Option<String> {
     match item.registry {
         RegistryId::AgentskillSh => AgentskillSh.fetch_skill_content(&client, item),
         RegistryId::SkillsSh => SkillsSh.fetch_skill_content(&client, item),
-        RegistryId::SkillhubClub => None,
-        RegistryId::McpMarket => None,
+        RegistryId::SkillhubClub | RegistryId::McpMarket => None,
     }
 }
 
@@ -527,7 +526,12 @@ mod tests {
     fn registry_names_covers_all_known() {
         assert_eq!(
             REGISTRY_NAMES,
-            &["agentskill.sh", "skills.sh", "skillhub.club"]
+            &[
+                "agentskill.sh",
+                "skills.sh",
+                "skillhub.club",
+                "mcpmarket.com"
+            ]
         );
     }
 

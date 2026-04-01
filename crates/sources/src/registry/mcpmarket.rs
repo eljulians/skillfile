@@ -2,7 +2,7 @@
 use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
-use super::{Registry, RegistryId, SearchQuery, SearchResponse};
+use super::{Registry, SearchQuery, SearchResponse};
 
 /// The mcpmarket.com registry (minimal implementation).
 pub struct McpMarket;
