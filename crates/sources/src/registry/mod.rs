@@ -16,10 +16,10 @@
 //! ```
 
 pub mod agentskill;
+mod mcpmarket;
 mod scrape;
 mod skillhub;
 mod skillssh;
-mod mcpmarket;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -29,9 +29,9 @@ use skillfile_core::error::SkillfileError;
 
 // Re-export registry implementations for `all_registries()` and `search_registry_with_client()`.
 use agentskill::AgentskillSh;
+use mcpmarket::McpMarket;
 use skillhub::SkillhubClub;
 use skillssh::SkillsSh;
-use mcpmarket::McpMarket;
 
 // Re-export the detail API from the agentskill module.
 pub use agentskill::{
@@ -167,7 +167,11 @@ pub(crate) trait Registry: Send + Sync {
 
 /// Returns registries to query by default (public, no auth required).
 pub(crate) fn all_registries() -> Vec<Box<dyn Registry>> {
-    let mut regs: Vec<Box<dyn Registry>> = vec![Box::new(AgentskillSh), Box::new(SkillsSh), Box::new(McpMarket)];
+    let mut regs: Vec<Box<dyn Registry>> = vec![
+        Box::new(AgentskillSh),
+        Box::new(SkillsSh),
+        Box::new(McpMarket),
+    ];
     // skillhub.club requires an API key — only include when configured.
     if std::env::var("SKILLHUB_API_KEY").is_ok_and(|k| !k.is_empty()) {
         regs.push(Box::new(SkillhubClub));
@@ -176,7 +180,12 @@ pub(crate) fn all_registries() -> Vec<Box<dyn Registry>> {
 }
 
 /// Valid registry names for `--registry` flag validation.
-pub const REGISTRY_NAMES: &[&str] = &["agentskill.sh", "skills.sh", "skillhub.club", "mcpmarket.com"];
+pub const REGISTRY_NAMES: &[&str] = &[
+    "agentskill.sh",
+    "skills.sh",
+    "skillhub.club",
+    "mcpmarket.com",
+];
 
 // ===========================================================================
 // Public search functions
