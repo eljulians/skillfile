@@ -127,8 +127,6 @@ pub fn cmd_validate(repo_root: &Path, strict: bool) -> Result<(), SkillfileError
     check_duplicate_targets(&manifest, &mut errors);
     check_orphaned_locks(&manifest, repo_root, &mut errors)?;
 
-    let untracked = find_untracked(&manifest, repo_root)?;
-
     if !errors.is_empty() {
         for msg in &errors {
             eprintln!("error: {msg}");
@@ -136,6 +134,7 @@ pub fn cmd_validate(repo_root: &Path, strict: bool) -> Result<(), SkillfileError
         return Err(SkillfileError::Manifest(String::new()));
     }
 
+    let untracked = find_untracked(&manifest, repo_root)?;
     print_untracked_warnings(&untracked, strict)?;
 
     let n = manifest.entries.len();

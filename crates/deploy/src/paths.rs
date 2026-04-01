@@ -87,6 +87,7 @@ impl UntrackedKind {
     }
 }
 
+#[derive(Debug)]
 pub struct UntrackedFile {
     pub entity_type: EntityType,
     pub path: PathBuf,
@@ -125,7 +126,15 @@ fn entry_covered_paths(
     } else if is_dir {
         vec![adapter.target_dir(entry.entity_type, ctx).join(&entry.name)]
     } else {
-        vec![adapter.installed_path(entry, ctx)]
+        let installed = adapter.installed_path(entry, ctx);
+        // Nested single-file: installed at {name}/SKILL.md — cover the parent
+        // dir too so the scanner (which operates one level deep) sees it.
+        if mode == DirInstallMode::Nested {
+            let dir = adapter.target_dir(entry.entity_type, ctx).join(&entry.name);
+            vec![installed, dir]
+        } else {
+            vec![installed]
+        }
     };
     if let SourceFields::Local { path } = &entry.source {
         paths.push(ctx.repo_root.join(path));
@@ -210,40 +219,44 @@ impl<'a> DirScanner<'a> {
                 ))
             });
         for (dir, spec) in specs {
-            scan_target_dir(&dir, spec, self);
+            self.scan_target_dir(&dir, spec);
         }
     }
 
-    fn into_sorted(mut self) -> Vec<UntrackedFile> {
-        self.items.sort_unstable_by(|a, b| a.path.cmp(&b.path));
-        self.items
+    fn scan_target_dir(&mut self, target_dir: &Path, spec: ScanSpec) {
+        let Ok(entries) = std::fs::read_dir(target_dir) else {
+            return;
+        };
+        for dir_entry in entries.flatten() {
+            self.consider_entry(&dir_entry, spec);
+        }
     }
-}
 
-fn scan_target_dir(target_dir: &Path, spec: ScanSpec, scanner: &mut DirScanner<'_>) {
-    let Ok(entries) = std::fs::read_dir(target_dir) else {
-        return;
-    };
-    for dir_entry in entries.flatten() {
+    fn consider_entry(&mut self, dir_entry: &std::fs::DirEntry, spec: ScanSpec) {
         let is_dir = dir_entry.file_type().is_ok_and(|ft| ft.is_dir());
         let path = dir_entry.path();
         let is_nested_dir = is_dir && spec.mode == DirInstallMode::Nested;
         if !is_nested_dir && !is_md_file(&path) {
-            continue;
+            return;
         }
-        if scanner.covered.contains(&path) || !scanner.seen.insert(path.clone()) {
-            continue;
+        if self.covered.contains(&path) || !self.seen.insert(path.clone()) {
+            return;
         }
         let kind = if is_nested_dir {
             UntrackedKind::Directory
         } else {
             UntrackedKind::File
         };
-        scanner.items.push(UntrackedFile {
+        self.items.push(UntrackedFile {
             entity_type: spec.entity_type,
-            path: relative_to(scanner.repo_root, &path),
+            path: relative_to(self.repo_root, &path),
             kind,
         });
+    }
+
+    fn into_sorted(mut self) -> Vec<UntrackedFile> {
+        self.items.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        self.items
     }
 }
 
@@ -253,8 +266,7 @@ fn is_md_file(path: &Path) -> bool {
 }
 
 fn relative_to(base: &Path, path: &Path) -> PathBuf {
-    path.strip_prefix(base)
-        .map_or_else(|_| path.to_path_buf(), Path::to_path_buf)
+    path.strip_prefix(base).unwrap_or(path).to_path_buf()
 }
 
 fn first_target(manifest: &Manifest) -> Result<&'static dyn PlatformAdapter, SkillfileError> {
@@ -570,7 +582,9 @@ mod tests {
             install_targets: vec![local_target()],
         };
         let paths = covered_paths(&manifest, tmp.path());
-        assert!(paths.contains(&tmp.path().join(".claude/skills/browser.md")));
+        // Nested single-file: covered set includes both the leaf and parent dir
+        assert!(paths.contains(&tmp.path().join(".claude/skills/browser/SKILL.md")));
+        assert!(paths.contains(&tmp.path().join(".claude/skills/browser")));
     }
 
     #[test]
@@ -609,8 +623,11 @@ mod tests {
             ],
         };
         let paths = covered_paths(&manifest, tmp.path());
-        assert!(paths.contains(&tmp.path().join(".claude/skills/browser.md")));
-        assert!(paths.contains(&tmp.path().join(".cursor/skills/browser.md")));
+        // Nested single-file: both leaf and parent dir covered per adapter
+        assert!(paths.contains(&tmp.path().join(".claude/skills/browser/SKILL.md")));
+        assert!(paths.contains(&tmp.path().join(".claude/skills/browser")));
+        assert!(paths.contains(&tmp.path().join(".cursor/skills/browser/SKILL.md")));
+        assert!(paths.contains(&tmp.path().join(".cursor/skills/browser")));
     }
 
     #[test]
@@ -768,8 +785,10 @@ mod tests {
             install_targets: vec![local_target()],
         };
         let skills = tmp.path().join(".claude/skills");
-        std::fs::create_dir_all(&skills).unwrap();
-        std::fs::write(skills.join("browser.md"), "# tracked").unwrap();
+        // Nested layout: tracked skill is browser/SKILL.md
+        std::fs::create_dir_all(skills.join("browser")).unwrap();
+        std::fs::write(skills.join("browser/SKILL.md"), "# tracked").unwrap();
+        // Rogue file at top level
         std::fs::write(skills.join("rogue.md"), "# rogue").unwrap();
 
         let result = find_untracked(&manifest, tmp.path()).unwrap();

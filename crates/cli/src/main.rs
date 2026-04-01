@@ -168,9 +168,13 @@ Show the state of every entry: locked, unlocked, pinned, or missing.
 With --check-upstream, resolves the current upstream SHA for each entry
 and shows whether an update is available.
 
+With --untracked, lists files in install directories that are not tracked
+by any Skillfile entry.
+
 Examples:
   skillfile status
-  skillfile status --check-upstream")]
+  skillfile status --check-upstream
+  skillfile status --untracked")]
     Status {
         /// Check current upstream SHA (makes API calls)
         #[arg(long)]
@@ -230,14 +234,19 @@ Examples:
     },
 
     // -- Validation (display_order 30-39) -------------------------------------
-    /// Check the Skillfile for errors
+    /// Check the Skillfile for errors and warn about untracked files
     #[command(display_order = 30)]
     #[command(long_about = "\
 Parse the Skillfile and report any errors: syntax issues, unknown platforms,
 duplicate entry names, orphaned lock entries, and duplicate install targets.
 
+Also detects files in install directories (e.g. .claude/skills/) that are not
+tracked by any Skillfile entry. By default these are warnings on stderr.
+Use --strict to promote them to errors (useful as a CI gate).
+
 Examples:
-  skillfile validate")]
+  skillfile validate
+  skillfile validate --strict     # CI: fail on untracked files")]
     Validate {
         /// Fail if untracked files exist in install target directories
         #[arg(long)]
