@@ -223,12 +223,26 @@ The lock file pins entries to exact commit SHAs. The same SHA always produces th
 Review what you install. The risk profile is the same as `git clone`.
 
 ## Development
-
 ```bash
 cargo test --workspace                     # unit + integration + upstream tests
 cargo test --test upstream                 # upstream API health tests (needs GITHUB_TOKEN)
 cargo clippy --all-targets -- -D warnings  # lint
 cargo fmt --check                          # format check
+```
+
+### Pre-commit Hooks
+
+This project includes a `.pre-commit-config.yaml` that runs `cargo fmt --all` automatically before each commit, so formatting issues never reach CI.
+
+**First-time setup:**
+```bash
+pip install pre-commit    # or: brew install pre-commit
+pre-commit install        # install the git hook (once per clone)
+```
+
+To run manually:
+```bash
+pre-commit run --all-files
 ```
 
 PRs are very welcome!
