@@ -3,7 +3,7 @@ use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
-use skillfile_core::models::{short_sha, Entry, LockEntry, Manifest, SourceFields};
+use skillfile_core::models::{short_sha, EntityType, Entry, LockEntry, Manifest, SourceFields};
 use skillfile_core::parser::MANIFEST_NAME;
 use skillfile_core::patch::{has_dir_patch, has_patch, walkdir};
 use skillfile_deploy::paths::{installed_dir_files, installed_path};
@@ -235,7 +235,76 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
         println!("{line}");
     }
 
+    if !manifest.entries.is_empty() {
+        let summary = format_summary(&manifest, repo_root);
+        println!("\n{summary}");
+    }
+
     Ok(())
+}
+
+fn count_entries(manifest: &Manifest, repo_root: &Path) -> (usize, usize, usize, usize) {
+    let mut skills: usize = 0;
+    let mut agents: usize = 0;
+    let mut pinned: usize = 0;
+    let mut modified: usize = 0;
+
+    for entry in &manifest.entries {
+        match entry.entity_type {
+            EntityType::Skill => skills += 1,
+            EntityType::Agent => agents += 1,
+        }
+        if has_patch(entry, repo_root) || has_dir_patch(entry, repo_root) {
+            pinned += 1;
+        }
+        if is_modified_local(entry, manifest, repo_root) {
+            modified += 1;
+        }
+    }
+
+    (skills, agents, pinned, modified)
+}
+
+fn format_summary(manifest: &Manifest, repo_root: &Path) -> String {
+    use std::fmt::Write;
+
+    let (skills, agents, pinned, modified) = count_entries(manifest, repo_root);
+
+    let mut counts = Vec::new();
+    if skills > 0 {
+        counts.push(format!(
+            "{skills} skill{}",
+            if skills == 1 { "" } else { "s" }
+        ));
+    }
+    if agents > 0 {
+        counts.push(format!(
+            "{agents} agent{}",
+            if agents == 1 { "" } else { "s" }
+        ));
+    }
+
+    let mut summary = counts.join(", ");
+
+    if pinned > 0 {
+        let _ = write!(summary, " · {pinned} pinned");
+    }
+    if modified > 0 {
+        let _ = write!(summary, " · {modified} modified");
+    }
+
+    let mut lines = format!("  {summary}");
+
+    if !manifest.install_targets.is_empty() {
+        let targets: Vec<String> = manifest
+            .install_targets
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let _ = write!(lines, "\n  Install targets: {}", targets.join(", "));
+    }
+
+    lines
 }
 
 #[cfg(test)]
@@ -706,6 +775,97 @@ mod tests {
         assert!(
             line.contains("skills/foo.md"),
             "warning should include the path, got: {line}"
+        );
+    }
+
+    // -- format_summary --
+
+    #[test]
+    fn summary_counts_skills_and_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            entries: vec![
+                local_entry("a", "a.md"),
+                local_entry("b", "b.md"),
+                Entry {
+                    entity_type: EntityType::Agent,
+                    name: "c".into(),
+                    source: SourceFields::Github {
+                        owner_repo: "o/r".into(),
+                        path_in_repo: "c.md".into(),
+                        ref_: "main".into(),
+                    },
+                },
+            ],
+            install_targets: vec![],
+        };
+        let out = format_summary(&manifest, dir.path());
+        assert!(
+            out.contains("2 skills, 1 agent"),
+            "expected skill/agent counts, got: {out}"
+        );
+    }
+
+    #[test]
+    fn summary_shows_install_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            entries: vec![local_entry("x", "x.md")],
+            install_targets: vec![
+                claude_local_target(),
+                InstallTarget {
+                    adapter: "cursor".into(),
+                    scope: Scope::Global,
+                },
+            ],
+        };
+        let out = format_summary(&manifest, dir.path());
+        assert!(
+            out.contains("Install targets: claude-code (local), cursor (global)"),
+            "expected install targets line, got: {out}"
+        );
+    }
+
+    #[test]
+    fn summary_shows_pinned_and_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
+        let installed = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
+
+        let manifest = agent_manifest();
+        let out = format_summary(&manifest, dir.path());
+        assert!(out.contains("1 agent"), "expected agent count, got: {out}");
+        assert!(
+            out.contains("1 modified"),
+            "expected modified flag, got: {out}"
+        );
+    }
+
+    #[test]
+    fn summary_singular_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            entries: vec![local_entry("solo", "solo.md")],
+            install_targets: vec![],
+        };
+        let out = format_summary(&manifest, dir.path());
+        assert!(
+            out.contains("1 skill") && !out.contains("1 skills"),
+            "expected singular 'skill', got: {out}"
         );
     }
 }
