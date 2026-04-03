@@ -243,54 +243,65 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
     Ok(())
 }
 
-fn count_entries(manifest: &Manifest, repo_root: &Path) -> (usize, usize, usize, usize) {
-    let mut skills: usize = 0;
-    let mut agents: usize = 0;
-    let mut pinned: usize = 0;
-    let mut modified: usize = 0;
+struct StatusCounts {
+    skills: usize,
+    agents: usize,
+    pinned: usize,
+    modified: usize,
+}
+
+fn count_entries(manifest: &Manifest, repo_root: &Path) -> StatusCounts {
+    let mut counts = StatusCounts {
+        skills: 0,
+        agents: 0,
+        pinned: 0,
+        modified: 0,
+    };
 
     for entry in &manifest.entries {
         match entry.entity_type {
-            EntityType::Skill => skills += 1,
-            EntityType::Agent => agents += 1,
+            EntityType::Skill => counts.skills += 1,
+            EntityType::Agent => counts.agents += 1,
         }
         if has_patch(entry, repo_root) || has_dir_patch(entry, repo_root) {
-            pinned += 1;
+            counts.pinned += 1;
         }
         if is_modified_local(entry, manifest, repo_root) {
-            modified += 1;
+            counts.modified += 1;
         }
     }
 
-    (skills, agents, pinned, modified)
+    counts
 }
 
 fn format_summary(manifest: &Manifest, repo_root: &Path) -> String {
     use std::fmt::Write;
 
-    let (skills, agents, pinned, modified) = count_entries(manifest, repo_root);
+    let counts = count_entries(manifest, repo_root);
 
-    let mut counts = Vec::new();
-    if skills > 0 {
-        counts.push(format!(
-            "{skills} skill{}",
-            if skills == 1 { "" } else { "s" }
+    let mut parts = Vec::new();
+    if counts.skills > 0 {
+        parts.push(format!(
+            "{} skill{}",
+            counts.skills,
+            if counts.skills == 1 { "" } else { "s" }
         ));
     }
-    if agents > 0 {
-        counts.push(format!(
-            "{agents} agent{}",
-            if agents == 1 { "" } else { "s" }
+    if counts.agents > 0 {
+        parts.push(format!(
+            "{} agent{}",
+            counts.agents,
+            if counts.agents == 1 { "" } else { "s" }
         ));
     }
 
-    let mut summary = counts.join(", ");
+    let mut summary = parts.join(", ");
 
-    if pinned > 0 {
-        let _ = write!(summary, " · {pinned} pinned");
+    if counts.pinned > 0 {
+        let _ = write!(summary, " · {} pinned", counts.pinned);
     }
-    if modified > 0 {
-        let _ = write!(summary, " · {modified} modified");
+    if counts.modified > 0 {
+        let _ = write!(summary, " · {} modified", counts.modified);
     }
 
     let mut lines = format!("  {summary}");
