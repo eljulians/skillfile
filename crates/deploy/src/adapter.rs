@@ -515,7 +515,7 @@ struct AdapterSpec {
 /// | windsurf    | yes    | no            | `~/.codeium/windsurf/`     | `.windsurf/`     |
 /// | opencode    | yes    | yes           | `~/.config/opencode/`      | `.opencode/`     |
 /// | copilot     | yes    | yes           | `~/.copilot/`              | `.github/`       |
-/// | antigravity | yes    | yes           | `~/.antigravity/`          | `.antigravity/`  |
+/// | antigravity | yes    | no            | `~/.gemini/antigravity/`   | `.agents/`       |
 const BUILTIN_ADAPTERS: &[AdapterSpec] = &[
     AdapterSpec {
         name: "claude-code",
@@ -639,20 +639,12 @@ const BUILTIN_ADAPTERS: &[AdapterSpec] = &[
     },
     AdapterSpec {
         name: "antigravity",
-        entities: &[
-            EntitySpec {
-                entity_type: EntityType::Skill,
-                global_path: "~/.antigravity/skills",
-                local_path: ".antigravity/skills",
-                dir_mode: DirInstallMode::Nested,
-            },
-            EntitySpec {
-                entity_type: EntityType::Agent,
-                global_path: "~/.antigravity/agents",
-                local_path: ".antigravity/agents",
-                dir_mode: DirInstallMode::Flat,
-            },
-        ],
+        entities: &[EntitySpec {
+            entity_type: EntityType::Skill,
+            global_path: "~/.gemini/antigravity/skills",
+            local_path: ".agents/skills",
+            dir_mode: DirInstallMode::Nested,
+        }],
     },
 ];
 
@@ -724,6 +716,7 @@ mod tests {
         assert!(reg.contains("windsurf"));
         assert!(reg.contains("opencode"));
         assert!(reg.contains("copilot"));
+        assert!(reg.contains("antigravity"));
     }
 
     #[test]
@@ -1477,17 +1470,14 @@ mod tests {
         assert!(result.contains_key("SKILL.md"));
         assert!(result.contains_key("examples.md"));
     }
-    #[test]
-    fn all_builtin_adapters_includes_antigravity() {
-        let reg = adapters();
-        assert!(reg.contains("antigravity"));
-    }
+
+    // -- antigravity adapter --
 
     #[test]
-    fn antigravity_supports_agent_and_skill() {
+    fn antigravity_supports_skill_not_agent() {
         let a = adapters().get("antigravity").unwrap();
-        assert!(a.supports(EntityType::Agent));
         assert!(a.supports(EntityType::Skill));
+        assert!(!a.supports(EntityType::Agent));
     }
 
     #[test]
@@ -1495,12 +1485,8 @@ mod tests {
         let tmp = PathBuf::from("/tmp/test");
         let a = adapters().get("antigravity").unwrap();
         assert_eq!(
-            a.target_dir(EntityType::Agent, &local(&tmp)),
-            tmp.join(".antigravity/agents")
-        );
-        assert_eq!(
             a.target_dir(EntityType::Skill, &local(&tmp)),
-            tmp.join(".antigravity/skills")
+            tmp.join(".agents/skills")
         );
     }
 
@@ -1509,16 +1495,16 @@ mod tests {
         let a = adapters().get("antigravity").unwrap();
         let skill = a.target_dir(EntityType::Skill, &global(Path::new("/tmp")));
         assert!(skill.is_absolute());
-        assert!(skill.to_string_lossy().ends_with(".antigravity/skills"));
-        let agent = a.target_dir(EntityType::Agent, &global(Path::new("/tmp")));
-        assert!(agent.is_absolute());
-        assert!(agent.to_string_lossy().ends_with(".antigravity/agents"));
+        assert!(
+            skill.to_string_lossy().ends_with("antigravity/skills"),
+            "unexpected: {skill:?}"
+        );
     }
 
     #[test]
-    fn antigravity_dir_modes() {
+    fn antigravity_dir_mode() {
         let a = adapters().get("antigravity").unwrap();
-        assert_eq!(a.dir_mode(EntityType::Agent), Some(DirInstallMode::Flat));
         assert_eq!(a.dir_mode(EntityType::Skill), Some(DirInstallMode::Nested));
+        assert_eq!(a.dir_mode(EntityType::Agent), None);
     }
 }
