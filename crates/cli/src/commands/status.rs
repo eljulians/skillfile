@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use console::style;
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{short_sha, EntityType, Entry, LockEntry, Manifest, SourceFields};
@@ -132,29 +133,41 @@ fn upstream_status_for_github(
         owner_repo, ref_, ..
     } = &entry.source
     else {
-        return Ok(format!("locked    sha={}", short_sha(sha)));
+        let sha_short = short_sha(sha);
+        return Ok(format!(
+            "{}  {}",
+            style("locked").dim(),
+            style(format!("sha={sha_short}")).dim(),
+        ));
     };
     let owner_repo = owner_repo.clone();
     let ref_ = ref_.clone();
     let upstream_sha = resolve_upstream_sha(ctx, &owner_repo, &ref_)?;
     let sha_short = short_sha(sha);
     if upstream_sha == sha {
-        Ok(format!("up to date  sha={sha_short}"))
+        Ok(format!(
+            "{}  {}",
+            style("up to date").green(),
+            style(format!("sha={sha_short}")).dim(),
+        ))
     } else {
         let upstream_short = short_sha(&upstream_sha);
         Ok(format!(
-            "outdated    locked={sha_short}  upstream={upstream_short}"
+            "{}  locked={}  upstream={}",
+            style("outdated").yellow(),
+            style(sha_short).dim(),
+            style(upstream_short).cyan(),
         ))
     }
 }
 
 fn build_annotation(entry: &Entry, ctx: &StatusContext<'_>) -> String {
-    let mut parts = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
     if has_patch(entry, ctx.repo_root) || has_dir_patch(entry, ctx.repo_root) {
-        parts.push("[pinned]");
+        parts.push(style("[pinned]").cyan().to_string());
     }
     if is_modified_local(entry, ctx.manifest, ctx.repo_root) {
-        parts.push("[modified]");
+        parts.push(style("[modified]").yellow().to_string());
     }
     if parts.is_empty() {
         String::new()
@@ -173,15 +186,19 @@ fn format_entry_status(
 
     if let SourceFields::Local { path } = &entry.source {
         let status = if ctx.repo_root.join(path).exists() {
-            "local".to_string()
+            style("local").green().to_string()
         } else {
-            format!("local  \u{2717} path missing: {path}")
+            format!(
+                "{} {} path missing: {path}",
+                style("local").green(),
+                style("\u{2717}").red(),
+            )
         };
         return Ok(format!("{name:<col_w$} {status}"));
     }
 
     let Some(locked_info) = ctx.locked.get(&key) else {
-        return Ok(format!("{name:<col_w$} unlocked"));
+        return Ok(format!("{name:<col_w$} {}", style("unlocked").yellow()));
     };
 
     let sha = &locked_info.sha;
@@ -190,11 +207,19 @@ fn format_entry_status(
     let sha_short = short_sha(sha);
 
     let base_status = if meta.as_deref() != Some(sha.as_str()) {
-        format!("locked    sha={sha_short}  (missing or stale)")
+        format!(
+            "{}  {}",
+            style("locked").dim(),
+            style(format!("sha={sha_short}  (missing or stale)")).yellow(),
+        )
     } else if ctx.check_upstream {
         upstream_status_for_github(ctx, entry, sha)?
     } else {
-        format!("locked    sha={sha_short}")
+        format!(
+            "{}  {}",
+            style("locked").dim(),
+            style(format!("sha={sha_short}")).dim(),
+        )
     };
 
     let annotation = build_annotation(entry, ctx);
