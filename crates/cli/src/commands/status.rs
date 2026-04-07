@@ -904,4 +904,121 @@ mod tests {
             "expected singular 'skill', got: {out}"
         );
     }
+
+    #[test]
+    fn github_entry_unlocked_shows_unlocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = agent_manifest();
+        let locked = std::collections::BTreeMap::new();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("unlocked"),
+            "expected 'unlocked' in output, got: {line}"
+        );
+    }
+
+    #[test]
+    fn github_entry_locked_stale_meta_shows_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha = SHA;
+        write_manifest(
+            dir.path(),
+            "github  agent  my-agent  owner/repo  agents/agent.md  main\n",
+        );
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
+        );
+        // No meta written => stale
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("missing or stale"),
+            "expected 'missing or stale' in output, got: {line}"
+        );
+    }
+
+    #[test]
+    fn github_entry_locked_clean_shows_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha = SHA;
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, sha);
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("locked") && line.contains(&short_sha(sha)),
+            "expected 'locked' with sha, got: {line}"
+        );
+    }
+
+    #[test]
+    fn annotation_shows_modified_for_changed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
+        let installed = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
+
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("modified"),
+            "expected '[modified]' annotation, got: {line}"
+        );
+    }
 }
