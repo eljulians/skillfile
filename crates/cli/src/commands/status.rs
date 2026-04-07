@@ -937,6 +937,65 @@ mod tests {
     }
 
     #[test]
+    fn upstream_up_to_date_shows_green() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha = SHA;
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, sha);
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        // Pre-populate cache so no HTTP call is made; same sha = up to date
+        sha_cache.insert(
+            ("owner/repo".to_string(), "main".to_string()),
+            sha.to_string(),
+        );
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: true,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("up to date"),
+            "expected 'up to date', got: {line}"
+        );
+    }
+
+    #[test]
+    fn upstream_outdated_shows_yellow() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = agent_manifest();
+        let entry = &manifest.entries[0];
+        let locked = std::collections::BTreeMap::new();
+        let mut sha_cache = HashMap::new();
+        sha_cache.insert(
+            ("owner/repo".to_string(), "main".to_string()),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: true,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let locked_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let result = upstream_status_for_github(&mut ctx, entry, locked_sha).unwrap();
+        assert!(
+            result.contains("outdated"),
+            "expected 'outdated', got: {result}"
+        );
+    }
+
+    #[test]
     fn github_entry_unlocked_shows_unlocked() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = agent_manifest();
