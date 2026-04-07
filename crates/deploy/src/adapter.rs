@@ -708,30 +708,18 @@ mod tests {
     #[test]
     fn all_builtin_adapters_in_registry() {
         let reg = adapters();
-        assert!(reg.contains("claude-code"));
-        assert!(reg.contains("factory"));
-        assert!(reg.contains("gemini-cli"));
-        assert!(reg.contains("codex"));
-        assert!(reg.contains("cursor"));
-        assert!(reg.contains("windsurf"));
-        assert!(reg.contains("opencode"));
-        assert!(reg.contains("copilot"));
-        assert!(reg.contains("antigravity"));
+        for spec in BUILTIN_ADAPTERS {
+            assert!(reg.contains(spec.name), "missing adapter: {}", spec.name);
+        }
     }
 
     #[test]
     fn known_adapters_contains_all() {
         let names = known_adapters();
-        assert!(names.contains(&"claude-code"));
-        assert!(names.contains(&"factory"));
-        assert!(names.contains(&"gemini-cli"));
-        assert!(names.contains(&"codex"));
-        assert!(names.contains(&"cursor"));
-        assert!(names.contains(&"windsurf"));
-        assert!(names.contains(&"opencode"));
-        assert!(names.contains(&"copilot"));
-        assert!(names.contains(&"antigravity"));
-        assert_eq!(names.len(), 9);
+        for spec in BUILTIN_ADAPTERS {
+            assert!(names.contains(&spec.name), "missing adapter: {}", spec.name);
+        }
+        assert_eq!(names.len(), BUILTIN_ADAPTERS.len());
     }
 
     #[test]
