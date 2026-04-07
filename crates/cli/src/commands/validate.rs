@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use console::style;
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{Manifest, Scope, SourceFields};
@@ -103,7 +104,7 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
 
     if !errors.is_empty() {
         for msg in &errors {
-            eprintln!("error: {msg}");
+            eprintln!("{}: {msg}", style("error").red().bold());
         }
         return Err(SkillfileError::Manifest(String::new()));
     }
@@ -112,7 +113,10 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     let t = manifest.install_targets.len();
     let entry_word = if n == 1 { "entry" } else { "entries" };
     let target_word = if t == 1 { "target" } else { "targets" };
-    println!("Skillfile OK — {n} {entry_word}, {t} install {target_word}");
+    println!(
+        "{} — {n} {entry_word}, {t} install {target_word}",
+        style("Skillfile OK").green().bold(),
+    );
 
     Ok(())
 }

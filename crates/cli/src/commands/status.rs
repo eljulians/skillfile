@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use console::style;
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{short_sha, EntityType, Entry, LockEntry, Manifest, SourceFields};
@@ -132,29 +133,41 @@ fn upstream_status_for_github(
         owner_repo, ref_, ..
     } = &entry.source
     else {
-        return Ok(format!("locked    sha={}", short_sha(sha)));
+        let sha_short = short_sha(sha);
+        return Ok(format!(
+            "{}  {}",
+            style("locked").dim(),
+            style(format!("sha={sha_short}")).dim(),
+        ));
     };
     let owner_repo = owner_repo.clone();
     let ref_ = ref_.clone();
     let upstream_sha = resolve_upstream_sha(ctx, &owner_repo, &ref_)?;
     let sha_short = short_sha(sha);
     if upstream_sha == sha {
-        Ok(format!("up to date  sha={sha_short}"))
+        Ok(format!(
+            "{}  {}",
+            style("up to date").green(),
+            style(format!("sha={sha_short}")).dim(),
+        ))
     } else {
         let upstream_short = short_sha(&upstream_sha);
         Ok(format!(
-            "outdated    locked={sha_short}  upstream={upstream_short}"
+            "{}  locked={}  upstream={}",
+            style("outdated").yellow(),
+            style(sha_short).dim(),
+            style(upstream_short).cyan(),
         ))
     }
 }
 
 fn build_annotation(entry: &Entry, ctx: &StatusContext<'_>) -> String {
-    let mut parts = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
     if has_patch(entry, ctx.repo_root) || has_dir_patch(entry, ctx.repo_root) {
-        parts.push("[pinned]");
+        parts.push(style("[pinned]").cyan().to_string());
     }
     if is_modified_local(entry, ctx.manifest, ctx.repo_root) {
-        parts.push("[modified]");
+        parts.push(style("[modified]").yellow().to_string());
     }
     if parts.is_empty() {
         String::new()
@@ -173,15 +186,19 @@ fn format_entry_status(
 
     if let SourceFields::Local { path } = &entry.source {
         let status = if ctx.repo_root.join(path).exists() {
-            "local".to_string()
+            style("local").green().to_string()
         } else {
-            format!("local  \u{2717} path missing: {path}")
+            format!(
+                "{} {} path missing: {path}",
+                style("local").green(),
+                style("\u{2717}").red(),
+            )
         };
         return Ok(format!("{name:<col_w$} {status}"));
     }
 
     let Some(locked_info) = ctx.locked.get(&key) else {
-        return Ok(format!("{name:<col_w$} unlocked"));
+        return Ok(format!("{name:<col_w$} {}", style("unlocked").yellow()));
     };
 
     let sha = &locked_info.sha;
@@ -190,11 +207,19 @@ fn format_entry_status(
     let sha_short = short_sha(sha);
 
     let base_status = if meta.as_deref() != Some(sha.as_str()) {
-        format!("locked    sha={sha_short}  (missing or stale)")
+        format!(
+            "{}  {}",
+            style("locked").dim(),
+            style(format!("sha={sha_short}  (missing or stale)")).yellow(),
+        )
     } else if ctx.check_upstream {
         upstream_status_for_github(ctx, entry, sha)?
     } else {
-        format!("locked    sha={sha_short}")
+        format!(
+            "{}  {}",
+            style("locked").dim(),
+            style(format!("sha={sha_short}")).dim(),
+        )
     };
 
     let annotation = build_annotation(entry, ctx);
@@ -877,6 +902,213 @@ mod tests {
         assert!(
             out.contains("1 skill") && !out.contains("1 skills"),
             "expected singular 'skill', got: {out}"
+        );
+    }
+
+    #[test]
+    fn annotation_shows_pinned_for_patched_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        // Create a patch file to trigger [pinned]
+        let patch_dir = dir.path().join(".skillfile/patches/agents");
+        std::fs::create_dir_all(&patch_dir).unwrap();
+        std::fs::write(patch_dir.join("my-agent.patch"), "--- a\n+++ b\n").unwrap();
+
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("pinned"),
+            "expected '[pinned]' annotation, got: {line}"
+        );
+    }
+
+    #[test]
+    fn upstream_up_to_date_shows_green() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha = SHA;
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, sha);
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        // Pre-populate cache so no HTTP call is made; same sha = up to date
+        sha_cache.insert(
+            ("owner/repo".to_string(), "main".to_string()),
+            sha.to_string(),
+        );
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: true,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("up to date"),
+            "expected 'up to date', got: {line}"
+        );
+    }
+
+    #[test]
+    fn upstream_outdated_shows_yellow() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = agent_manifest();
+        let entry = &manifest.entries[0];
+        let locked = std::collections::BTreeMap::new();
+        let mut sha_cache = HashMap::new();
+        sha_cache.insert(
+            ("owner/repo".to_string(), "main".to_string()),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: true,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let locked_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let result = upstream_status_for_github(&mut ctx, entry, locked_sha).unwrap();
+        assert!(
+            result.contains("outdated"),
+            "expected 'outdated', got: {result}"
+        );
+    }
+
+    #[test]
+    fn github_entry_unlocked_shows_unlocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = agent_manifest();
+        let locked = std::collections::BTreeMap::new();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("unlocked"),
+            "expected 'unlocked' in output, got: {line}"
+        );
+    }
+
+    #[test]
+    fn github_entry_locked_stale_meta_shows_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha = SHA;
+        write_manifest(
+            dir.path(),
+            "github  agent  my-agent  owner/repo  agents/agent.md  main\n",
+        );
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
+        );
+        // No meta written => stale
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("missing or stale"),
+            "expected 'missing or stale' in output, got: {line}"
+        );
+    }
+
+    #[test]
+    fn github_entry_locked_clean_shows_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha = SHA;
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": sha, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, sha);
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("locked") && line.contains(short_sha(sha)),
+            "expected 'locked' with sha, got: {line}"
+        );
+    }
+
+    #[test]
+    fn annotation_shows_modified_for_changed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
+        let installed = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
+
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("modified"),
+            "expected '[modified]' annotation, got: {line}"
         );
     }
 }
