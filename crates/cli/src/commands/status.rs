@@ -906,6 +906,37 @@ mod tests {
     }
 
     #[test]
+    fn annotation_shows_pinned_for_patched_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        // Create a patch file to trigger [pinned]
+        let patch_dir = dir.path().join(".skillfile/patches/agents");
+        std::fs::create_dir_all(&patch_dir).unwrap();
+        std::fs::write(patch_dir.join("my-agent.patch"), "--- a\n+++ b\n").unwrap();
+
+        let manifest = agent_manifest();
+        let locked = read_lock(dir.path()).unwrap();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: false,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("pinned"),
+            "expected '[pinned]' annotation, got: {line}"
+        );
+    }
+
+    #[test]
     fn github_entry_unlocked_shows_unlocked() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = agent_manifest();
@@ -979,7 +1010,7 @@ mod tests {
         };
         let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
         assert!(
-            line.contains("locked") && line.contains(&short_sha(sha)),
+            line.contains("locked") && line.contains(short_sha(sha)),
             "expected 'locked' with sha, got: {line}"
         );
     }
