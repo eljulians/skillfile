@@ -16,6 +16,7 @@
 //! ```
 
 pub mod agentskill;
+mod mcpmarket;
 mod scrape;
 mod skillhub;
 mod skillssh;
@@ -28,6 +29,7 @@ use skillfile_core::error::SkillfileError;
 
 // Re-export registry implementations for `all_registries()` and `search_registry_with_client()`.
 use agentskill::AgentskillSh;
+use mcpmarket::McpMarket;
 use skillhub::SkillhubClub;
 use skillssh::SkillsSh;
 
@@ -53,6 +55,8 @@ pub enum RegistryId {
     SkillsSh,
     #[serde(rename = "skillhub.club")]
     SkillhubClub,
+    #[serde(rename = "mcpmarket.com")]
+    McpMarket,
 }
 
 impl RegistryId {
@@ -61,6 +65,7 @@ impl RegistryId {
             Self::AgentskillSh => "agentskill.sh",
             Self::SkillsSh => "skills.sh",
             Self::SkillhubClub => "skillhub.club",
+            Self::McpMarket => "mcpmarket.com",
         }
     }
 
@@ -85,6 +90,7 @@ impl std::str::FromStr for RegistryId {
             "agentskill.sh" => Ok(Self::AgentskillSh),
             "skills.sh" => Ok(Self::SkillsSh),
             "skillhub.club" => Ok(Self::SkillhubClub),
+            "mcpmarket.com" => Ok(Self::McpMarket),
             _ => Err(format!("unknown registry: {s}")),
         }
     }
@@ -161,7 +167,11 @@ pub(crate) trait Registry: Send + Sync {
 
 /// Returns registries to query by default (public, no auth required).
 pub(crate) fn all_registries() -> Vec<Box<dyn Registry>> {
-    let mut regs: Vec<Box<dyn Registry>> = vec![Box::new(AgentskillSh), Box::new(SkillsSh)];
+    let mut regs: Vec<Box<dyn Registry>> = vec![
+        Box::new(AgentskillSh),
+        Box::new(SkillsSh),
+        Box::new(McpMarket),
+    ];
     // skillhub.club requires an API key — only include when configured.
     if std::env::var("SKILLHUB_API_KEY").is_ok_and(|k| !k.is_empty()) {
         regs.push(Box::new(SkillhubClub));
@@ -170,7 +180,12 @@ pub(crate) fn all_registries() -> Vec<Box<dyn Registry>> {
 }
 
 /// Valid registry names for `--registry` flag validation.
-pub const REGISTRY_NAMES: &[&str] = &["agentskill.sh", "skills.sh", "skillhub.club"];
+pub const REGISTRY_NAMES: &[&str] = &[
+    "agentskill.sh",
+    "skills.sh",
+    "skillhub.club",
+    "mcpmarket.com",
+];
 
 // ===========================================================================
 // Public search functions
@@ -247,6 +262,7 @@ pub(crate) fn search_registry_with_client(
         "agentskill.sh" => Box::new(AgentskillSh),
         "skills.sh" => Box::new(SkillsSh),
         "skillhub.club" => Box::new(SkillhubClub),
+        "mcpmarket.com" => Box::new(McpMarket),
         _ => {
             return Err(SkillfileError::Manifest(format!(
                 "unknown registry '{registry_name}'. Valid registries: {}",
@@ -271,7 +287,7 @@ pub fn fetch_skill_content_for(item: &SearchResult) -> Option<String> {
     match item.registry {
         RegistryId::AgentskillSh => AgentskillSh.fetch_skill_content(&client, item),
         RegistryId::SkillsSh => SkillsSh.fetch_skill_content(&client, item),
-        RegistryId::SkillhubClub => None,
+        RegistryId::SkillhubClub | RegistryId::McpMarket => None,
     }
 }
 
@@ -510,7 +526,12 @@ mod tests {
     fn registry_names_covers_all_known() {
         assert_eq!(
             REGISTRY_NAMES,
-            &["agentskill.sh", "skills.sh", "skillhub.club"]
+            &[
+                "agentskill.sh",
+                "skills.sh",
+                "skillhub.club",
+                "mcpmarket.com"
+            ]
         );
     }
 
