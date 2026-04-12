@@ -16,8 +16,8 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
-  check:
-    name: Static checks
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -26,7 +26,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -41,19 +41,63 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+  deny:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
 
       - name: Check dependencies
         run: cargo deny check
 
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  machete:
+    name: Unused dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Install cargo-machete
         uses: taiki-e/install-action@cargo-machete
+
       - name: Check unused dependencies
         run: cargo machete
+
+  shellcheck:
+    name: Shellcheck installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Shellcheck install script
         run: shellcheck install.sh
@@ -61,7 +105,6 @@ jobs:
 
   test-linux:
     name: Tests (Linux, with coverage)
-    needs: [check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -117,7 +160,6 @@ jobs:
 
   test-macos:
     name: Tests (macOS)
-    needs: [check]
     runs-on: macos-latest
     timeout-minutes: 5
     steps:
@@ -149,7 +191,6 @@ jobs:
 
   test-windows:
     name: Tests (Windows)
-    needs: [check]
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -176,7 +217,6 @@ jobs:
 
   fuzz:
     name: Fuzz parse_manifest
-    needs: [check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

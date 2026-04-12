@@ -4,6 +4,23 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.5.0 - 12-04-2026
+
+### Added
+
+- **Google Antigravity adapter** - skillfile can now deploy skills to Antigravity. Local installs go to `.agents/skills/`; global installs go to `~/.gemini/antigravity/skills`.
+
+### Changed
+
+- **Skills now deploy in a normalized directory layout across platforms** - single-file skills are now installed as `<platform>/skills/<name>/SKILL.md` instead of flat `<name>.md` files. This makes skill layouts consistent with directory-based skills and better matches how platforms like Claude Code and Copilot load skills.
+- **Automatic migration from legacy flat skill files** - re-running `skillfile install` now cleans up orphaned legacy `<name>.md` skill files after deploying the normalized directory layout, preventing duplicate skill loading after upgrades.
+- **`skillfile status` now prints a summary block** - the command now ends with totals for skills and agents, plus pinned/modified counts and the active install targets, making larger Skillfiles easier to scan.
+- **Pre-commit formatting hook included** - the repo now ships a `.pre-commit-config.yaml` that runs `cargo fmt --all` before commit, reducing formatting churn in PRs.
+
+### Fixed
+
+- **Local drift detection now checks every install target** - `status` no longer misses modified skills or agents just because the first configured install target happens to be unchanged. This also fixes patch-aware comparisons for normalized nested skill installs.
+
 ## v1.4.2 - 31-03-2026
 
 ### Security
