@@ -537,6 +537,11 @@ mod tests {
     }
 
     #[test]
+    fn hint_for_antigravity_adapter() {
+        assert_eq!(supported_types_hint("antigravity"), "skill only");
+    }
+
+    #[test]
     fn hint_for_unknown_adapter() {
         assert_eq!(supported_types_hint("nonexistent"), "");
     }

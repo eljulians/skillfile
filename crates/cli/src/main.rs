@@ -6,9 +6,10 @@ use skillfile::config;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use skillfile_core::error::SkillfileError;
+use skillfile_deploy::adapter::known_adapters;
 
 /// Read entry names from the Skillfile in the current directory for shell completion.
 fn complete_entry_names() -> Vec<CompletionCandidate> {
@@ -32,23 +33,32 @@ fn parse_entity_type(s: &str) -> Result<String, String> {
     }
 }
 
-#[derive(Parser)]
-#[command(
-    name = "skillfile",
-    about = "Tool-agnostic AI skill & agent manager",
-    long_about = "\
+fn cli_long_about() -> String {
+    let supported = known_adapters().join(", ");
+    format!(
+        "\
 Tool-agnostic AI skill & agent manager - the Brewfile for your AI tooling.
 
 Declare skills and agents in a Skillfile, lock them to exact SHAs, and deploy
 to any supported platform with a single command.
 
-Supported platforms: claude-code, codex, copilot, cursor, factory,
-gemini-cli, opencode, windsurf.
+Supported platforms: {supported}.
 
 Quick start:
   skillfile init                          # configure platforms
   skillfile add github skill owner/repo path/to/SKILL.md
-  skillfile install                       # fetch + deploy",
+  skillfile install                       # fetch + deploy"
+    )
+}
+
+fn cli_command() -> clap::Command {
+    Cli::command().long_about(cli_long_about())
+}
+
+#[derive(Parser)]
+#[command(
+    name = "skillfile",
+    about = "Tool-agnostic AI skill & agent manager",
     version,
     after_long_help = "\
 ENVIRONMENT VARIABLES:
@@ -526,8 +536,8 @@ fn run() -> Result<(), SkillfileError> {
     // populated by `github_token()`). This runs once; subsequent calls are no-ops.
     skillfile_sources::http::set_config_token(crate::config::read_config_token());
 
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let cli = match cli_command().try_get_matches() {
+        Ok(matches) => Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit()),
         Err(e)
             if e.kind() == clap::error::ErrorKind::DisplayHelp
                 || e.kind() == clap::error::ErrorKind::DisplayVersion =>
@@ -548,7 +558,7 @@ fn run() -> Result<(), SkillfileError> {
 fn main() {
     // Handle dynamic shell completion requests before any other initialization.
     // Shells call the binary with COMPLETE=<shell> to get completions at runtime.
-    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+    clap_complete::CompleteEnv::with_factory(cli_command).complete();
 
     // Spawn background update check (non-blocking)
     let update_rx = update_check::should_check().then(update_check::spawn_check);
@@ -583,11 +593,20 @@ mod tests {
 
     fn completions_non_empty(shell: clap_complete::Shell) {
         let mut buf = Vec::new();
-        clap_complete::generate(shell, &mut Cli::command(), "skillfile", &mut buf);
+        clap_complete::generate(shell, &mut cli_command(), "skillfile", &mut buf);
         assert!(
             !buf.is_empty(),
             "completions for {shell:?} should produce output"
         );
+    }
+
+    #[test]
+    fn long_about_lists_dynamic_supported_platforms() {
+        let long_about = cli_command().get_long_about().unwrap().to_string();
+        assert!(long_about.contains("antigravity"));
+        for name in known_adapters() {
+            assert!(long_about.contains(name), "missing adapter: {name}");
+        }
     }
 
     #[test]

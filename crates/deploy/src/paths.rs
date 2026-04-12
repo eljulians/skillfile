@@ -33,6 +33,27 @@ pub fn installed_path(
     Ok(adapter.installed_path(entry, &ctx))
 }
 
+/// Installed paths for a single-file entry across all install targets.
+pub fn installed_paths(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<Vec<PathBuf>, SkillfileError> {
+    let mut paths = Vec::new();
+    for target in &manifest.install_targets {
+        let adapter = adapter_for(target)?;
+        if !adapter.supports(entry.entity_type) {
+            continue;
+        }
+        let ctx = AdapterScope {
+            scope: target.scope,
+            repo_root,
+        };
+        paths.push(adapter.installed_path(entry, &ctx));
+    }
+    Ok(paths)
+}
+
 /// Installed files for a directory entry (first install target).
 pub fn installed_dir_files(
     entry: &Entry,
@@ -45,6 +66,27 @@ pub fn installed_dir_files(
         repo_root,
     };
     Ok(adapter.installed_dir_files(entry, &ctx))
+}
+
+/// Installed file maps for a directory entry across all install targets.
+pub fn installed_dir_file_sets(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<Vec<HashMap<String, PathBuf>>, SkillfileError> {
+    let mut file_sets = Vec::new();
+    for target in &manifest.install_targets {
+        let adapter = adapter_for(target)?;
+        if !adapter.supports(entry.entity_type) {
+            continue;
+        }
+        let ctx = AdapterScope {
+            scope: target.scope,
+            repo_root,
+        };
+        file_sets.push(adapter.installed_dir_files(entry, &ctx));
+    }
+    Ok(file_sets)
 }
 
 #[must_use]
@@ -73,10 +115,15 @@ fn first_target(manifest: &Manifest) -> Result<&'static dyn PlatformAdapter, Ski
             "no install targets configured — run `skillfile install` first".into(),
         ));
     }
-    let t = &manifest.install_targets[0];
+    adapter_for(&manifest.install_targets[0])
+}
+
+fn adapter_for(
+    target: &skillfile_core::models::InstallTarget,
+) -> Result<&'static dyn PlatformAdapter, SkillfileError> {
     adapters()
-        .get(&t.adapter)
-        .ok_or_else(|| SkillfileError::Manifest(format!("unknown adapter '{}'", t.adapter)))
+        .get(&target.adapter)
+        .ok_or_else(|| SkillfileError::Manifest(format!("unknown adapter '{}'", target.adapter)))
 }
 
 #[cfg(test)]
@@ -176,6 +223,38 @@ mod tests {
     }
 
     #[test]
+    fn installed_paths_returns_all_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "test".into(),
+            source: SourceFields::Github {
+                owner_repo: "o/r".into(),
+                path_in_repo: "skills/test.md".into(),
+                ref_: "main".into(),
+            },
+        };
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                InstallTarget {
+                    adapter: "claude-code".into(),
+                    scope: Scope::Local,
+                },
+                InstallTarget {
+                    adapter: "copilot".into(),
+                    scope: Scope::Local,
+                },
+            ],
+        };
+
+        let result = installed_paths(&entry, &manifest, tmp.path()).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&tmp.path().join(".claude/skills/test/SKILL.md")));
+        assert!(result.contains(&tmp.path().join(".github/skills/test/SKILL.md")));
+    }
+
+    #[test]
     fn installed_dir_files_no_targets() {
         let entry = Entry {
             entity_type: EntityType::Agent,
@@ -219,6 +298,43 @@ mod tests {
 
         let result = installed_dir_files(&entry, &manifest, tmp.path()).unwrap();
         assert!(result.contains_key("SKILL.md"));
+    }
+
+    #[test]
+    fn installed_dir_file_sets_returns_all_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "my-skill".into(),
+            source: SourceFields::Github {
+                owner_repo: "o/r".into(),
+                path_in_repo: "skills".into(),
+                ref_: "main".into(),
+            },
+        };
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                InstallTarget {
+                    adapter: "claude-code".into(),
+                    scope: Scope::Local,
+                },
+                InstallTarget {
+                    adapter: "copilot".into(),
+                    scope: Scope::Local,
+                },
+            ],
+        };
+        let claude_dir = tmp.path().join(".claude/skills/my-skill");
+        let copilot_dir = tmp.path().join(".github/skills/my-skill");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&copilot_dir).unwrap();
+        std::fs::write(claude_dir.join("SKILL.md"), "# Skill\n").unwrap();
+        std::fs::write(copilot_dir.join("SKILL.md"), "# Skill\n").unwrap();
+
+        let result = installed_dir_file_sets(&entry, &manifest, tmp.path()).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|files| files.contains_key("SKILL.md")));
     }
 
     #[test]

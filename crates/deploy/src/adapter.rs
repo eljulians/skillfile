@@ -111,6 +111,14 @@ impl FileSystemAdapter {
             .get(&entity_type)
             .is_some_and(|c| c.dir_mode == DirInstallMode::Flat)
     }
+
+    fn single_file_install_path(&self, entry: &Entry, target_dir: &Path) -> PathBuf {
+        if self.is_flat_mode(entry.entity_type) {
+            target_dir.join(format!("{}.md", entry.name))
+        } else {
+            target_dir.join(&entry.name).join("SKILL.md")
+        }
+    }
 }
 
 impl PlatformAdapter for FileSystemAdapter {
@@ -167,13 +175,8 @@ impl PlatformAdapter for FileSystemAdapter {
 
         let dest = if is_dir {
             target_dir.join(&req.entry.name)
-        } else if self.is_flat_mode(req.entry.entity_type) {
-            // Single files in flat mode deploy as {name}.md
-            let name = &req.entry.name;
-            target_dir.join(format!("{name}.md"))
         } else {
-            // Single files in nested mode deploy as {name}/SKILL.md
-            target_dir.join(&req.entry.name).join("SKILL.md")
+            self.single_file_install_path(req.entry, &target_dir)
         };
 
         if !place_file(
@@ -188,10 +191,9 @@ impl PlatformAdapter for FileSystemAdapter {
             return HashMap::new();
         }
 
-        // Migration: if we just deployed a single-file skill as {name}/SKILL.md (nested mode),
-        // remove any leftover flat {name}.md from a previous install to prevent agents that
-        // do broad directory scans from loading both the old and new versions simultaneously.
-        if !is_dir && !self.is_flat_mode(req.entry.entity_type) {
+        // Migration: nested-mode installs may leave behind a legacy flat {name}.md from an older
+        // layout. Remove it after a successful install to avoid duplicate skill loading.
+        if !self.is_flat_mode(req.entry.entity_type) {
             remove_orphan_flat_file(&req.entry.name, &target_dir);
         }
 
@@ -205,15 +207,7 @@ impl PlatformAdapter for FileSystemAdapter {
 
     fn installed_path(&self, entry: &Entry, ctx: &AdapterScope<'_>) -> PathBuf {
         let target_dir = self.target_dir(entry.entity_type, ctx);
-
-        if self.is_flat_mode(entry.entity_type) {
-            // Flat mode: skill is at {target}/name.md
-            let name = &entry.name;
-            target_dir.join(format!("{name}.md"))
-        } else {
-            // Nested mode: skill is at {target}/name/SKILL.md
-            target_dir.join(&entry.name).join("SKILL.md")
-        }
+        self.single_file_install_path(entry, &target_dir)
     }
 
     fn installed_dir_files(
@@ -1457,6 +1451,42 @@ mod tests {
         });
         assert!(result.contains_key("SKILL.md"));
         assert!(result.contains_key("examples.md"));
+    }
+
+    #[test]
+    fn deploy_entry_nested_mode_removes_legacy_flat_file_for_directory_sources() {
+        use skillfile_core::models::{EntityType, SourceFields};
+
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join(".skillfile/cache/skills/my-skill");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(source_dir.join("SKILL.md"), "# Skill\n").unwrap();
+
+        let target_dir = dir.path().join(".claude/skills");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(target_dir.join("my-skill.md"), "# Legacy flat\n").unwrap();
+
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "my-skill".into(),
+            source: SourceFields::Github {
+                owner_repo: "o/r".into(),
+                path_in_repo: "skills/my-skill".into(),
+                ref_: "main".into(),
+            },
+        };
+        let a = adapters().get("claude-code").unwrap();
+        let result = a.deploy_entry(&DeployRequest {
+            entry: &entry,
+            source: &source_dir,
+            scope: Scope::Local,
+            repo_root: dir.path(),
+            opts: &InstallOptions::default(),
+        });
+
+        assert!(result.contains_key("SKILL.md"));
+        assert!(target_dir.join("my-skill/SKILL.md").exists());
+        assert!(!target_dir.join("my-skill.md").exists());
     }
 
     // -- antigravity adapter --

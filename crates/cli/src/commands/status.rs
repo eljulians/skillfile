@@ -6,13 +6,13 @@ use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{short_sha, EntityType, Entry, LockEntry, Manifest, SourceFields};
 use skillfile_core::parser::MANIFEST_NAME;
 use skillfile_core::patch::{has_dir_patch, has_patch, walkdir};
-use skillfile_deploy::paths::{installed_dir_files, installed_path};
+use skillfile_deploy::paths::{installed_dir_file_sets, installed_paths};
 use skillfile_sources::strategy::{content_file, is_dir_entry, meta_sha};
 use skillfile_sources::sync::vendor_dir_for;
 
 fn is_cache_file_modified(
-    cache_file: &std::path::PathBuf,
-    vdir: &std::path::PathBuf,
+    cache_file: &Path,
+    vdir: &Path,
     installed: &HashMap<String, std::path::PathBuf>,
 ) -> Result<bool, ()> {
     let filename = cache_file
@@ -34,23 +34,41 @@ fn check_dir_files_modified(
     manifest: &Manifest,
     repo_root: &Path,
 ) -> Result<bool, ()> {
-    let installed = installed_dir_files(entry, manifest, repo_root).map_err(|_| ())?;
-    if installed.is_empty() {
-        return Ok(false);
-    }
     // If pinned, the installed files are expected to differ from cache
     if has_dir_patch(entry, repo_root) {
+        return Ok(false);
+    }
+    let installed_sets = installed_dir_file_sets(entry, manifest, repo_root).map_err(|_| ())?;
+    if installed_sets.iter().all(HashMap::is_empty) {
         return Ok(false);
     }
     let vdir = vendor_dir_for(entry, repo_root);
     if !vdir.is_dir() {
         return Ok(false);
     }
-    for cache_file in walkdir(&vdir) {
-        if cache_file.file_name().is_none_or(|n| n == ".meta") {
+    let cache_files: Vec<_> = walkdir(&vdir)
+        .into_iter()
+        .filter(|cache_file| cache_file.file_name().is_some_and(|n| n != ".meta"))
+        .collect();
+
+    for installed in &installed_sets {
+        if installed.is_empty() {
             continue;
         }
-        if is_cache_file_modified(&cache_file, &vdir, &installed)? {
+        if installed_set_modified(&cache_files, &vdir, installed)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn installed_set_modified(
+    cache_files: &[std::path::PathBuf],
+    vdir: &Path,
+    installed: &HashMap<String, std::path::PathBuf>,
+) -> Result<bool, ()> {
+    for cache_file in cache_files {
+        if is_cache_file_modified(cache_file, vdir, installed)? {
             return Ok(true);
         }
     }
@@ -66,8 +84,12 @@ fn check_single_file_modified(
     manifest: &Manifest,
     repo_root: &Path,
 ) -> Result<bool, ()> {
-    let dest = installed_path(entry, manifest, repo_root).map_err(|_| ())?;
-    if !dest.exists() {
+    // If pinned, the installed file is expected to differ from cache
+    if has_patch(entry, repo_root) {
+        return Ok(false);
+    }
+    let installed_paths = installed_paths(entry, manifest, repo_root).map_err(|_| ())?;
+    if installed_paths.iter().all(|path| !path.exists()) {
         return Ok(false);
     }
     let vdir = vendor_dir_for(entry, repo_root);
@@ -79,13 +101,17 @@ fn check_single_file_modified(
     if !cache_file.exists() {
         return Ok(false);
     }
-    // If pinned, the installed file is expected to differ from cache
-    if has_patch(entry, repo_root) {
-        return Ok(false);
-    }
     let cache_text = std::fs::read_to_string(&cache_file).map_err(|_| ())?;
-    let installed_text = std::fs::read_to_string(&dest).map_err(|_| ())?;
-    Ok(installed_text != cache_text)
+    for installed_path in installed_paths {
+        if !installed_path.exists() {
+            continue;
+        }
+        let installed_text = std::fs::read_to_string(&installed_path).map_err(|_| ())?;
+        if installed_text != cache_text {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Check if an installed file differs from cache (local only, no network).
@@ -863,6 +889,103 @@ mod tests {
         assert!(
             out.contains("1 modified"),
             "expected modified flag, got: {out}"
+        );
+    }
+
+    #[test]
+    fn modified_detects_second_install_target_for_single_file_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "my-skill".into(),
+            source: SourceFields::Github {
+                owner_repo: "owner/repo".into(),
+                path_in_repo: "skills/my-skill.md".into(),
+                ref_: "main".into(),
+            },
+        };
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                claude_local_target(),
+                InstallTarget {
+                    adapter: "copilot".into(),
+                    scope: Scope::Local,
+                },
+            ],
+        };
+
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/skill/my-skill": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        write_meta(
+            dir.path(),
+            &VendorEntry {
+                entity_type: "skill",
+                name: "my-skill",
+            },
+            SHA,
+        );
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VendorEntry {
+                    entity_type: "skill",
+                    name: "my-skill",
+                },
+                filename: "my-skill.md",
+            },
+            ORIGINAL,
+        );
+        let installed = dir.path().join(".github/skills/my-skill");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("SKILL.md"), MODIFIED).unwrap();
+
+        assert!(is_modified_local(&entry, &manifest, dir.path()));
+        let out = format_summary(&manifest, dir.path());
+        assert!(
+            out.contains("1 modified"),
+            "expected second-target modification to count, got: {out}"
+        );
+    }
+
+    #[test]
+    fn modified_detects_second_install_target_for_directory_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/skill/my-dir": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        let vdir = dir.path().join(".skillfile/cache/skills/my-dir");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("tool.md"), ORIGINAL).unwrap();
+        std::fs::write(
+            vdir.join(".meta"),
+            serde_json::json!({"sha": SHA}).to_string(),
+        )
+        .unwrap();
+        let installed = dir.path().join(".github/skills/my-dir");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("tool.md"), MODIFIED).unwrap();
+
+        let manifest = Manifest {
+            entries: dir_skill_manifest().entries,
+            install_targets: vec![
+                claude_local_target(),
+                InstallTarget {
+                    adapter: "copilot".into(),
+                    scope: Scope::Local,
+                },
+            ],
+        };
+        let entry = &manifest.entries[0];
+
+        assert!(is_modified_local(entry, &manifest, dir.path()));
+        let out = format_summary(&manifest, dir.path());
+        assert!(
+            out.contains("1 modified"),
+            "expected second-target directory modification to count, got: {out}"
         );
     }
 
