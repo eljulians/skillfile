@@ -9,7 +9,7 @@
 
 **Track AI skills and agents declaratively, like dependencies. Pin them. Patch them. Deploy everywhere.**
 
-Declare your skills in a manifest. Pinned to exact commits. Deploys to Claude Code, Cursor, Gemini, and 5 more. Customize without losing upstream updates. Search 110K+ skills from the terminal.
+Declare your skills in a manifest. Pinned to exact commits. Deploys to Claude Code, Cursor, Codex, Antigravity, and more. Customize without losing upstream updates. Search 110K+ skills from the terminal.
 
 ![demo](https://github.com/eljulians/skillfile/raw/master/docs/demo.gif)
 
@@ -91,12 +91,13 @@ skillfile resolve browser                  # three-way merge in $MERGETOOL
 
 Patches live in `.skillfile/patches/` and are committed to version control. Your whole team gets the same customizations.
 
-## 8 platforms, one manifest
+## 9 platforms, one manifest
 
 Write your `Skillfile` once. Deploy to every AI coding tool you use.
 
 | Platform | Skills | Agents | Scopes |
 |---|---|---|---|
+| **antigravity** | `.agents/skills/` | - | local, global |
 | **claude-code** | `.claude/skills/` | `.claude/agents/` | local, global |
 | **codex** | `.codex/skills/` | - | local, global |
 | **copilot** | `.github/skills/` | `.github/agents/` | local, global |
