@@ -3,6 +3,8 @@ pub mod add_tui;
 pub mod diff;
 pub mod format;
 pub mod init;
+mod installed_variants;
+mod multi_target;
 pub mod pin;
 pub mod remove;
 pub mod resolve;

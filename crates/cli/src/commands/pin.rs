@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
@@ -5,10 +6,13 @@ use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::Entry;
 use skillfile_core::parser::{find_entry_in, parse_manifest, MANIFEST_NAME};
 use skillfile_deploy::install::install_entry;
-use skillfile_deploy::paths::{installed_dir_files, installed_path};
 use skillfile_sources::strategy::{content_file, is_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
+use crate::commands::installed_variants::{installed_dir_variants, installed_single_file_variants};
+use crate::commands::multi_target::{
+    divergent_targets_message, modified_dir_variants, modified_single_file_variants,
+};
 use crate::patch::{
     dir_patch_path, generate_patch, has_dir_patch, has_patch, remove_all_dir_patches,
     remove_dir_patch, remove_patch, walkdir, write_dir_patch, write_patch,
@@ -20,35 +24,135 @@ struct PinCtx<'a> {
     dry_run: bool,
 }
 
-struct DirFileRef<'a> {
-    cache: &'a std::path::Path,
-    installed: &'a std::path::Path,
-    filename: &'a str,
+struct DirPinPlan<'a> {
+    cache_files: BTreeMap<String, std::path::PathBuf>,
+    representative: &'a crate::commands::multi_target::DirContentMap,
 }
 
-/// Process a single file in a dir entry: generate a patch and write or remove it.
-/// Returns the filename if the file was pinned (patch is non-empty), or `None`.
-fn process_dir_file(
+struct SinglePinPlan<'a> {
+    cache_text: &'a str,
+    installed: &'a [crate::commands::installed_variants::SingleFileVariant],
+}
+
+#[derive(Clone, Copy)]
+struct DirPatchInput<'a> {
+    filename: &'a str,
+    original_text: &'a str,
+    installed_text: &'a str,
+}
+
+fn process_dir_file_text(
     ctx: &PinCtx<'_>,
-    file: &DirFileRef<'_>,
+    input: &DirPatchInput<'_>,
 ) -> Result<Option<String>, SkillfileError> {
-    let original_text = std::fs::read_to_string(file.cache)?;
-    let inst_text = std::fs::read_to_string(file.installed)?;
-    let patch_text = generate_patch(&original_text, &inst_text, file.filename);
+    let patch_text = generate_patch(input.original_text, input.installed_text, input.filename);
 
     if patch_text.is_empty() {
         if !ctx.dry_run {
-            remove_dir_patch(ctx.entry, file.filename, ctx.repo_root)?;
+            remove_dir_patch(ctx.entry, input.filename, ctx.repo_root)?;
         }
         return Ok(None);
     }
     if !ctx.dry_run {
         write_dir_patch(
-            &dir_patch_path(ctx.entry, file.filename, ctx.repo_root),
+            &dir_patch_path(ctx.entry, input.filename, ctx.repo_root),
             &patch_text,
         )?;
     }
-    Ok(Some(file.filename.to_string()))
+    Ok(Some(input.filename.to_string()))
+}
+
+fn load_cache_files(vdir: &Path) -> BTreeMap<String, std::path::PathBuf> {
+    walkdir(vdir)
+        .into_iter()
+        .filter(|cache_file| cache_file.file_name().is_some_and(|name| name != ".meta"))
+        .filter_map(|cache_file| {
+            let filename = cache_file
+                .strip_prefix(vdir)
+                .ok()
+                .and_then(|path| path.to_str())
+                .map(str::to_string)?;
+            Some((filename, cache_file))
+        })
+        .collect()
+}
+
+fn representative_dir_changes<'a>(
+    entry_name: &str,
+    modified: &'a [(String, crate::commands::multi_target::DirContentMap)],
+) -> Result<&'a crate::commands::multi_target::DirContentMap, SkillfileError> {
+    let labels: Vec<String> = modified.iter().map(|(label, _)| label.clone()).collect();
+    let representative = &modified[0].1;
+    if modified
+        .iter()
+        .any(|(_, changed)| changed != representative)
+    {
+        return Err(divergent_targets_message(entry_name, &labels));
+    }
+    Ok(representative)
+}
+
+fn apply_dir_pin_changes(
+    ctx: &PinCtx<'_>,
+    plan: DirPinPlan<'_>,
+) -> Result<Vec<String>, SkillfileError> {
+    let mut pinned = Vec::new();
+
+    for (filename, cache_file) in plan.cache_files {
+        if let Some(installed_text) = plan.representative.get(&filename) {
+            let original_text = std::fs::read_to_string(&cache_file)?;
+            let input = DirPatchInput {
+                filename: &filename,
+                original_text: &original_text,
+                installed_text,
+            };
+            let pinned_file = process_dir_file_text(ctx, &input)?;
+            pinned.extend(pinned_file);
+            continue;
+        }
+        if !ctx.dry_run {
+            remove_dir_patch(ctx.entry, &filename, ctx.repo_root)?;
+        }
+    }
+
+    Ok(pinned)
+}
+
+fn pin_single_file_content(
+    ctx: &PinCtx<'_>,
+    plan: &SinglePinPlan<'_>,
+) -> Result<String, SkillfileError> {
+    let modified = modified_single_file_variants(plan.cache_text, plan.installed);
+    if modified.is_empty() {
+        return Ok(format!(
+            "'{}' matches upstream — nothing to pin",
+            ctx.entry.name
+        ));
+    }
+
+    let representative = &modified[0].content;
+    if modified
+        .iter()
+        .any(|variant| variant.content != *representative)
+    {
+        let labels: Vec<String> = modified
+            .iter()
+            .map(|variant| variant.label.clone())
+            .collect();
+        return Err(divergent_targets_message(&ctx.entry.name, &labels));
+    }
+
+    let patch_text = generate_patch(
+        plan.cache_text,
+        representative,
+        &format!("{}.md", ctx.entry.name),
+    );
+    if !ctx.dry_run {
+        write_patch(ctx.entry, &patch_text, ctx.repo_root)?;
+    }
+
+    let prefix = if ctx.dry_run { "Would pin" } else { "Pinned" };
+    Ok(format!("{prefix} '{}'", ctx.entry.name))
 }
 
 fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<String, SkillfileError> {
@@ -61,7 +165,7 @@ fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<Strin
     }
 
     let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
-    let installed = installed_dir_files(entry, &manifest, repo_root)?;
+    let installed = installed_dir_variants(entry, &manifest, repo_root);
     if installed.is_empty() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed — run `skillfile install` first",
@@ -69,43 +173,27 @@ fn pin_dir_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<Strin
         )));
     }
 
+    let cache_files = load_cache_files(&vdir);
+    let modified = modified_dir_variants(&cache_files, &installed)?;
+    if modified.is_empty() {
+        return Ok(format!(
+            "'{}' matches upstream — nothing to pin",
+            entry.name
+        ));
+    }
+    let representative = representative_dir_changes(&entry.name, &modified)?;
     let pin_ctx = PinCtx {
         entry,
         repo_root,
         dry_run,
     };
-    let mut pinned: Vec<String> = Vec::new();
-
-    for cache_file in walkdir(&vdir) {
-        if cache_file.file_name().is_some_and(|n| n == ".meta") {
-            continue;
-        }
-        let filename = cache_file
-            .strip_prefix(&vdir)
-            .ok()
-            .and_then(|p| p.to_str())
-            .unwrap_or("")
-            .to_string();
-        if filename.is_empty() {
-            continue;
-        }
-        let Some(inst_path) = installed.get(&filename) else {
-            continue;
-        };
-        if !inst_path.exists() {
-            continue;
-        }
-        if let Some(f) = process_dir_file(
-            &pin_ctx,
-            &DirFileRef {
-                cache: &cache_file,
-                installed: inst_path,
-                filename: &filename,
-            },
-        )? {
-            pinned.push(f);
-        }
-    }
+    let pinned = apply_dir_pin_changes(
+        &pin_ctx,
+        DirPinPlan {
+            cache_files,
+            representative,
+        },
+    )?;
 
     let prefix = if dry_run { "Would pin" } else { "Pinned" };
     if pinned.is_empty() {
@@ -156,31 +244,27 @@ fn pin_entry(entry: &Entry, repo_root: &Path, dry_run: bool) -> Result<String, S
     }
 
     let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
-    let dest = installed_path(entry, &manifest, repo_root)?;
-    if !dest.exists() {
+    let installed = installed_single_file_variants(entry, &manifest, repo_root)?;
+    if installed.is_empty() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed — run `skillfile install` first",
             entry.name
         )));
     }
 
-    let label = format!("{}.md", entry.name);
     let cache_text = std::fs::read_to_string(&cache_file)?;
-    let dest_text = std::fs::read_to_string(&dest)?;
-    let patch_text = generate_patch(&cache_text, &dest_text, &label);
-
-    if patch_text.is_empty() {
-        return Ok(format!(
-            "'{}' matches upstream — nothing to pin",
-            entry.name
-        ));
-    }
-
-    if !dry_run {
-        write_patch(entry, &patch_text, repo_root)?;
-    }
-    let prefix = if dry_run { "Would pin" } else { "Pinned" };
-    Ok(format!("{prefix} '{}'", entry.name))
+    let pin_ctx = PinCtx {
+        entry,
+        repo_root,
+        dry_run,
+    };
+    pin_single_file_content(
+        &pin_ctx,
+        &SinglePinPlan {
+            cache_text: &cache_text,
+            installed: &installed,
+        },
+    )
 }
 
 pub fn cmd_pin(name: &str, repo_root: &Path, dry_run: bool) -> Result<(), SkillfileError> {
@@ -421,6 +505,70 @@ mod tests {
         // No patch written
         let patch_path = dir.path().join(".skillfile/patches/skills/test.patch");
         assert!(!patch_path.exists());
+    }
+
+    #[test]
+    fn pin_entry_uses_second_target_when_first_is_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "install  claude-code  local\n\
+             install  copilot  local\n\
+             github  skill  owner/repo  skills/test.md\n",
+        );
+        write_lock(dir.path(), &make_lock_json("test", "skill"));
+
+        let vdir = dir.path().join(".skillfile/cache/skills/test");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("test.md"), "original\n").unwrap();
+
+        let first_target = dir.path().join(".claude/skills/test");
+        std::fs::create_dir_all(&first_target).unwrap();
+        std::fs::write(first_target.join("SKILL.md"), "original\n").unwrap();
+
+        let second_target = dir.path().join(".github/skills/test");
+        std::fs::create_dir_all(&second_target).unwrap();
+        std::fs::write(second_target.join("SKILL.md"), "modified\n").unwrap();
+
+        let entry = github_entry_skill("test", "skills/test.md");
+        let result = pin_entry(&entry, dir.path(), false).unwrap();
+        assert!(result.contains("Pinned 'test'"));
+
+        let patch_path = dir.path().join(".skillfile/patches/skills/test.patch");
+        let patch_text = std::fs::read_to_string(&patch_path).unwrap();
+        assert!(patch_text.contains("+modified"));
+    }
+
+    #[test]
+    fn pin_entry_errors_on_divergent_multi_target_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "install  claude-code  local\n\
+             install  copilot  local\n\
+             github  skill  owner/repo  skills/test.md\n",
+        );
+        write_lock(dir.path(), &make_lock_json("test", "skill"));
+
+        let vdir = dir.path().join(".skillfile/cache/skills/test");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("test.md"), "original\n").unwrap();
+
+        let first_target = dir.path().join(".claude/skills/test");
+        std::fs::create_dir_all(&first_target).unwrap();
+        std::fs::write(first_target.join("SKILL.md"), "modified one\n").unwrap();
+
+        let second_target = dir.path().join(".github/skills/test");
+        std::fs::create_dir_all(&second_target).unwrap();
+        std::fs::write(second_target.join("SKILL.md"), "modified two\n").unwrap();
+
+        let entry = github_entry_skill("test", "skills/test.md");
+        let result = pin_entry(&entry, dir.path(), false);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("divergent edits across install targets"));
     }
 
     #[test]

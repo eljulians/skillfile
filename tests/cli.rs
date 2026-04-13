@@ -151,6 +151,50 @@ fn write_local_manifest(dir: &Path) {
     std::fs::write(dir.join("skills/my-skill.md"), "# My Skill\n").unwrap();
 }
 
+fn write_multi_target_skill_fixture(dir: &Path, name: &str) {
+    let manifest = format!(
+        "install  claude-code  local\n\
+         install  copilot  local\n\
+         github  skill  {name}  owner/repo  skills/{name}.md  main\n"
+    );
+    std::fs::write(dir.join("Skillfile"), manifest).unwrap();
+
+    let lock_json = serde_json::json!({
+        format!("github/skill/{name}"): {
+            "sha": "abc123def456abc123def456abc123def456abc1",
+            "raw_url": format!("https://raw.githubusercontent.com/owner/repo/abc123/skills/{name}.md")
+        }
+    });
+    std::fs::write(
+        dir.join("Skillfile.lock"),
+        serde_json::to_string_pretty(&lock_json).unwrap(),
+    )
+    .unwrap();
+
+    let vdir = dir.join(format!(".skillfile/cache/skills/{name}"));
+    std::fs::create_dir_all(&vdir).unwrap();
+    std::fs::write(
+        vdir.join(format!("{name}.md")),
+        "# Skill\n\nUpstream content.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        vdir.join(".meta"),
+        r#"{"sha":"abc123def456abc123def456abc123def456abc1"}"#,
+    )
+    .unwrap();
+
+    for platform_dir in [".claude/skills", ".github/skills"] {
+        let installed_dir = dir.join(platform_dir).join(name);
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(
+            installed_dir.join("SKILL.md"),
+            "# Skill\n\nUpstream content.\n",
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 fn install_first_run_shows_platform_hint() {
     let dir = tempfile::tempdir().unwrap();
@@ -458,6 +502,71 @@ fn diff_shows_changes_between_cache_and_installed() {
         .assert()
         .success()
         .stdout(predicate::str::contains("User addition"));
+}
+
+#[test]
+fn diff_surfaces_secondary_target_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_multi_target_skill_fixture(root, "multi-skill");
+
+    std::fs::write(
+        root.join(".github/skills/multi-skill/SKILL.md"),
+        "# Skill\n\nUpstream content.\n\nSecondary target edit.\n",
+    )
+    .unwrap();
+
+    sf(root)
+        .args(["diff", "multi-skill"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Secondary target edit."))
+        .stdout(predicate::str::contains("installed: copilot (local)"));
+}
+
+#[test]
+fn pin_and_unpin_round_trip_secondary_target_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_multi_target_skill_fixture(root, "pin-skill");
+
+    std::fs::write(
+        root.join(".github/skills/pin-skill/SKILL.md"),
+        "# Skill\n\nUpstream content.\n\nPinned from second target.\n",
+    )
+    .unwrap();
+
+    sf(root).args(["pin", "pin-skill"]).assert().success();
+
+    let patch_path = root.join(".skillfile/patches/skills/pin-skill.patch");
+    assert!(patch_path.exists(), "pin should write a patch");
+    assert!(
+        std::fs::read_to_string(&patch_path)
+            .unwrap()
+            .contains("Pinned from second target."),
+        "patch should capture second-target edit"
+    );
+
+    std::fs::remove_file(root.join(".claude/skills/pin-skill/SKILL.md")).unwrap();
+
+    sf(root).arg("install").assert().success();
+    assert!(
+        std::fs::read_to_string(root.join(".claude/skills/pin-skill/SKILL.md"))
+            .unwrap()
+            .contains("Pinned from second target."),
+        "install should apply the stored patch when redeploying the first target"
+    );
+
+    sf(root).args(["unpin", "pin-skill"]).assert().success();
+    assert!(!patch_path.exists(), "unpin should remove patch");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".claude/skills/pin-skill/SKILL.md")).unwrap(),
+        "# Skill\n\nUpstream content.\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".github/skills/pin-skill/SKILL.md")).unwrap(),
+        "# Skill\n\nUpstream content.\n"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write as IoWrite;
 use std::path::Path;
 
@@ -7,11 +8,26 @@ use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{short_sha, Entry};
 use skillfile_core::parser::{find_entry_in, parse_manifest, MANIFEST_NAME};
 use skillfile_core::progress;
-use skillfile_deploy::paths::{installed_dir_files, installed_path};
 use skillfile_sources::strategy::{content_file, is_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
+use crate::commands::installed_variants::{installed_dir_variants, installed_single_file_variants};
+use crate::commands::multi_target::{
+    format_single_file_diff, modified_dir_variants, modified_single_file_variants, SingleFileDiff,
+};
 use crate::patch::walkdir;
+
+struct DirDiffCtx<'a> {
+    entry_name: &'a str,
+    sha: &'a str,
+    target_label: &'a str,
+    cache_files: &'a BTreeMap<String, std::path::PathBuf>,
+}
+
+struct ChangedFileRef<'a> {
+    filename: &'a str,
+    installed_text: &'a str,
+}
 
 fn diff_local_single(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
@@ -31,8 +47,8 @@ fn diff_local_single(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), S
         )));
     }
 
-    let dest = installed_path(entry, &manifest, repo_root)?;
-    if !dest.exists() {
+    let installed = installed_single_file_variants(entry, &manifest, repo_root)?;
+    if installed.is_empty() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed — run `skillfile install` first",
             entry.name
@@ -40,24 +56,22 @@ fn diff_local_single(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), S
     }
 
     let upstream = std::fs::read_to_string(&cache_file)?;
-    let installed_text = std::fs::read_to_string(&dest)?;
-
-    let diff_text = similar::TextDiff::from_lines(upstream.as_str(), installed_text.as_str());
-    let formatted = diff_text
-        .unified_diff()
-        .context_radius(3)
-        .header(
-            &format!("a/{}.md (upstream sha={})", entry.name, short_sha(sha)),
-            &format!("b/{}.md (installed)", entry.name),
-        )
-        .to_string();
-
-    if formatted.is_empty() {
+    let modified = modified_single_file_variants(&upstream, &installed);
+    if modified.is_empty() {
         println!("'{}' is clean — no local modifications", entry.name);
     } else {
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
-        out.write_all(formatted.as_bytes())?;
+        for variant in modified {
+            let formatted = format_single_file_diff(&SingleFileDiff {
+                entry_name: &entry.name,
+                sha: short_sha(sha),
+                target_label: &variant.label,
+                upstream: &upstream,
+                installed_text: &variant.content,
+            });
+            out.write_all(formatted.as_bytes())?;
+        }
     }
 
     Ok(())
@@ -73,7 +87,7 @@ fn diff_local_dir(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), Skil
         )));
     }
 
-    let installed = installed_dir_files(entry, &manifest, repo_root)?;
+    let installed = installed_dir_variants(entry, &manifest, repo_root);
     if installed.is_empty() {
         return Err(SkillfileError::Manifest(format!(
             "'{}' is not installed — run `skillfile install` first",
@@ -81,52 +95,80 @@ fn diff_local_dir(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), Skil
         )));
     }
 
+    let cache_files: BTreeMap<String, std::path::PathBuf> = walkdir(&vdir)
+        .into_iter()
+        .filter(|cache_file| cache_file.file_name().is_some_and(|name| name != ".meta"))
+        .filter_map(|cache_file| {
+            let filename = cache_file
+                .strip_prefix(&vdir)
+                .ok()
+                .and_then(|path| path.to_str())
+                .map(str::to_string)?;
+            Some((filename, cache_file))
+        })
+        .collect();
+
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let mut any_diff = false;
+    let modified = modified_dir_variants(&cache_files, &installed)?;
 
-    for cache_file in walkdir(&vdir) {
-        if cache_file.file_name().is_some_and(|n| n == ".meta") {
-            continue;
-        }
-        let filename = match cache_file.strip_prefix(&vdir).ok().and_then(|p| p.to_str()) {
-            Some(f) => f.to_string(),
-            None => continue,
-        };
-        let Some(inst_path) = installed.get(&filename) else {
-            continue;
-        };
-        if !inst_path.exists() {
-            continue;
-        }
-
-        let original_text = std::fs::read_to_string(&cache_file)?;
-        let installed_text = std::fs::read_to_string(inst_path)?;
-        let diff_text =
-            similar::TextDiff::from_lines(original_text.as_str(), installed_text.as_str());
-        let formatted = diff_text
-            .unified_diff()
-            .context_radius(3)
-            .header(
-                &format!(
-                    "a/{}/{filename} (upstream sha={})",
-                    entry.name,
-                    short_sha(sha)
-                ),
-                &format!("b/{}/{filename} (installed)", entry.name),
-            )
-            .to_string();
-
-        if !formatted.is_empty() {
-            any_diff = true;
-            out.write_all(formatted.as_bytes())?;
-        }
-    }
-
-    if !any_diff {
+    if modified.is_empty() {
         println!("'{}' is clean — no local modifications", entry.name);
+    } else {
+        for (target_label, files) in modified {
+            let diff_ctx = DirDiffCtx {
+                entry_name: &entry.name,
+                sha: short_sha(sha),
+                target_label: &target_label,
+                cache_files: &cache_files,
+            };
+            write_dir_diff(&mut out, &diff_ctx, files)?;
+        }
     }
 
+    Ok(())
+}
+
+fn write_dir_diff(
+    out: &mut dyn IoWrite,
+    ctx: &DirDiffCtx<'_>,
+    files: BTreeMap<String, String>,
+) -> Result<(), SkillfileError> {
+    for (filename, installed_text) in files {
+        let changed = ChangedFileRef {
+            filename: &filename,
+            installed_text: &installed_text,
+        };
+        write_dir_file_diff(out, ctx, &changed)?;
+    }
+    Ok(())
+}
+
+fn write_dir_file_diff(
+    out: &mut dyn IoWrite,
+    ctx: &DirDiffCtx<'_>,
+    changed: &ChangedFileRef<'_>,
+) -> Result<(), SkillfileError> {
+    let Some(cache_file) = ctx.cache_files.get(changed.filename) else {
+        return Ok(());
+    };
+    let original_text = std::fs::read_to_string(cache_file)?;
+    let diff_text = similar::TextDiff::from_lines(original_text.as_str(), changed.installed_text);
+    let formatted = diff_text
+        .unified_diff()
+        .context_radius(3)
+        .header(
+            &format!(
+                "a/{}/{} (upstream sha={})",
+                ctx.entry_name, changed.filename, ctx.sha
+            ),
+            &format!(
+                "b/{}/{} (installed: {})",
+                ctx.entry_name, changed.filename, ctx.target_label
+            ),
+        )
+        .to_string();
+    out.write_all(formatted.as_bytes())?;
     Ok(())
 }
 
