@@ -691,7 +691,7 @@ fn parse_skillssh_audits(html: &str) -> Vec<SecurityAudit> {
 fn registry_color(registry: RegistryId) -> Color {
     match registry {
         RegistryId::AgentskillSh => Color::Magenta,
-        RegistryId::SkillsSh => Color::Cyan,
+        RegistryId::SkillsSh | RegistryId::McpMarket => Color::Cyan,
         RegistryId::SkillhubClub => Color::Green,
     }
 }
