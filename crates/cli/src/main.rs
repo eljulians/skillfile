@@ -187,6 +187,23 @@ Examples:
         check_upstream: bool,
     },
 
+    /// Show detailed information about a single entry
+    #[command(display_order = 23)]
+    #[command(long_about = "\
+Display all known information about a single entry: source, lock state,
+pin state, modified state, installed paths across all targets, and cache path.
+
+No network calls — reads only local manifest, lock, patch, and cache state.
+
+Examples:
+  skillfile info browser
+  skillfile info code-refactorer")]
+    Info {
+        /// Entry name to inspect
+        #[arg(add = ArgValueCandidates::new(complete_entry_names))]
+        name: String,
+    },
+
     // -- Discovery (display_order 25-29) ----------------------------------------
     /// Search community registries and add skills interactively
     #[command(display_order = 25)]
@@ -478,6 +495,7 @@ fn run_content_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileE
             Ok(())
         }
         Command::Validate => commands::validate::cmd_validate(repo_root),
+        Command::Info { name } => commands::info::cmd_info(&name, repo_root),
         Command::Format { dry_run } => commands::format::cmd_format(repo_root, dry_run),
         Command::Pin { name, dry_run } => commands::pin::cmd_pin(&name, repo_root, dry_run),
         Command::Unpin { name } => commands::pin::cmd_unpin(&name, repo_root),

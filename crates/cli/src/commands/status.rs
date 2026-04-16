@@ -116,7 +116,7 @@ fn check_single_file_modified(
 }
 
 /// Check if an installed file differs from cache (local only, no network).
-fn is_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -> bool {
+pub(crate) fn is_modified_local(entry: &Entry, manifest: &Manifest, repo_root: &Path) -> bool {
     if matches!(entry.source, SourceFields::Local { .. }) {
         return false;
     }

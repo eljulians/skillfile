@@ -2,6 +2,7 @@ pub mod add;
 pub mod add_tui;
 pub mod diff;
 pub mod format;
+pub mod info;
 pub mod init;
 mod installed_variants;
 mod multi_target;
