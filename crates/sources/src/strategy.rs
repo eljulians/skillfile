@@ -54,7 +54,10 @@ pub fn is_dir_entry(entry: &Entry) -> bool {
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("md"))
         }
-        _ => false,
+        SourceFields::Local { path } => !Path::new(path)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md")),
+        SourceFields::Url { .. } => false,
     }
 }
 
@@ -187,6 +190,18 @@ mod tests {
             name: "test".into(),
             source: SourceFields::Local {
                 path: "skills/test".into(),
+            },
+        };
+        assert!(is_dir_entry(&e));
+    }
+
+    #[test]
+    fn is_dir_entry_local_file() {
+        let e = Entry {
+            entity_type: EntityType::Skill,
+            name: "test".into(),
+            source: SourceFields::Local {
+                path: "skills/test.md".into(),
             },
         };
         assert!(!is_dir_entry(&e));

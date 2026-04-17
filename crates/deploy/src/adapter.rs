@@ -160,8 +160,7 @@ impl PlatformAdapter for FileSystemAdapter {
             repo_root: req.repo_root,
         };
         let target_dir = self.target_dir(req.entry.entity_type, &ctx);
-        // Use filesystem truth: source.is_dir() catches local directory entries
-        // that is_dir_entry() misses (it only inspects GitHub path_in_repo).
+        // Use filesystem truth as a backstop for ambiguous manifest paths.
         let is_dir = is_dir_entry(req.entry) || req.source.is_dir();
 
         if is_dir

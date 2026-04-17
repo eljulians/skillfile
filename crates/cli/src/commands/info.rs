@@ -1,15 +1,37 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{short_sha, Entry, Manifest, SourceFields};
 use skillfile_core::parser::MANIFEST_NAME;
+use skillfile_core::patch::walkdir;
 use skillfile_core::patch::{has_dir_patch, has_patch, patch_path, patches_root};
-use skillfile_deploy::paths::installed_paths;
+use skillfile_deploy::adapter::{adapters, AdapterScope, DirInstallMode};
+use skillfile_deploy::paths::{installed_paths, source_path};
 use skillfile_sources::strategy::{content_file, is_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
 use super::status::is_modified_local;
+
+#[derive(Debug, PartialEq, Eq)]
+struct InstalledLocation {
+    path: PathBuf,
+    present: bool,
+}
+
+impl InstalledLocation {
+    fn new(path: PathBuf, present: bool) -> Self {
+        Self { path, present }
+    }
+
+    fn display_value(&self) -> String {
+        if self.present {
+            self.path.display().to_string()
+        } else {
+            format!("{} (not installed)", self.path.display())
+        }
+    }
+}
 
 fn format_source(entry: &Entry) -> Vec<(&'static str, String)> {
     match &entry.source {
@@ -60,16 +82,95 @@ fn format_installed_paths(
     manifest: &Manifest,
     repo_root: &Path,
 ) -> Result<Vec<String>, SkillfileError> {
-    let paths = installed_paths(entry, manifest, repo_root)?;
-    let existing: Vec<String> = paths
-        .iter()
-        .filter(|p| p.exists())
-        .map(|p| p.display().to_string())
-        .collect();
-    if existing.is_empty() {
+    let locations = if is_dir_entry(entry) {
+        installed_locations_for_dir_entry(entry, manifest, repo_root)?
+    } else {
+        installed_locations_for_single_file(entry, manifest, repo_root)?
+    };
+    if locations.is_empty() {
         Ok(vec!["(not installed)".to_string()])
     } else {
-        Ok(existing)
+        Ok(locations
+            .iter()
+            .map(InstalledLocation::display_value)
+            .collect())
+    }
+}
+
+fn installed_locations_for_single_file(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<Vec<InstalledLocation>, SkillfileError> {
+    let paths = installed_paths(entry, manifest, repo_root)?;
+    Ok(paths
+        .into_iter()
+        .map(|path| InstalledLocation::new(path.clone(), path.exists()))
+        .collect())
+}
+
+fn installed_locations_for_dir_entry(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<Vec<InstalledLocation>, SkillfileError> {
+    let mut locations = Vec::new();
+    for target in &manifest.install_targets {
+        let adapter = adapters().get(&target.adapter).ok_or_else(|| {
+            SkillfileError::Manifest(format!("unknown adapter '{}'", target.adapter))
+        })?;
+        if !adapter.supports(entry.entity_type) {
+            continue;
+        }
+        let ctx = AdapterScope {
+            scope: target.scope,
+            repo_root,
+        };
+        let dir_mode = adapter
+            .dir_mode(entry.entity_type)
+            .unwrap_or(DirInstallMode::Nested);
+        if dir_mode == DirInstallMode::Nested {
+            let target_dir = adapter.target_dir(entry.entity_type, &ctx);
+            locations.push(nested_dir_location(entry, &target_dir));
+        } else {
+            locations.extend(flat_dir_locations(
+                entry,
+                repo_root,
+                adapter.target_dir(entry.entity_type, &ctx),
+            ));
+        }
+    }
+    Ok(locations)
+}
+
+fn nested_dir_location(entry: &Entry, target_dir: &Path) -> InstalledLocation {
+    let path = target_dir.join(&entry.name);
+    InstalledLocation::new(path.clone(), path.is_dir())
+}
+
+fn flat_dir_locations(
+    entry: &Entry,
+    repo_root: &Path,
+    target_dir: PathBuf,
+) -> Vec<InstalledLocation> {
+    let Some(source_dir) = source_path(entry, repo_root).filter(|path| path.is_dir()) else {
+        return vec![InstalledLocation::new(target_dir, false)];
+    };
+    let mut locations: Vec<InstalledLocation> = walkdir(&source_dir)
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .filter_map(|path| {
+            path.file_name()
+                .map(|name| target_dir.join(name))
+                .map(|path| InstalledLocation::new(path.clone(), path.exists()))
+        })
+        .collect();
+    locations.sort_by(|a, b| a.path.cmp(&b.path));
+    locations.dedup_by(|a, b| a.path == b.path);
+    if locations.is_empty() {
+        vec![InstalledLocation::new(target_dir, false)]
+    } else {
+        locations
     }
 }
 
@@ -110,7 +211,9 @@ pub fn cmd_info(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
         .entries
         .iter()
         .find(|e| e.name == name)
-        .ok_or_else(|| SkillfileError::Manifest(format!("entry '{name}' not found in Skillfile")))?;
+        .ok_or_else(|| {
+            SkillfileError::Manifest(format!("entry '{name}' not found in Skillfile"))
+        })?;
 
     let label_w = 12;
 
@@ -121,7 +224,11 @@ pub fn cmd_info(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
         println!("{:>label_w$}  {value}", format!("{label}:"));
     }
 
-    println!("{:>label_w$}  {}", "Locked:", format_lock_status(entry, repo_root));
+    println!(
+        "{:>label_w$}  {}",
+        "Locked:",
+        format_lock_status(entry, repo_root)
+    );
     println!(
         "{:>label_w$}  {}",
         "Pinned:",
@@ -155,7 +262,7 @@ pub fn cmd_info(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skillfile_core::models::{EntityType, SourceFields};
+    use skillfile_core::models::{EntityType, InstallTarget, Scope, SourceFields};
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
@@ -337,7 +444,10 @@ mod tests {
             },
         };
         let status = format_pinned_status(&entry, dir.path());
-        assert!(status.starts_with("yes"), "expected 'yes ...', got: {status}");
+        assert!(
+            status.starts_with("yes"),
+            "expected 'yes ...', got: {status}"
+        );
         assert!(
             status.contains(".skillfile/patches/skills/foo.patch"),
             "expected patch path, got: {status}"
@@ -361,7 +471,10 @@ mod tests {
             },
         };
         let status = format_pinned_status(&entry, dir.path());
-        assert!(status.starts_with("yes"), "expected 'yes ...', got: {status}");
+        assert!(
+            status.starts_with("yes"),
+            "expected 'yes ...', got: {status}"
+        );
         assert!(
             status.contains(".skillfile/patches/skills/my-dir"),
             "expected dir patch path, got: {status}"
@@ -442,6 +555,74 @@ mod tests {
         };
         let paths = format_installed_paths(&entry, &manifest, dir.path()).unwrap();
         assert_eq!(paths, vec!["(not installed)"]);
+    }
+
+    #[test]
+    fn installed_paths_show_missing_secondary_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "foo".into(),
+            source: SourceFields::Github {
+                owner_repo: "owner/repo".into(),
+                path_in_repo: "skills/foo.md".into(),
+                ref_: "main".into(),
+            },
+        };
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                InstallTarget {
+                    adapter: "claude-code".into(),
+                    scope: Scope::Local,
+                },
+                InstallTarget {
+                    adapter: "copilot".into(),
+                    scope: Scope::Local,
+                },
+            ],
+        };
+        let installed = dir.path().join(".claude/skills/foo");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("SKILL.md"), "# Foo\n").unwrap();
+
+        let paths = format_installed_paths(&entry, &manifest, dir.path()).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].ends_with(".claude/skills/foo/SKILL.md"));
+        assert!(paths[1].ends_with(".github/skills/foo/SKILL.md (not installed)"));
+    }
+
+    #[test]
+    fn installed_paths_show_flat_dir_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("agents/my-agent");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("agent.md"), "# Agent\n").unwrap();
+        std::fs::write(source.join("notes.md"), "# Notes\n").unwrap();
+
+        let entry = Entry {
+            entity_type: EntityType::Agent,
+            name: "my-agent".into(),
+            source: SourceFields::Local {
+                path: "agents/my-agent".into(),
+            },
+        };
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![InstallTarget {
+                adapter: "claude-code".into(),
+                scope: Scope::Local,
+            }],
+        };
+        let installed = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("agent.md"), "# Agent\n").unwrap();
+        std::fs::write(installed.join("notes.md"), "# Notes\n").unwrap();
+
+        let paths = format_installed_paths(&entry, &manifest, dir.path()).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].ends_with(".claude/agents/agent.md"));
+        assert!(paths[1].ends_with(".claude/agents/notes.md"));
     }
 
     #[test]

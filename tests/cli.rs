@@ -411,6 +411,54 @@ fn install_local_dir_entry() {
     );
 }
 
+#[test]
+fn info_shows_missing_secondary_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_multi_target_skill_fixture(root, "info-skill");
+
+    std::fs::remove_file(root.join(".github/skills/info-skill/SKILL.md")).unwrap();
+
+    sf(root)
+        .args(["info", "info-skill"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            ".claude/skills/info-skill/SKILL.md",
+        ))
+        .stdout(predicate::str::contains(
+            ".github/skills/info-skill/SKILL.md (not installed)",
+        ));
+}
+
+#[test]
+fn info_shows_flat_dir_installed_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    let agent_dir = root.join("agents/my-agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("agent.md"), "# Agent\n").unwrap();
+    std::fs::write(agent_dir.join("notes.md"), "# Notes\n").unwrap();
+
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  claude-code  local\n\
+         local  agent  my-agent  agents/my-agent\n",
+    )
+    .unwrap();
+
+    sf(root).arg("install").assert().success();
+
+    sf(root)
+        .args(["info", "my-agent"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".claude/agents/agent.md"))
+        .stdout(predicate::str::contains(".claude/agents/notes.md"))
+        .stdout(predicate::str::contains("(not installed)").not());
+}
+
 // ---------------------------------------------------------------------------
 // remove (direct golden path)
 // ---------------------------------------------------------------------------
