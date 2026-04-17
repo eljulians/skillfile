@@ -8,6 +8,10 @@ use std::path::Path;
 use predicates::prelude::*;
 use skillfile_functional_tests::{sf, skillfile_cmd};
 
+fn normalize_separators(text: &str) -> String {
+    text.replace('\\', "/")
+}
+
 // ---------------------------------------------------------------------------
 // Smoke tests (binary boots up)
 // ---------------------------------------------------------------------------
@@ -419,16 +423,13 @@ fn info_shows_missing_secondary_target() {
 
     std::fs::remove_file(root.join(".github/skills/info-skill/SKILL.md")).unwrap();
 
-    sf(root)
-        .args(["info", "info-skill"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            ".claude/skills/info-skill/SKILL.md",
-        ))
-        .stdout(predicate::str::contains(
-            ".github/skills/info-skill/SKILL.md (not installed)",
-        ));
+    let output = sf(root).args(["info", "info-skill"]).output().unwrap();
+
+    assert!(output.status.success());
+
+    let stdout = normalize_separators(std::str::from_utf8(&output.stdout).unwrap());
+    assert!(stdout.contains(".claude/skills/info-skill/SKILL.md"));
+    assert!(stdout.contains(".github/skills/info-skill/SKILL.md (not installed)"));
 }
 
 #[test]
@@ -450,13 +451,14 @@ fn info_shows_flat_dir_installed_files() {
 
     sf(root).arg("install").assert().success();
 
-    sf(root)
-        .args(["info", "my-agent"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(".claude/agents/agent.md"))
-        .stdout(predicate::str::contains(".claude/agents/notes.md"))
-        .stdout(predicate::str::contains("(not installed)").not());
+    let output = sf(root).args(["info", "my-agent"]).output().unwrap();
+
+    assert!(output.status.success());
+
+    let stdout = normalize_separators(std::str::from_utf8(&output.stdout).unwrap());
+    assert!(stdout.contains(".claude/agents/agent.md"));
+    assert!(stdout.contains(".claude/agents/notes.md"));
+    assert!(!stdout.contains("(not installed)"));
 }
 
 // ---------------------------------------------------------------------------

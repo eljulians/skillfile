@@ -264,6 +264,14 @@ mod tests {
     use super::*;
     use skillfile_core::models::{EntityType, InstallTarget, Scope, SourceFields};
 
+    fn normalize_separators(path: &str) -> String {
+        path.replace('\\', "/")
+    }
+
+    fn has_normalized_suffix(path: &str, suffix: &str) -> bool {
+        normalize_separators(path).ends_with(suffix)
+    }
+
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
     }
@@ -449,7 +457,7 @@ mod tests {
             "expected 'yes ...', got: {status}"
         );
         assert!(
-            status.contains(".skillfile/patches/skills/foo.patch"),
+            has_normalized_suffix(&status, ".skillfile/patches/skills/foo.patch)"),
             "expected patch path, got: {status}"
         );
     }
@@ -476,7 +484,7 @@ mod tests {
             "expected 'yes ...', got: {status}"
         );
         assert!(
-            status.contains(".skillfile/patches/skills/my-dir"),
+            has_normalized_suffix(&status, ".skillfile/patches/skills/my-dir)"),
             "expected dir patch path, got: {status}"
         );
     }
@@ -588,8 +596,14 @@ mod tests {
 
         let paths = format_installed_paths(&entry, &manifest, dir.path()).unwrap();
         assert_eq!(paths.len(), 2);
-        assert!(paths[0].ends_with(".claude/skills/foo/SKILL.md"));
-        assert!(paths[1].ends_with(".github/skills/foo/SKILL.md (not installed)"));
+        assert!(has_normalized_suffix(
+            &paths[0],
+            ".claude/skills/foo/SKILL.md"
+        ));
+        assert!(has_normalized_suffix(
+            &paths[1],
+            ".github/skills/foo/SKILL.md (not installed)"
+        ));
     }
 
     #[test]
@@ -621,8 +635,8 @@ mod tests {
 
         let paths = format_installed_paths(&entry, &manifest, dir.path()).unwrap();
         assert_eq!(paths.len(), 2);
-        assert!(paths[0].ends_with(".claude/agents/agent.md"));
-        assert!(paths[1].ends_with(".claude/agents/notes.md"));
+        assert!(has_normalized_suffix(&paths[0], ".claude/agents/agent.md"));
+        assert!(has_normalized_suffix(&paths[1], ".claude/agents/notes.md"));
     }
 
     #[test]
