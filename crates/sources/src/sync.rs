@@ -37,12 +37,10 @@ fn dir_has_content(vdir: &Path) -> bool {
     if !vdir.is_dir() {
         return false;
     }
-    std::fs::read_dir(vdir)
-        .map(|rd| {
-            rd.filter_map(std::result::Result::ok)
-                .any(|e| e.file_name() != ".meta")
-        })
-        .unwrap_or(false)
+    std::fs::read_dir(vdir).is_ok_and(|rd| {
+        rd.filter_map(std::result::Result::ok)
+            .any(|e| e.file_name() != ".meta")
+    })
 }
 
 fn content_exists(entry: &Entry, vdir: &Path) -> bool {

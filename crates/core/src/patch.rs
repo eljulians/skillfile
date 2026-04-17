@@ -126,9 +126,7 @@ fn remove_empty_parent(path: &Path) {
     if !parent.exists() {
         return;
     }
-    let is_empty = std::fs::read_dir(parent)
-        .map(|mut rd| rd.next().is_none())
-        .unwrap_or(true);
+    let is_empty = std::fs::read_dir(parent).map_or(true, |mut rd| rd.next().is_none());
     if is_empty {
         let _ = std::fs::remove_dir(parent);
     }

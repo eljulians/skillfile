@@ -683,12 +683,10 @@ mod tests {
         if !d.is_dir() {
             return false;
         }
-        std::fs::read_dir(&d)
-            .map(|rd| {
-                rd.filter_map(std::result::Result::ok)
-                    .any(|e| e.path().extension().is_some_and(|x| x == "patch"))
-            })
-            .unwrap_or(false)
+        std::fs::read_dir(&d).is_ok_and(|rd| {
+            rd.filter_map(std::result::Result::ok)
+                .any(|e| e.path().extension().is_some_and(|x| x == "patch"))
+        })
     }
 
     // -----------------------------------------------------------------------
