@@ -253,6 +253,10 @@ Examples:
         no_interactive: bool,
     },
 
+    #[cfg(debug_assertions)]
+    #[command(name = "__search-tui-test", hide = true)]
+    SearchTuiTest,
+
     // -- Validation (display_order 30-39) -------------------------------------
     /// Check the Skillfile for errors
     #[command(display_order = 30)]
@@ -545,8 +549,31 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
             no_interactive,
             repo_root,
         }),
+        #[cfg(debug_assertions)]
+        Command::SearchTuiTest => run_search_tui_test(),
         _ => Ok(()), // covered by run_content_commands
     }
+}
+
+#[cfg(debug_assertions)]
+fn run_search_tui_test() -> Result<(), SkillfileError> {
+    use skillfile_sources::registry::{RegistryId, SearchResult};
+
+    let items = [SearchResult {
+        name: "fixture-skill".to_string(),
+        owner: "skillfile".to_string(),
+        description: Some("Fixture result for interactive terminal smoke tests.".to_string()),
+        security_score: Some(92),
+        stars: Some(42),
+        url: "https://example.com/fixture-skill".to_string(),
+        registry: RegistryId::AgentskillSh,
+        source_repo: Some("eljulians/skillfile".to_string()),
+        source_path: Some("skills/fixture-skill/SKILL.md".to_string()),
+    }];
+
+    commands::search_tui::run_tui(&items, items.len())
+        .map(|_| ())
+        .map_err(|e| SkillfileError::Install(format!("TUI error: {e}")))
 }
 
 fn run() -> Result<(), SkillfileError> {

@@ -132,25 +132,18 @@ fn init_wizard_golden_path() {
 // ---------------------------------------------------------------------------
 
 /// Verify the search TUI initializes crossterm and enters alternate screen.
-/// Requires network + GitHub token, so skips gracefully without one.
+///
+/// Uses a debug-only hidden harness command so the test covers terminal
+/// lifecycle only, not live registry latency.
 ///
 /// Does NOT test Esc/cancel: rexpect's PTY cannot deliver keystrokes to
 /// crossterm's `event::read()` (same `tcsetattr(TCSADRAIN)` issue as
 /// cliclack). We verify the TUI starts, then kill the process.
 #[test]
 fn search_tui_enters_alternate_screen() {
-    // Skip without a GitHub token (same pattern as upstream.rs).
-    if std::env::var("GITHUB_TOKEN")
-        .or_else(|_| std::env::var("GH_TOKEN"))
-        .is_err()
-    {
-        eprintln!("  skipped: no GITHUB_TOKEN/GH_TOKEN");
-        return;
-    }
-
     let dir = tempfile::tempdir().unwrap();
     let mut cmd = Command::new(skillfile_bin());
-    cmd.args(["search", "kubernetes", "--limit", "3"])
+    cmd.arg("__search-tui-test")
         .current_dir(dir.path())
         .env_remove("CI");
     let mut session = rexpect::session::spawn_command(cmd, Some(TIMEOUT_MS))
