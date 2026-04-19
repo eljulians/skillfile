@@ -75,12 +75,84 @@ fn validate_golden_path() {
     )
     .unwrap();
 
-    sf(dir.path())
-        .arg("validate")
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("error").not())
-        .stdout(predicate::str::contains("error").not());
+    let output = sf(dir.path()).arg("validate").output().unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(output.status.success(), "validate should succeed: {stderr}");
+    assert_eq!(stderr, "", "validate should not write to stderr");
+    assert_eq!(
+        stdout, "Skillfile OK — 2 entries, 1 install target\n",
+        "unexpected validate stdout"
+    );
+    assert!(
+        !stdout.contains("\u{1b}["),
+        "captured validate stdout should stay plain text: {stdout:?}"
+    );
+}
+
+#[test]
+fn validate_error_output_is_plain_text_when_captured() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  unknown-platform  global\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).arg("validate").output().unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(
+        !output.status.success(),
+        "validate should fail for an unknown platform"
+    );
+    assert_eq!(stdout, "", "error path should not write to stdout");
+    assert!(
+        stderr.contains("error: unknown platform: 'unknown-platform'"),
+        "unexpected validate stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("\u{1b}["),
+        "captured validate stderr should stay plain text: {stderr:?}"
+    );
+}
+
+#[test]
+fn status_output_is_plain_text_when_captured() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         local  skill  foo  skills/foo.md\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/foo.md"), "# Foo\n").unwrap();
+
+    let output = sf(dir.path()).arg("status").output().unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(output.status.success(), "status should succeed: {stderr}");
+    assert_eq!(stderr, "", "status should not write to stderr");
+    assert!(
+        stdout.contains("foo   local"),
+        "unexpected status stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("1 skill"),
+        "status summary should include the skill count:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Install targets: claude-code (local)"),
+        "status summary should include the manifest install target:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("\u{1b}["),
+        "captured status stdout should stay plain text: {stdout:?}"
+    );
 }
 
 #[test]

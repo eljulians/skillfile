@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use console::style;
+use console::{style, StyledObject};
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{Manifest, Scope, SourceFields};
@@ -80,6 +80,14 @@ fn check_orphaned_locks(
     Ok(())
 }
 
+fn error_label() -> StyledObject<&'static str> {
+    style("error").for_stderr().red().bold()
+}
+
+fn ok_label() -> StyledObject<&'static str> {
+    style("Skillfile OK").green().bold()
+}
+
 pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
@@ -104,7 +112,7 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
 
     if !errors.is_empty() {
         for msg in &errors {
-            eprintln!("{}: {msg}", style("error").red().bold());
+            eprintln!("{}: {msg}", error_label());
         }
         return Err(SkillfileError::Manifest(String::new()));
     }
@@ -115,7 +123,7 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     let target_word = if t == 1 { "target" } else { "targets" };
     println!(
         "{} — {n} {entry_word}, {t} install {target_word}",
-        style("Skillfile OK").green().bold(),
+        ok_label(),
     );
 
     Ok(())
@@ -124,9 +132,35 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use console::{
+        colors_enabled, colors_enabled_stderr, set_colors_enabled, set_colors_enabled_stderr,
+    };
+    use serial_test::serial;
+
+    struct ConsoleColorGuard {
+        stdout_enabled: bool,
+        stderr_enabled: bool,
+    }
+
+    impl Drop for ConsoleColorGuard {
+        fn drop(&mut self) {
+            set_colors_enabled(self.stdout_enabled);
+            set_colors_enabled_stderr(self.stderr_enabled);
+        }
+    }
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
+    }
+
+    fn set_console_colors(stdout_enabled: bool, stderr_enabled: bool) -> ConsoleColorGuard {
+        let guard = ConsoleColorGuard {
+            stdout_enabled: colors_enabled(),
+            stderr_enabled: colors_enabled_stderr(),
+        };
+        set_colors_enabled(stdout_enabled);
+        set_colors_enabled_stderr(stderr_enabled);
+        guard
     }
 
     #[test]
@@ -259,5 +293,23 @@ mod tests {
         )
         .unwrap();
         cmd_validate(dir.path()).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn error_label_uses_stderr_color_detection() {
+        let _guard = set_console_colors(false, true);
+        let rendered = format!("{}", error_label());
+        assert!(
+            rendered.contains("\u{1b}["),
+            "stderr styling should render ANSI when stderr colors are enabled: {rendered:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn ok_label_uses_stdout_color_detection() {
+        let _guard = set_console_colors(false, true);
+        assert_eq!(format!("{}", ok_label()), "Skillfile OK");
     }
 }

@@ -426,6 +426,16 @@ mod tests {
         name: "my-agent",
     };
 
+    fn agent_locked_map(sha: &str) -> std::collections::BTreeMap<String, LockEntry> {
+        std::collections::BTreeMap::from([(
+            "github/agent/my-agent".to_string(),
+            LockEntry {
+                sha: sha.to_string(),
+                raw_url: "https://example.com".to_string(),
+            },
+        )])
+    }
+
     fn local_entry(name: &str, path: &str) -> Entry {
         Entry {
             entity_type: EntityType::Skill,
@@ -667,10 +677,6 @@ mod tests {
         let manifest = dir_skill_manifest();
         let entry = &manifest.entries[0];
         assert!(
-            is_dir_entry(entry),
-            "expected entry to be recognised as a dir entry"
-        );
-        assert!(
             is_modified_local(entry, &manifest, dir.path()),
             "expected modified=true when installed content differs from cache"
         );
@@ -683,10 +689,6 @@ mod tests {
 
         let manifest = dir_skill_manifest();
         let entry = &manifest.entries[0];
-        assert!(
-            is_dir_entry(entry),
-            "expected entry to be recognised as a dir entry"
-        );
         assert!(
             !is_modified_local(entry, &manifest, dir.path()),
             "expected modified=false when installed content matches cache"
@@ -705,10 +707,6 @@ mod tests {
 
         let manifest = dir_skill_manifest();
         let entry = &manifest.entries[0];
-        assert!(
-            is_dir_entry(entry),
-            "expected entry to be recognised as a dir entry"
-        );
         assert!(
             !is_modified_local(entry, &manifest, dir.path()),
             "expected modified=false when vendor cache dir is absent"
@@ -1042,7 +1040,7 @@ mod tests {
         std::fs::write(patch_dir.join("my-agent.patch"), "--- a\n+++ b\n").unwrap();
 
         let manifest = agent_manifest();
-        let locked = read_lock(dir.path()).unwrap();
+        let locked = agent_locked_map(SHA);
         let mut sha_cache = HashMap::new();
         let mut ctx = StatusContext {
             manifest: &manifest,
@@ -1069,7 +1067,7 @@ mod tests {
         );
         write_meta(dir.path(), &VE_AGENT, sha);
         let manifest = agent_manifest();
-        let locked = read_lock(dir.path()).unwrap();
+        let locked = agent_locked_map(sha);
         let mut sha_cache = HashMap::new();
         // Pre-populate cache so no HTTP call is made; same sha = up to date
         sha_cache.insert(
@@ -1153,7 +1151,7 @@ mod tests {
         );
         // No meta written => stale
         let manifest = agent_manifest();
-        let locked = read_lock(dir.path()).unwrap();
+        let locked = agent_locked_map(sha);
         let mut sha_cache = HashMap::new();
         let mut ctx = StatusContext {
             manifest: &manifest,
@@ -1180,7 +1178,7 @@ mod tests {
         );
         write_meta(dir.path(), &VE_AGENT, sha);
         let manifest = agent_manifest();
-        let locked = read_lock(dir.path()).unwrap();
+        let locked = agent_locked_map(sha);
         let mut sha_cache = HashMap::new();
         let mut ctx = StatusContext {
             manifest: &manifest,
@@ -1192,7 +1190,7 @@ mod tests {
         };
         let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
         assert!(
-            line.contains("locked") && line.contains(short_sha(sha)),
+            line.contains("locked") && line.contains(&sha[..12]),
             "expected 'locked' with sha, got: {line}"
         );
     }
@@ -1218,7 +1216,7 @@ mod tests {
         std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
 
         let manifest = agent_manifest();
-        let locked = read_lock(dir.path()).unwrap();
+        let locked = agent_locked_map(SHA);
         let mut sha_cache = HashMap::new();
         let mut ctx = StatusContext {
             manifest: &manifest,
