@@ -198,6 +198,21 @@ fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
     );
 }
 
+/// Appends `entry` to the manifest at `path`, auto-formats, and returns
+/// (original manifest text, formatted text, line string).
+fn append_entry(entry: &Entry, path: &Path) -> Result<(String, String), SkillfileError> {
+    let original = std::fs::read_to_string(path)?;
+    let line = format_line(entry);
+    let mut raw = original.clone();
+    raw.push_str(&line);
+    raw.push('\n');
+    std::fs::write(path, &raw)?;
+    let result = parse_manifest(path)?;
+    let formatted = sorted_manifest_text(&result.manifest, &raw);
+    std::fs::write(path, &formatted)?;
+    Ok((original, line))
+}
+
 pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
@@ -208,36 +223,22 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
     }
 
     let result = parse_manifest(&manifest_path)?;
-    let existing_names: std::collections::HashSet<String> = result
+    let existing: std::collections::HashSet<String> = result
         .manifest
         .entries
         .iter()
         .map(|e| e.name.clone())
         .collect();
-    if existing_names.contains(&entry.name) {
+    if existing.contains(&entry.name) {
         return Err(SkillfileError::Manifest(format!(
             "entry '{}' already exists in {MANIFEST_NAME}",
             entry.name
         )));
     }
 
-    let line = format_line(entry);
-    let original_manifest = std::fs::read_to_string(&manifest_path)?;
-
-    // Append the new entry
-    let mut content = original_manifest.clone();
-    content.push_str(&line);
-    content.push('\n');
-    std::fs::write(&manifest_path, &content)?;
-
-    // Auto-format the Skillfile silently
-    let result = parse_manifest(&manifest_path)?;
-    let formatted = sorted_manifest_text(&result.manifest, &content);
-    std::fs::write(&manifest_path, &formatted)?;
-
+    let (original, line) = append_entry(entry, &manifest_path)?;
     println!("Added: {line}");
 
-    // Re-parse to check install targets
     let result = parse_manifest(&manifest_path)?;
     if result.manifest.install_targets.is_empty() {
         println!(
@@ -246,31 +247,31 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
         return Ok(());
     }
 
-    // Auto sync + install with rollback on failure
     let lock_path = repo_root.join("Skillfile.lock");
-    let original_lock = if lock_path.exists() {
-        Some(std::fs::read_to_string(&lock_path)?)
-    } else {
-        None
-    };
-
-    let sync_install_result = sync_and_install(entry, repo_root, &result.manifest);
-
-    if let Err(e) = sync_install_result {
-        // Rollback
-        std::fs::write(&manifest_path, &original_manifest)?;
-        match &original_lock {
-            None => {
-                let _ = std::fs::remove_file(&lock_path);
-            }
-            Some(text) => {
-                std::fs::write(&lock_path, text)?;
-            }
+    let orig_lock: Option<String> = lock_path
+        .exists()
+        .then(|| std::fs::read_to_string(&lock_path))
+        .transpose()?;
+    if let Err(e) = sync_and_install(entry, repo_root, &result.manifest) {
+        std::fs::write(&manifest_path, &original)?;
+        match orig_lock.as_deref() {
+            None => drop(std::fs::remove_file(&lock_path)),
+            Some(t) => std::fs::write(&lock_path, t)?,
         }
         eprintln!("Rolled back: removed '{}' from {MANIFEST_NAME}", entry.name);
         return Err(e);
     }
 
+    println!(
+        "Installed to: {}",
+        result
+            .manifest
+            .install_targets
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     Ok(())
 }
 

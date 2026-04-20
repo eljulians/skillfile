@@ -414,6 +414,58 @@ fn add_local_subcommand_works() {
     );
 }
 
+#[test]
+fn add_local_no_install_targets_shows_guidance() {
+    // When there are no install targets, `add` should tell the user to run
+    // `skillfile init` and `skillfile install` rather than silently succeeding.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/foo.md"), "# Foo\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "skill", "skills/foo.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No install targets configured"),
+        "add without install targets should print guidance, got: {stdout}"
+    );
+}
+
+#[test]
+fn add_local_with_install_targets_shows_installed_summary() {
+    // After a successful add + install, the output should confirm which
+    // adapters the skill was deployed to.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/bar.md"), "# Bar\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "skill", "skills/bar.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Installed to:"),
+        "add with install targets should print 'Installed to:' summary, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("claude-code"),
+        "summary should name the install target adapter, got: {stdout}"
+    );
+}
+
 /// Local directory entries must be deployed as directories, not empty .md files.
 ///
 /// Regression test: is_dir_entry() only inspected GitHub path_in_repo and
