@@ -198,6 +198,41 @@ fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
     );
 }
 
+struct RollbackState<'a> {
+    manifest_path: &'a Path,
+    original_manifest: &'a str,
+    lock_path: &'a Path,
+    original_lock: Option<String>,
+}
+
+impl RollbackState<'_> {
+    fn rollback(&self, entry_name: &str) {
+        let _ = std::fs::write(self.manifest_path, self.original_manifest);
+        match &self.original_lock {
+            None => {
+                let _ = std::fs::remove_file(self.lock_path);
+            }
+            Some(text) => {
+                let _ = std::fs::write(self.lock_path, text);
+            }
+        }
+        eprintln!("Rolled back: removed '{entry_name}' from {MANIFEST_NAME}");
+    }
+}
+
+fn append_and_format_entry(entry: &Entry, manifest_path: &Path) -> Result<String, SkillfileError> {
+    let line = format_line(entry);
+    let original = std::fs::read_to_string(manifest_path)?;
+    let mut content = original.clone();
+    content.push_str(&line);
+    content.push('\n');
+    std::fs::write(manifest_path, &content)?;
+    let result = parse_manifest(manifest_path)?;
+    let formatted = sorted_manifest_text(&result.manifest, &content);
+    std::fs::write(manifest_path, &formatted)?;
+    Ok(original)
+}
+
 pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
@@ -222,55 +257,39 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
     }
 
     let line = format_line(entry);
-    let original_manifest = std::fs::read_to_string(&manifest_path)?;
-
-    // Append the new entry
-    let mut content = original_manifest.clone();
-    content.push_str(&line);
-    content.push('\n');
-    std::fs::write(&manifest_path, &content)?;
-
-    // Auto-format the Skillfile silently
-    let result = parse_manifest(&manifest_path)?;
-    let formatted = sorted_manifest_text(&result.manifest, &content);
-    std::fs::write(&manifest_path, &formatted)?;
-
+    let original_manifest = append_and_format_entry(entry, &manifest_path)?;
     println!("Added: {line}");
 
-    // Re-parse to check install targets
     let result = parse_manifest(&manifest_path)?;
     if result.manifest.install_targets.is_empty() {
-        println!(
-            "No install targets configured — run `skillfile init` then `skillfile install` to deploy."
-        );
+        println!("No install targets configured yet. Run `skillfile init` to pick platforms.");
         return Ok(());
     }
 
-    // Auto sync + install with rollback on failure
     let lock_path = repo_root.join("Skillfile.lock");
-    let original_lock = if lock_path.exists() {
-        Some(std::fs::read_to_string(&lock_path)?)
-    } else {
-        None
+    let rb = RollbackState {
+        manifest_path: &manifest_path,
+        original_manifest: &original_manifest,
+        lock_path: &lock_path,
+        original_lock: lock_path
+            .exists()
+            .then(|| std::fs::read_to_string(&lock_path))
+            .transpose()?,
     };
 
-    let sync_install_result = sync_and_install(entry, repo_root, &result.manifest);
-
-    if let Err(e) = sync_install_result {
-        // Rollback
-        std::fs::write(&manifest_path, &original_manifest)?;
-        match &original_lock {
-            None => {
-                let _ = std::fs::remove_file(&lock_path);
-            }
-            Some(text) => {
-                std::fs::write(&lock_path, text)?;
-            }
-        }
-        eprintln!("Rolled back: removed '{}' from {MANIFEST_NAME}", entry.name);
+    if let Err(e) = sync_and_install(entry, repo_root, &result.manifest) {
+        rb.rollback(&entry.name);
         return Err(e);
     }
 
+    let target_list = result
+        .manifest
+        .install_targets
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("Installed to: {target_list}");
     Ok(())
 }
 

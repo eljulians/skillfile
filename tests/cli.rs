@@ -414,6 +414,30 @@ fn add_local_subcommand_works() {
     );
 }
 
+#[test]
+fn add_prints_no_targets_message_when_none_configured() {
+    // When no install targets are in the Skillfile, `add` should tell the user
+    // what happened and what to do next.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "skill", "skills/test.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No install targets configured yet"),
+        "should mention no install targets, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("skillfile init"),
+        "should point to `skillfile init`, got: {stdout}"
+    );
+}
+
 /// Local directory entries must be deployed as directories, not empty .md files.
 ///
 /// Regression test: is_dir_entry() only inspected GitHub path_in_repo and
