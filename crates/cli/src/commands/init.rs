@@ -532,6 +532,11 @@ mod tests {
     }
 
     #[test]
+    fn hint_for_junie_adapter() {
+        assert_eq!(supported_types_hint("junie"), "skill, agent");
+    }
+
+    #[test]
     fn hint_for_skill_only_adapter() {
         assert_eq!(supported_types_hint("codex"), "skill only");
     }

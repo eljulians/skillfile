@@ -508,6 +508,7 @@ struct AdapterSpec {
 /// | windsurf    | yes    | no            | `~/.codeium/windsurf/`     | `.windsurf/`     |
 /// | opencode    | yes    | yes           | `~/.config/opencode/`      | `.opencode/`     |
 /// | copilot     | yes    | yes           | `~/.copilot/`              | `.github/`       |
+/// | junie       | yes    | yes           | `~/.junie/`                | `.junie/`        |
 /// | antigravity | yes    | no            | `~/.gemini/antigravity/`   | `.agents/`       |
 const BUILTIN_ADAPTERS: &[AdapterSpec] = &[
     AdapterSpec {
@@ -626,6 +627,23 @@ const BUILTIN_ADAPTERS: &[AdapterSpec] = &[
                 entity_type: EntityType::Agent,
                 global_path: "~/.copilot/agents",
                 local_path: ".github/agents",
+                dir_mode: DirInstallMode::Flat,
+            },
+        ],
+    },
+    AdapterSpec {
+        name: "junie",
+        entities: &[
+            EntitySpec {
+                entity_type: EntityType::Skill,
+                global_path: "~/.junie/skills",
+                local_path: ".junie/skills",
+                dir_mode: DirInstallMode::Nested,
+            },
+            EntitySpec {
+                entity_type: EntityType::Agent,
+                global_path: "~/.junie/agents",
+                local_path: ".junie/agents",
                 dir_mode: DirInstallMode::Flat,
             },
         ],

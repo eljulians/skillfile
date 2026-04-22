@@ -92,6 +92,24 @@ fn validate_golden_path() {
 }
 
 #[test]
+fn validate_junie_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  junie  local\n\
+         local  skill  test-skill  skills/test.md\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/test.md"), "# Test\n").unwrap();
+
+    let output = sf(dir.path()).arg("validate").assert();
+    output.success().stdout(predicate::str::contains(
+        "Skillfile OK — 1 entry, 1 install target",
+    ));
+}
+
+#[test]
 fn validate_error_output_is_plain_text_when_captured() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

@@ -91,7 +91,7 @@ skillfile resolve browser                  # three-way merge in $MERGETOOL
 
 Patches live in `.skillfile/patches/` and are committed to version control. Your whole team gets the same customizations.
 
-## 9 platforms, one manifest
+## 10 platforms, one manifest
 
 Write your `Skillfile` once. Deploy to every AI coding tool you use.
 
@@ -104,6 +104,7 @@ Write your `Skillfile` once. Deploy to every AI coding tool you use.
 | **cursor** | `.cursor/skills/` | `.cursor/agents/` | local, global |
 | **factory** | `.factory/skills/` | `.factory/droids/` | local, global |
 | **gemini-cli** | `.gemini/skills/` | `.gemini/agents/` | local, global |
+| **junie** | `.junie/skills/` | `.junie/agents/` | local, global |
 | **opencode** | `.opencode/skills/` | `.opencode/agents/` | local, global |
 | **windsurf** | `.windsurf/skills/` | - | local, global |
 

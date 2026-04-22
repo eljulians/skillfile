@@ -49,7 +49,7 @@ install  <platform>  <scope>
 
 | Field | Values | Description |
 |---|---|---|
-| `platform` | `claude-code`, `gemini-cli`, `codex` | Target AI tool |
+| `platform` | `claude-code`, `gemini-cli`, `codex`, `junie` | Target AI tool |
 | `scope` | `global`, `local` | Where to deploy (user-wide or project-local) |
 
 Multiple install lines are allowed (one per platform+scope combination). Duplicate install targets produce a warning during validation.

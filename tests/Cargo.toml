@@ -20,6 +20,10 @@ path = "interactive.rs"
 name = "install_directory_layout"
 path = "install_directory_layout.rs"
 
+[[test]]
+name = "junie"
+path = "junie.rs"
+
 [dependencies]
 assert_cmd = { workspace = true }
 

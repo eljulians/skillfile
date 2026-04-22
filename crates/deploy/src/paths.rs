@@ -415,4 +415,15 @@ mod tests {
         };
         assert!(resolve_target_dir("claude-code", EntityType::Skill, &ctx).is_ok());
     }
+
+    #[test]
+    fn known_adapters_includes_junie() {
+        // resolve_target_dir only succeeds for known adapters; a successful
+        // call is sufficient proof that "junie" is registered.
+        let ctx = AdapterScope {
+            scope: Scope::Global,
+            repo_root: Path::new("/tmp"),
+        };
+        assert!(resolve_target_dir("junie", EntityType::Skill, &ctx).is_ok());
+    }
 }
