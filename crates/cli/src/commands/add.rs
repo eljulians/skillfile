@@ -724,4 +724,144 @@ mod tests {
         let entry = entry_from_url("agent", "https://example.com/agent.md", Some("my-agent"));
         assert_eq!(entry.name, "my-agent");
     }
+
+    // --- append_and_format_entry tests ---
+
+    #[test]
+    fn append_and_format_entry_returns_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let initial = "local  skill  skills/existing.md\n";
+        write_manifest(dir.path(), initial);
+        let entry = entry_from_local("skill", "skills/new.md", None);
+        let original = append_and_format_entry(&entry, &dir.path().join(MANIFEST_NAME)).unwrap();
+        assert_eq!(
+            original, initial,
+            "should return the pre-edit manifest text"
+        );
+        let updated = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        assert!(updated.contains("skills/new.md"));
+        assert!(updated.contains("skills/existing.md"));
+    }
+
+    #[test]
+    fn append_and_format_entry_empty_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "");
+        let entry = entry_from_local("skill", "skills/foo.md", None);
+        let original = append_and_format_entry(&entry, &dir.path().join(MANIFEST_NAME)).unwrap();
+        assert_eq!(original, "");
+        let updated = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        assert!(updated.contains("skills/foo.md"));
+    }
+
+    // --- RollbackState tests ---
+
+    #[test]
+    fn rollback_restores_manifest_and_removes_lock_when_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join(MANIFEST_NAME);
+        let lock_path = dir.path().join("Skillfile.lock");
+        let original = "local  skill  skills/foo.md\n";
+        std::fs::write(&manifest_path, "corrupted content").unwrap();
+        // No lock file pre-existed.
+        std::fs::write(&lock_path, "some lock").unwrap();
+        let rb = RollbackState {
+            manifest_path: &manifest_path,
+            original_manifest: original,
+            lock_path: &lock_path,
+            original_lock: None,
+        };
+        rb.rollback("foo");
+        let restored = std::fs::read_to_string(&manifest_path).unwrap();
+        assert_eq!(restored, original);
+        assert!(
+            !lock_path.exists(),
+            "lock should be removed when original was None"
+        );
+    }
+
+    #[test]
+    fn rollback_restores_manifest_and_lock_when_some() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join(MANIFEST_NAME);
+        let lock_path = dir.path().join("Skillfile.lock");
+        let original_manifest = "local  skill  skills/bar.md\n";
+        let original_lock = "lock content\n";
+        std::fs::write(&manifest_path, "corrupted").unwrap();
+        std::fs::write(&lock_path, "new lock").unwrap();
+        let rb = RollbackState {
+            manifest_path: &manifest_path,
+            original_manifest,
+            lock_path: &lock_path,
+            original_lock: Some(original_lock.to_string()),
+        };
+        rb.rollback("bar");
+        assert_eq!(
+            std::fs::read_to_string(&manifest_path).unwrap(),
+            original_manifest
+        );
+        assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), original_lock);
+    }
+
+    // --- add_selected tests ---
+
+    #[test]
+    fn add_selected_single_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "");
+        let paths = vec!["skills/my-tool.md".to_string()];
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            no_interactive: true,
+        };
+        add_selected(&paths, &args, dir.path());
+        let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        assert!(text.contains("owner/repo"));
+        assert!(text.contains("skills/my-tool.md"));
+    }
+
+    #[test]
+    fn add_selected_multiple_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "");
+        let paths = vec!["skills/alpha.md".to_string(), "skills/beta.md".to_string()];
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            no_interactive: true,
+        };
+        add_selected(&paths, &args, dir.path());
+        let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        assert!(text.contains("skills/alpha.md"));
+        assert!(text.contains("skills/beta.md"));
+    }
+
+    #[test]
+    fn add_selected_skips_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        // Pre-populate with "alpha"
+        write_manifest(dir.path(), "github  skill  owner/repo  skills/alpha.md\n");
+        let paths = vec![
+            "skills/alpha.md".to_string(), // duplicate — will be skipped
+            "skills/gamma.md".to_string(),
+        ];
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            no_interactive: true,
+        };
+        add_selected(&paths, &args, dir.path());
+        let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        // gamma should have been added, alpha should still be there (not duplicated)
+        assert!(text.contains("skills/gamma.md"));
+        let alpha_count = text.matches("skills/alpha.md").count();
+        assert_eq!(alpha_count, 1, "alpha should appear exactly once");
+    }
 }
