@@ -1,9 +1,9 @@
 ---
 source: crates/cli/src/commands/add_tui.rs
-expression: buffer_text(terminal.backend().buffer())
+expression: "render_to_text(|f| draw(f, &mut app))"
 ---
  filter: zzz_nonexistent_  0/5
-┌ owner/repo ──────────────────┐┌ Preview ↑↓Tab ───────────────────────────────┐
+┌ owner/repo ──────────────────┐┌ Preview Tab/PgDn/C-d ────────────────────────┐
 │                              ││No entries match the filter.                  │
 │                              ││                                              │
 │                              ││                                              │

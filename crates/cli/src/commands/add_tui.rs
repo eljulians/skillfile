@@ -222,36 +222,16 @@ const SCROLL_STEP: u16 = 3;
 pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
     match key.code {
         KeyCode::Esc => app.cancelled = true,
-        KeyCode::Char('q') if app.filter.is_empty() => app.cancelled = true,
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.cancelled = true;
-        }
         KeyCode::Enter => handle_key_enter(app),
         KeyCode::Char(' ') => handle_key_space(app),
-        KeyCode::Char('a') if app.filter.is_empty() => handle_key_toggle_all(app),
-        KeyCode::Up | KeyCode::Char('k') if app.filter.is_empty() => {
-            move_selection(app, -1);
-        }
-        KeyCode::Down | KeyCode::Char('j') if app.filter.is_empty() => {
-            move_selection(app, 1);
-        }
-        KeyCode::Home | KeyCode::Char('g') if app.filter.is_empty() => {
-            handle_key_jump_top(app);
-        }
-        KeyCode::End | KeyCode::Char('G') if app.filter.is_empty() => {
-            handle_key_jump_bottom(app);
-        }
-        // Preview scroll: Tab down, Shift+Tab up
-        KeyCode::Tab => {
-            app.preview_scroll = app.preview_scroll.saturating_add(SCROLL_STEP);
-        }
-        KeyCode::BackTab => {
-            app.preview_scroll = app.preview_scroll.saturating_sub(SCROLL_STEP);
-        }
-        KeyCode::Char(c) => {
-            app.filter.push(c);
-            app.refilter();
-        }
+        KeyCode::Char(c) => handle_key_char(app, c, key.modifiers),
+        KeyCode::Up => move_selection(app, -1),
+        KeyCode::Down => move_selection(app, 1),
+        KeyCode::Home => handle_key_jump_top(app),
+        KeyCode::End => handle_key_jump_bottom(app),
+        // Preview scroll: Tab/PageDown down, Shift+Tab/PageUp up
+        KeyCode::Tab | KeyCode::PageDown => scroll_preview(app, 1),
+        KeyCode::BackTab | KeyCode::PageUp => scroll_preview(app, -1),
         KeyCode::Backspace => {
             app.filter.pop();
             app.refilter();
@@ -260,10 +240,43 @@ pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
     }
 }
 
+fn handle_key_char(app: &mut App<'_>, c: char, modifiers: KeyModifiers) {
+    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    if ctrl {
+        match c {
+            'c' => app.cancelled = true,
+            'd' => scroll_preview(app, 1),
+            'u' => scroll_preview(app, -1),
+            _ => {}
+        }
+        return;
+    }
+    match c {
+        'q' if app.filter.is_empty() => app.cancelled = true,
+        'a' if app.filter.is_empty() => handle_key_toggle_all(app),
+        'k' if app.filter.is_empty() => move_selection(app, -1),
+        'j' if app.filter.is_empty() => move_selection(app, 1),
+        'g' if app.filter.is_empty() => handle_key_jump_top(app),
+        'G' if app.filter.is_empty() => handle_key_jump_bottom(app),
+        _ => {
+            app.filter.push(c);
+            app.refilter();
+        }
+    }
+}
+
 /// Confirm current selections (Enter key). No-op if nothing selected.
 fn handle_key_enter(app: &mut App<'_>) {
     if !app.selected.is_empty() {
         app.confirmed = true;
+    }
+}
+
+fn scroll_preview(app: &mut App<'_>, direction: i32) {
+    if direction > 0 {
+        app.preview_scroll = app.preview_scroll.saturating_add(SCROLL_STEP);
+    } else {
+        app.preview_scroll = app.preview_scroll.saturating_sub(SCROLL_STEP);
     }
 }
 
@@ -346,7 +359,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
             Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
             Span::styled("a", Style::default().fg(Color::Cyan)),
             Span::styled(" all  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab", Style::default().fg(Color::Cyan)),
+            Span::styled("Tab/PgDn", Style::default().fg(Color::Cyan)),
             Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Enter", Style::default().fg(Color::Cyan)),
             Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
@@ -456,7 +469,7 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
     let scroll_hint = if app.preview_scroll > 0 {
         format!(" Preview (scroll: {}) ", app.preview_scroll)
     } else {
-        " Preview \u{2191}\u{2193}Tab ".to_string()
+        " Preview Tab/PgDn/C-d ".to_string()
     };
 
     let block = Block::default()
@@ -1145,6 +1158,44 @@ mod tests {
         let key = event::KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
         handle_key(&mut app, key);
         assert_eq!(app.preview_scroll, 0);
+    }
+
+    #[test]
+    fn page_down_scrolls_preview_down() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        let key = event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        handle_key(&mut app, key);
+        assert_eq!(app.preview_scroll, SCROLL_STEP);
+    }
+
+    #[test]
+    fn page_up_scrolls_preview_up() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        app.preview_scroll = 6;
+        let key = event::KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+        handle_key(&mut app, key);
+        assert_eq!(app.preview_scroll, 6 - SCROLL_STEP);
+    }
+
+    #[test]
+    fn ctrl_d_scrolls_preview_down() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        let key = event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        handle_key(&mut app, key);
+        assert_eq!(app.preview_scroll, SCROLL_STEP);
+    }
+
+    #[test]
+    fn ctrl_u_scrolls_preview_up() {
+        let items = sample_items();
+        let mut app = App::new(&items, "owner/repo", "main");
+        app.preview_scroll = 6;
+        let key = event::KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        handle_key(&mut app, key);
+        assert_eq!(app.preview_scroll, 6 - SCROLL_STEP);
     }
 
     #[test]

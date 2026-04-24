@@ -1,9 +1,9 @@
 ---
 source: crates/cli/src/commands/add_tui.rs
-expression: buffer_text(terminal.backend().buffer())
+expression: "render_to_text(|f| draw(f, &mut app))"
 ---
- Space toggle  a all  Tab scroll  Enter confirm  Esc cancel  5/5
-┌ owner/repo ──────────────────┐┌ Preview ↑↓Tab ───────────────────────────────┐
+ Space toggle  a all  Tab/PgDn scroll  Enter confirm  Esc cancel  5/5
+┌ owner/repo ──────────────────┐┌ Preview Tab/PgDn/C-d ────────────────────────┐
 │▶ ○ browser  📁   skills/      ││skills/browser                                │
 │  ○ code-review  📁   skills/  ││                                              │
 │  ○ commit  📁   skills/       ││○ Loading preview...                          │
