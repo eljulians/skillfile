@@ -404,7 +404,8 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     cliclack::outro(format!(
         "{outro}\n  \
          \u{2795} `skillfile add` to add a skill or agent\n  \
-         \u{1f50d} `skillfile search` to discover community skills"
+         \u{1f50d} `skillfile search` to discover community skills\n  \
+         \u{1f4ac} `skillfile completions <bash|zsh|fish>` for tab completion"
     ))?;
 
     Ok(())

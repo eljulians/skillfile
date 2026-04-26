@@ -148,6 +148,10 @@ print_success() {
             log "To make it permanent, add that line to your shell profile (~/.bashrc, ~/.zshrc, etc.)."
             ;;
     esac
+
+    log ""
+    log "Tip: enable tab completions with:"
+    log "  skillfile completions bash   # or zsh, fish, powershell"
 }
 
 has() {

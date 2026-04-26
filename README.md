@@ -49,6 +49,8 @@ skillfile add github skill anthropics/skills skills/    # or add directly
 
 That's it. Skills are fetched, locked to exact SHAs, and deployed. On a fresh clone, `skillfile install` reproduces the exact same setup.
 
+Optional: set up tab completion with `skillfile completions <bash|zsh|fish>` — see [Shell completions](#shell-completions) below.
+
 > Looking for skills to install? See [awesome-agents-and-skills](https://github.com/eljulians/awesome-agents-and-skills) for a curated collection with a ready-to-use Skillfile.
 
 ## Add skills from anywhere
