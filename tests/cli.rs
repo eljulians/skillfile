@@ -456,6 +456,287 @@ fn add_prints_no_targets_message_when_none_configured() {
     );
 }
 
+#[test]
+fn add_reports_only_targets_that_were_updated() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+    std::fs::write(dir.path().join("agents/test.md"), "# Test Agent\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         install  codex  local\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "agent", "agents/test.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Installed to: claude-code (local)"),
+        "should report the supported target, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Skipped: codex (local) [unsupported agent]"),
+        "should report skipped unsupported targets, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Installed to: claude-code (local), codex (local)"),
+        "must not claim unsupported targets were installed, got: {stdout}"
+    );
+    assert!(
+        !dir.path().join(".skillfile/tmp").exists(),
+        "successful add should not leave repo-local transaction scratch dirs behind"
+    );
+}
+
+#[test]
+fn add_reports_when_no_configured_platforms_were_updated() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+    std::fs::write(dir.path().join("agents/test.md"), "# Test Agent\n").unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "install  codex  local\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "agent", "agents/test.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No configured platforms were updated."),
+        "should report that all configured targets were skipped, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Skipped: codex (local) [unsupported agent]"),
+        "should explain why nothing was updated, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Installed to:"),
+        "must not print an install-success summary when nothing was updated, got: {stdout}"
+    );
+}
+
+#[test]
+fn add_missing_source_does_not_claim_install_success() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "skill", "skills/missing.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("No configured platforms were updated."),
+        "should not report install success when the source is missing, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Skipped: claude-code (local) [source missing]"),
+        "should summarize the skipped target, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Installed to:"),
+        "must not claim install success for a missing source, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("warning: source missing"),
+        "missing source warning should still be emitted, got: {stderr}"
+    );
+}
+
+#[test]
+fn add_rolls_back_when_install_target_path_is_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/test.md"), "# Test Skill\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".claude"), "not a directory\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "skill", "skills/test.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "command should fail when install target is blocked"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("Added:"),
+        "failed add must not print a success banner, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("Rolled back: removed 'test' from Skillfile"),
+        "rollback message should be emitted, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("failed to install 'test' to claude-code (local)"),
+        "install failure should be surfaced, got: {stderr}"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Skillfile")).unwrap(),
+        "install  claude-code  local\n"
+    );
+    assert!(
+        !dir.path().join("Skillfile.lock").exists(),
+        "lock file should be removed on rollback"
+    );
+    assert!(
+        !dir.path().join(".skillfile/cache/skills/test").exists(),
+        "cache dir should be removed on rollback"
+    );
+    assert!(
+        !dir.path().join(".skillfile/tmp").exists(),
+        "rollback should not leave repo-local transaction scratch dirs behind"
+    );
+}
+
+#[test]
+fn add_removes_earlier_platform_files_when_later_target_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/test.md"), "# Test Skill\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         install  cursor  local\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".cursor"), "not a directory\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "skill", "skills/test.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "command should fail when a later target is blocked"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("Added:"),
+        "rolled-back add must not print a success banner, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("Rolled back: removed 'test' from Skillfile"),
+        "rollback should still be announced, got: {stderr}"
+    );
+    assert!(
+        !dir.path().join(".claude/skills/test/SKILL.md").exists(),
+        "files written to earlier targets must be removed on rollback"
+    );
+    assert!(
+        !dir.path().join(".skillfile/tmp").exists(),
+        "rolled-back add should not leave repo-local transaction scratch dirs behind"
+    );
+}
+
+#[test]
+fn install_fails_when_nested_target_path_is_blocked_without_update() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/test.md"), "# Test Skill\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         local  skill  test  skills/test.md\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".claude"), "not a directory\n").unwrap();
+
+    let output = sf(dir.path())
+        .arg("install")
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "default install should fail when the target path is blocked"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to install 'test' to claude-code (local)"),
+        "install failure should be surfaced, got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("Done."),
+        "failed install must not report success, got: {stdout}"
+    );
+    assert!(
+        !dir.path().join(".claude/skills/test/SKILL.md").exists(),
+        "blocked install must not leave a deployed file behind"
+    );
+}
+
+#[test]
+fn install_cleans_up_partial_flat_write_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent_dir = dir.path().join("agents/core-dev");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("alpha.md"), "# Alpha\n").unwrap();
+    std::fs::write(agent_dir.join("beta.md"), "# Beta\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         local  agent  core-dev  agents/core-dev\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".claude/agents/alpha.md")).unwrap();
+
+    let output = sf(dir.path())
+        .arg("install")
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "install should fail when only part of a flat directory can be deployed"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to install 'core-dev' to claude-code (local)"),
+        "partial flat failure should be surfaced, got: {stderr}"
+    );
+    assert!(
+        dir.path().join(".claude/agents/alpha.md").is_dir(),
+        "the pre-existing blocking path should remain untouched"
+    );
+    assert!(
+        !dir.path().join(".claude/agents/beta.md").exists(),
+        "newly written files must be cleaned up after partial failure"
+    );
+}
+
 /// Local directory entries must be deployed as directories, not empty .md files.
 ///
 /// Regression test: is_dir_entry() only inspected GitHub path_in_repo and

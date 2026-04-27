@@ -1,16 +1,20 @@
 use std::io::IsTerminal;
-use std::path::Path;
-
-use skillfile_core::error::SkillfileError;
-use skillfile_core::lock::{read_lock, write_lock};
-use skillfile_core::models::{EntityType, Entry, SourceFields, DEFAULT_REF};
-use skillfile_core::parser::{infer_name, parse_manifest, MANIFEST_NAME};
-use skillfile_deploy::adapter::adapters;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::format::sorted_manifest_text;
-use skillfile_deploy::install::install_entry;
-use skillfile_sources::strategy::format_parts;
-use skillfile_sources::sync::{sync_entry, SyncContext};
+use skillfile_core::error::SkillfileError;
+use skillfile_core::lock::{read_lock, write_lock};
+use skillfile_core::models::{
+    EntityType, Entry, InstallTarget, Manifest, SourceFields, DEFAULT_REF,
+};
+use skillfile_core::parser::{infer_name, parse_manifest, MANIFEST_NAME};
+use skillfile_core::patch::walkdir;
+use skillfile_deploy::adapter::{adapters, AdapterScope, DirInstallMode};
+use skillfile_deploy::install::{install_entry_with_outcome, InstallOutcome, InstallSkipReason};
+use skillfile_deploy::paths::source_path;
+use skillfile_sources::strategy::{format_parts, is_dir_entry};
+use skillfile_sources::sync::{sync_entry, vendor_dir_for, SyncContext};
 
 fn format_line(entry: &Entry) -> String {
     let mut parts = vec![
@@ -21,37 +25,62 @@ fn format_line(entry: &Entry) -> String {
     parts.join("  ")
 }
 
+struct BackupCaptureCtx<'a> {
+    entry: &'a Entry,
+    manifest: &'a Manifest,
+    repo_root: &'a Path,
+}
+
+struct AddInstallCtx<'a, 'b> {
+    manifest: &'a Manifest,
+    rollback: &'a mut RollbackState,
+    repo_root: &'b Path,
+}
+
 fn sync_and_install(
     entry: &Entry,
-    repo_root: &Path,
-    manifest: &skillfile_core::models::Manifest,
-) -> Result<(), SkillfileError> {
-    let locked = read_lock(repo_root)?;
+    ctx: &mut AddInstallCtx<'_, '_>,
+) -> Result<InstallReport, SkillfileError> {
+    let locked = read_lock(ctx.repo_root)?;
     let client = skillfile_sources::http::UreqClient::new();
-    let mut ctx = SyncContext {
-        repo_root: repo_root.to_path_buf(),
+    let mut sync_ctx = SyncContext {
+        repo_root: ctx.repo_root.to_path_buf(),
         dry_run: false,
         update: false,
         sha_cache: std::collections::HashMap::new(),
         locked,
     };
-    sync_entry(&client, entry, &mut ctx)?;
-    write_lock(repo_root, &ctx.locked)?;
+    sync_entry(&client, entry, &mut sync_ctx)?;
+    write_lock(ctx.repo_root, &sync_ctx.locked)?;
+    let backup_ctx = BackupCaptureCtx {
+        entry,
+        manifest: ctx.manifest,
+        repo_root: ctx.repo_root,
+    };
+    ctx.rollback.capture_install_backups(&backup_ctx)?;
 
-    let all_adapters = adapters();
-    for target in &manifest.install_targets {
-        if all_adapters.contains(&target.adapter) {
-            install_entry(
-                entry,
-                target,
-                &skillfile_deploy::install::InstallCtx {
-                    repo_root,
-                    opts: None,
-                },
-            )?;
+    let mut report = InstallReport::default();
+    for target in &ctx.manifest.install_targets {
+        let outcome = install_entry_with_outcome(
+            entry,
+            target,
+            &skillfile_deploy::install::InstallCtx {
+                repo_root: ctx.repo_root,
+                opts: None,
+            },
+        )?;
+        let label = format!("{target}");
+        match outcome {
+            InstallOutcome::Installed => report.installed.push(label),
+            InstallOutcome::Skipped(reason) => {
+                report.skipped.push(format!(
+                    "{label} [{}]",
+                    skip_reason_text(reason, entry.entity_type)
+                ));
+            }
         }
     }
-    Ok(())
+    Ok(report)
 }
 
 pub struct GithubEntryArgs<'a> {
@@ -198,25 +227,274 @@ fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
     );
 }
 
-struct RollbackState<'a> {
-    manifest_path: &'a Path,
-    original_manifest: &'a str,
-    lock_path: &'a Path,
-    original_lock: Option<String>,
+#[derive(Default)]
+struct InstallReport {
+    installed: Vec<String>,
+    skipped: Vec<String>,
 }
 
-impl RollbackState<'_> {
-    fn rollback(&self, entry_name: &str) {
-        let _ = std::fs::write(self.manifest_path, self.original_manifest);
+impl InstallReport {
+    fn print(&self) {
+        if self.installed.is_empty() {
+            println!("No configured platforms were updated.");
+        } else {
+            println!("Installed to: {}", self.installed.join(", "));
+        }
+        if !self.skipped.is_empty() {
+            println!("Skipped: {}", self.skipped.join(", "));
+        }
+    }
+}
+
+fn skip_reason_text(reason: InstallSkipReason, entity_type: EntityType) -> String {
+    match reason {
+        InstallSkipReason::UnknownAdapter => "unknown platform".to_string(),
+        InstallSkipReason::UnsupportedEntity => format!("unsupported {entity_type}"),
+        InstallSkipReason::MissingSource => "source missing".to_string(),
+        InstallSkipReason::NothingDeployed => "nothing updated".to_string(),
+        InstallSkipReason::DryRun => "dry-run".to_string(),
+    }
+}
+
+struct PathBackup {
+    live_path: PathBuf,
+    snapshot_path: Option<PathBuf>,
+}
+
+#[derive(Default)]
+struct InstallBackups {
+    scratch_dir: Option<PathBuf>,
+    paths: Vec<PathBackup>,
+}
+
+impl Drop for InstallBackups {
+    fn drop(&mut self) {
+        if let Some(path) = &self.scratch_dir {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn remove_path(path: &Path) -> Result<(), SkillfileError> {
+    if !(path.exists() || path.is_symlink()) {
+        return Ok(());
+    }
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<(), SkillfileError> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&source_path, &dest_path)?;
+        } else {
+            std::fs::copy(source_path, dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_path(source: &Path, dest: &Path) -> Result<(), SkillfileError> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if source.is_dir() {
+        copy_dir_recursive(source, dest)?;
+    } else {
+        std::fs::copy(source, dest)?;
+    }
+    Ok(())
+}
+
+fn backup_scratch_dir() -> Result<PathBuf, SkillfileError> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| SkillfileError::Install(format!("clock error: {error}")))?
+        .as_nanos();
+    let scratch_dir = std::env::temp_dir()
+        .join("skillfile")
+        .join(format!("add-rollback-{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&scratch_dir)?;
+    Ok(scratch_dir)
+}
+
+fn capture_path_backup(
+    path: &Path,
+    scratch_dir: &Path,
+    index: usize,
+) -> Result<PathBackup, SkillfileError> {
+    let snapshot_path = if path.exists() || path.is_symlink() {
+        let snapshot_path = scratch_dir.join(index.to_string());
+        copy_path(path, &snapshot_path)?;
+        Some(snapshot_path)
+    } else {
+        None
+    };
+    Ok(PathBackup {
+        live_path: path.to_path_buf(),
+        snapshot_path,
+    })
+}
+
+fn flat_backup_roots(source: &Path, target_dir: &Path) -> Vec<PathBuf> {
+    walkdir(source)
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .filter_map(|path| path.file_name().map(|name| target_dir.join(name)))
+        .collect()
+}
+
+fn restore_path_backup(backup: &PathBackup) -> Result<(), SkillfileError> {
+    remove_path(&backup.live_path)?;
+    let Some(snapshot_path) = &backup.snapshot_path else {
+        return Ok(());
+    };
+    copy_path(snapshot_path, &backup.live_path)
+}
+
+fn target_backup_roots(entry: &Entry, target: &InstallTarget, repo_root: &Path) -> Vec<PathBuf> {
+    let Some(adapter) = adapters().get(&target.adapter) else {
+        return Vec::new();
+    };
+    if !adapter.supports(entry.entity_type) {
+        return Vec::new();
+    }
+    let Some(source) = source_path(entry, repo_root).filter(|path| path.exists()) else {
+        return Vec::new();
+    };
+
+    let scope = AdapterScope {
+        scope: target.scope,
+        repo_root,
+    };
+    let target_dir = adapter.target_dir(entry.entity_type, &scope);
+    if !is_dir_entry(entry) && !source.is_dir() {
+        return vec![adapter.installed_path(entry, &scope)];
+    }
+
+    if adapter.dir_mode(entry.entity_type) == Some(DirInstallMode::Flat) {
+        return flat_backup_roots(&source, &target_dir);
+    }
+
+    vec![target_dir.join(&entry.name)]
+}
+
+impl InstallBackups {
+    fn capture(&mut self, ctx: &BackupCaptureCtx<'_>) -> Result<(), SkillfileError> {
+        let mut roots = Vec::new();
+        for target in &ctx.manifest.install_targets {
+            roots.extend(target_backup_roots(ctx.entry, target, ctx.repo_root));
+        }
+        if roots.is_empty() {
+            return Ok(());
+        }
+
+        let scratch_dir = backup_scratch_dir()?;
+        self.scratch_dir = Some(scratch_dir.clone());
+        let mut seen = std::collections::HashSet::new();
+        roots.retain(|root| seen.insert(root.clone()));
+        for root in roots {
+            let backup = capture_path_backup(&root, &scratch_dir, self.paths.len())?;
+            self.paths.push(backup);
+        }
+        Ok(())
+    }
+
+    fn restore(&self) -> Result<(), SkillfileError> {
+        for backup in self.paths.iter().rev() {
+            restore_path_backup(backup)?;
+        }
+        Ok(())
+    }
+}
+
+fn record_io_result(errors: &mut Vec<String>, label: &str, result: std::io::Result<()>) {
+    if let Err(error) = result {
+        errors.push(format!("{label}: {error}"));
+    }
+}
+
+struct RollbackState {
+    manifest_path: PathBuf,
+    original_manifest: String,
+    lock_path: PathBuf,
+    original_lock: Option<String>,
+    cache_dir: PathBuf,
+    install_backups: InstallBackups,
+}
+
+impl RollbackState {
+    fn capture_install_backups(
+        &mut self,
+        ctx: &BackupCaptureCtx<'_>,
+    ) -> Result<(), SkillfileError> {
+        self.install_backups.capture(ctx)
+    }
+
+    fn rollback(&self, entry_name: &str) -> Result<(), SkillfileError> {
+        let mut errors = Vec::new();
+
+        if let Err(error) = self.install_backups.restore() {
+            errors.push(format!("restore installed files: {error}"));
+        }
+        record_io_result(
+            &mut errors,
+            &format!("restore {MANIFEST_NAME}"),
+            std::fs::write(&self.manifest_path, &self.original_manifest),
+        );
         match &self.original_lock {
-            None => {
-                let _ = std::fs::remove_file(self.lock_path);
-            }
-            Some(text) => {
-                let _ = std::fs::write(self.lock_path, text);
-            }
+            None if !self.lock_path.exists() => {}
+            None => record_io_result(
+                &mut errors,
+                "remove Skillfile.lock",
+                std::fs::remove_file(&self.lock_path),
+            ),
+            Some(text) => record_io_result(
+                &mut errors,
+                "restore Skillfile.lock",
+                std::fs::write(&self.lock_path, text),
+            ),
+        }
+        if self.cache_dir.exists() {
+            record_io_result(
+                &mut errors,
+                "remove cache dir",
+                std::fs::remove_dir_all(&self.cache_dir),
+            );
+        }
+
+        if !errors.is_empty() {
+            return Err(SkillfileError::Install(errors.join("; ")));
         }
         eprintln!("Rolled back: removed '{entry_name}' from {MANIFEST_NAME}");
+        Ok(())
+    }
+}
+
+fn finish_add_install(
+    entry_name: &str,
+    rollback: &RollbackState,
+    result: Result<InstallReport, SkillfileError>,
+) -> Result<InstallReport, SkillfileError> {
+    match result {
+        Ok(report) => Ok(report),
+        Err(original_error) => {
+            if let Err(rollback_error) = rollback.rollback(entry_name) {
+                return Err(SkillfileError::Install(format!(
+                    "failed to install '{entry_name}' and rollback also failed: {rollback_error}; \
+                     repository may need manual cleanup (original error: {original_error})"
+                )));
+            }
+            Err(original_error)
+        }
     }
 }
 
@@ -258,38 +536,38 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
 
     let line = format_line(entry);
     let original_manifest = append_and_format_entry(entry, &manifest_path)?;
-    println!("Added: {line}");
 
     let result = parse_manifest(&manifest_path)?;
     if result.manifest.install_targets.is_empty() {
+        println!("Added: {line}");
         println!("No install targets configured yet. Run `skillfile init` to pick platforms.");
         return Ok(());
     }
 
     let lock_path = repo_root.join("Skillfile.lock");
-    let rb = RollbackState {
-        manifest_path: &manifest_path,
-        original_manifest: &original_manifest,
-        lock_path: &lock_path,
+    let mut rb = RollbackState {
+        manifest_path: manifest_path.clone(),
+        original_manifest,
         original_lock: lock_path
             .exists()
             .then(|| std::fs::read_to_string(&lock_path))
             .transpose()?,
+        lock_path,
+        cache_dir: vendor_dir_for(entry, repo_root),
+        install_backups: InstallBackups::default(),
     };
+    let sync_result = {
+        let mut install_ctx = AddInstallCtx {
+            manifest: &result.manifest,
+            rollback: &mut rb,
+            repo_root,
+        };
+        sync_and_install(entry, &mut install_ctx)
+    };
+    let report = finish_add_install(&entry.name, &rb, sync_result)?;
 
-    if let Err(e) = sync_and_install(entry, repo_root, &result.manifest) {
-        rb.rollback(&entry.name);
-        return Err(e);
-    }
-
-    let target_list = result
-        .manifest
-        .install_targets
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    println!("Installed to: {target_list}");
+    println!("Added: {line}");
+    report.print();
     Ok(())
 }
 
@@ -761,22 +1039,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join(MANIFEST_NAME);
         let lock_path = dir.path().join("Skillfile.lock");
+        let cache_dir = dir.path().join(".skillfile/cache/skills/foo");
         let original = "local  skill  skills/foo.md\n";
         std::fs::write(&manifest_path, "corrupted content").unwrap();
         // No lock file pre-existed.
         std::fs::write(&lock_path, "some lock").unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("foo.md"), "cached").unwrap();
         let rb = RollbackState {
-            manifest_path: &manifest_path,
-            original_manifest: original,
-            lock_path: &lock_path,
+            manifest_path,
+            original_manifest: original.to_string(),
+            lock_path,
             original_lock: None,
+            cache_dir: cache_dir.clone(),
+            install_backups: InstallBackups::default(),
         };
-        rb.rollback("foo");
-        let restored = std::fs::read_to_string(&manifest_path).unwrap();
+        rb.rollback("foo").unwrap();
+        let restored = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert_eq!(restored, original);
         assert!(
-            !lock_path.exists(),
+            !dir.path().join("Skillfile.lock").exists(),
             "lock should be removed when original was None"
+        );
+        assert!(
+            !cache_dir.exists(),
+            "cache dir should be removed on rollback"
         );
     }
 
@@ -785,22 +1072,96 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join(MANIFEST_NAME);
         let lock_path = dir.path().join("Skillfile.lock");
+        let cache_dir = dir.path().join(".skillfile/cache/skills/bar");
         let original_manifest = "local  skill  skills/bar.md\n";
         let original_lock = "lock content\n";
         std::fs::write(&manifest_path, "corrupted").unwrap();
         std::fs::write(&lock_path, "new lock").unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
         let rb = RollbackState {
-            manifest_path: &manifest_path,
-            original_manifest,
-            lock_path: &lock_path,
+            manifest_path,
+            original_manifest: original_manifest.to_string(),
+            lock_path,
             original_lock: Some(original_lock.to_string()),
+            cache_dir: cache_dir.clone(),
+            install_backups: InstallBackups::default(),
         };
-        rb.rollback("bar");
+        rb.rollback("bar").unwrap();
         assert_eq!(
-            std::fs::read_to_string(&manifest_path).unwrap(),
+            std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap(),
             original_manifest
         );
-        assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), original_lock);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Skillfile.lock")).unwrap(),
+            original_lock
+        );
+        assert!(
+            !cache_dir.exists(),
+            "cache dir should be removed on rollback"
+        );
+    }
+
+    #[test]
+    fn rollback_returns_error_when_manifest_restore_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join(MANIFEST_NAME);
+        std::fs::create_dir_all(&manifest_path).unwrap();
+        let rb = RollbackState {
+            manifest_path,
+            original_manifest: "local  skill  skills/baz.md\n".to_string(),
+            lock_path: dir.path().join("Skillfile.lock"),
+            original_lock: None,
+            cache_dir: dir.path().join(".skillfile/cache/skills/baz"),
+            install_backups: InstallBackups::default(),
+        };
+        let result = rb.rollback("baz");
+        assert!(matches!(result, Err(SkillfileError::Install(message)) if
+            message.contains("restore Skillfile")));
+    }
+
+    #[test]
+    fn install_backups_restore_removes_new_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_path = dir.path().join(".claude/skills/foo");
+        let scratch_dir = backup_scratch_dir().unwrap();
+        let backup = capture_path_backup(&target_path, &scratch_dir, 0).unwrap();
+        let backups = InstallBackups {
+            scratch_dir: Some(scratch_dir),
+            paths: vec![backup],
+        };
+
+        std::fs::create_dir_all(&target_path).unwrap();
+        std::fs::write(target_path.join("SKILL.md"), "# New\n").unwrap();
+
+        backups.restore().unwrap();
+        assert!(
+            !target_path.exists(),
+            "rollback should remove paths that were absent before add"
+        );
+    }
+
+    #[test]
+    fn install_backups_restore_previous_directory_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_path = dir.path().join(".claude/skills/foo");
+        std::fs::create_dir_all(&target_path).unwrap();
+        std::fs::write(target_path.join("SKILL.md"), "# Old\n").unwrap();
+        let scratch_dir = backup_scratch_dir().unwrap();
+        let backup = capture_path_backup(&target_path, &scratch_dir, 0).unwrap();
+        let backups = InstallBackups {
+            scratch_dir: Some(scratch_dir),
+            paths: vec![backup],
+        };
+
+        std::fs::remove_dir_all(&target_path).unwrap();
+        std::fs::create_dir_all(&target_path).unwrap();
+        std::fs::write(target_path.join("SKILL.md"), "# New\n").unwrap();
+
+        backups.restore().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target_path.join("SKILL.md")).unwrap(),
+            "# Old\n"
+        );
     }
 
     // --- add_selected tests ---

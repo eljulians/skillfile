@@ -332,23 +332,25 @@ fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> D
         return HashMap::new();
     }
 
-    std::fs::create_dir_all(target_dir).ok();
+    if std::fs::create_dir_all(target_dir).is_err() {
+        return HashMap::new();
+    }
     let mut result = HashMap::new();
     for src in &md_files {
         let Some(name) = src.file_name() else {
             continue;
         };
         let dest = target_dir.join(name);
-        if !opts.overwrite && dest.is_file() {
+        if !place_file(
+            &PlaceOp {
+                source: src,
+                dest: &dest,
+                is_dir: false,
+            },
+            opts,
+        ) {
             continue;
         }
-        if dest.exists() {
-            std::fs::remove_file(&dest).ok();
-        }
-        if std::fs::copy(src, &dest).is_err() {
-            continue;
-        }
-        progress!("  {} -> {}", name.to_string_lossy(), dest.display());
         if let Ok(rel) = src.strip_prefix(source_dir) {
             result.insert(forward_slash(rel), dest);
         }
@@ -362,14 +364,37 @@ struct PlaceOp<'a> {
     is_dir: bool,
 }
 
+fn remove_existing_path(path: &Path) -> std::io::Result<()> {
+    if !(path.exists() || path.is_symlink()) {
+        return Ok(());
+    }
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+fn cleanup_failed_path(path: &Path) {
+    let _ = remove_existing_path(path);
+}
+
+fn copy_to_destination(op: &PlaceOp<'_>) -> std::io::Result<()> {
+    if let Some(parent) = op.dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    remove_existing_path(op.dest)?;
+    if op.is_dir {
+        copy_dir_recursive(op.source, op.dest)
+    } else {
+        std::fs::copy(op.source, op.dest).map(|_| ())
+    }
+}
+
 fn place_file(op: &PlaceOp<'_>, opts: &InstallOptions) -> bool {
-    if !opts.overwrite && !opts.dry_run {
-        if op.is_dir && op.dest.is_dir() {
-            return false;
-        }
-        if !op.is_dir && op.dest.is_file() {
-            return false;
-        }
+    if !opts.overwrite && !opts.dry_run && (op.dest.exists() || op.dest.is_symlink()) {
+        return false;
     }
 
     let label = format!(
@@ -383,23 +408,9 @@ fn place_file(op: &PlaceOp<'_>, opts: &InstallOptions) -> bool {
         return true;
     }
 
-    if let Some(parent) = op.dest.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-
-    // Remove existing
-    if op.dest.exists() || op.dest.is_symlink() {
-        if op.dest.is_dir() {
-            std::fs::remove_dir_all(op.dest).ok();
-        } else {
-            std::fs::remove_file(op.dest).ok();
-        }
-    }
-
-    if op.is_dir {
-        copy_dir_recursive(op.source, op.dest).ok();
-    } else {
-        std::fs::copy(op.source, op.dest).ok();
+    if copy_to_destination(op).is_err() {
+        cleanup_failed_path(op.dest);
+        return false;
     }
 
     progress!("{label}");

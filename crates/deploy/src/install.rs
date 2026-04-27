@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use skillfile_core::conflict::{read_conflict, write_conflict};
@@ -16,7 +16,7 @@ use skillfile_core::progress;
 use skillfile_sources::strategy::{content_file, is_dir_entry};
 use skillfile_sources::sync::{cmd_sync, vendor_dir_for};
 
-use crate::adapter::{adapters, DeployRequest};
+use crate::adapter::{adapters, AdapterScope, DeployRequest, DirInstallMode, PlatformAdapter};
 use crate::paths::{installed_dir_files, installed_path, source_path};
 
 // ---------------------------------------------------------------------------
@@ -311,33 +311,220 @@ pub struct InstallCtx<'a> {
     pub opts: Option<&'a InstallOptions>,
 }
 
-/// Returns `Err(PatchConflict)` if a stored patch fails to apply cleanly.
+/// Why an install target was skipped instead of being updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallSkipReason {
+    UnknownAdapter,
+    UnsupportedEntity,
+    MissingSource,
+    NothingDeployed,
+    DryRun,
+}
+
+/// Outcome of attempting to deploy one entry to one install target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallOutcome {
+    Installed,
+    Skipped(InstallSkipReason),
+}
+
 pub fn install_entry(
     entry: &Entry,
     target: &InstallTarget,
     ctx: &InstallCtx<'_>,
 ) -> Result<(), SkillfileError> {
+    let _ = install_entry_with_outcome(entry, target, ctx)?;
+    Ok(())
+}
+
+fn install_failure(entry: &Entry, target: &InstallTarget, detail: &str) -> SkillfileError {
+    SkillfileError::Install(format!(
+        "failed to install '{}' to {target}: {detail}",
+        entry.name
+    ))
+}
+
+fn forward_slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+struct InstallValidationCtx<'a> {
+    entry: &'a Entry,
+    target: &'a InstallTarget,
+    repo_root: &'a Path,
+    source: &'a Path,
+    adapter: &'a dyn PlatformAdapter,
+    is_dir: bool,
+    opts: &'a InstallOptions,
+}
+
+struct InstallPlan {
+    expected: HashMap<String, PathBuf>,
+    existing_before: HashSet<String>,
+}
+
+struct ValidatedInstall {
+    installed: HashMap<String, PathBuf>,
+    outcome: InstallOutcome,
+}
+
+fn flat_expected_paths(source: &Path, target_dir: &Path) -> HashMap<String, PathBuf> {
+    walkdir(source)
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .filter_map(|path| {
+            let rel = path.strip_prefix(source).ok()?;
+            let name = path.file_name()?;
+            Some((forward_slash(rel), target_dir.join(name)))
+        })
+        .collect()
+}
+
+fn nested_expected_paths(source: &Path, dest_root: &Path) -> HashMap<String, PathBuf> {
+    walkdir(source)
+        .into_iter()
+        .filter(|path| path.file_name().is_none_or(|name| name != ".meta"))
+        .filter_map(|path| {
+            let rel = path.strip_prefix(source).ok()?;
+            Some((forward_slash(rel), dest_root.join(rel)))
+        })
+        .collect()
+}
+
+fn planned_install_paths(ctx: &InstallValidationCtx<'_>) -> HashMap<String, PathBuf> {
+    let scope = AdapterScope {
+        scope: ctx.target.scope,
+        repo_root: ctx.repo_root,
+    };
+    let target_dir = ctx.adapter.target_dir(ctx.entry.entity_type, &scope);
+    if !ctx.is_dir {
+        let key = format!("{}.md", ctx.entry.name);
+        return HashMap::from([(key, ctx.adapter.installed_path(ctx.entry, &scope))]);
+    }
+
+    match ctx.adapter.dir_mode(ctx.entry.entity_type) {
+        Some(DirInstallMode::Flat) => flat_expected_paths(ctx.source, &target_dir),
+        _ => nested_expected_paths(ctx.source, &target_dir.join(&ctx.entry.name)),
+    }
+}
+
+fn build_install_plan(ctx: &InstallValidationCtx<'_>) -> InstallPlan {
+    let expected = planned_install_paths(ctx);
+    let existing_before = expected
+        .iter()
+        .filter_map(|(key, path)| path.is_file().then_some(key.clone()))
+        .collect();
+    InstallPlan {
+        expected,
+        existing_before,
+    }
+}
+
+fn cleanup_created_files(plan: &InstallPlan, installed: &HashMap<String, PathBuf>) {
+    for (key, path) in installed {
+        if plan.existing_before.contains(key) {
+            continue;
+        }
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn validate_installed_files(
+    ctx: &InstallValidationCtx<'_>,
+    plan: &InstallPlan,
+    installed: HashMap<String, PathBuf>,
+) -> Result<ValidatedInstall, SkillfileError> {
+    let reported_count = installed.len();
+    let existing = installed
+        .into_iter()
+        .filter(|(_, path)| path.is_file())
+        .collect::<HashMap<_, _>>();
+
+    if existing.len() != reported_count {
+        return Err(install_failure(
+            ctx.entry,
+            ctx.target,
+            "adapter reported installed files that do not exist on disk",
+        ));
+    }
+
+    let expected = plan.expected.len();
+    if expected == 0 {
+        return Ok(ValidatedInstall {
+            installed: existing,
+            outcome: InstallOutcome::Skipped(InstallSkipReason::NothingDeployed),
+        });
+    }
+
+    let present = plan.expected.values().filter(|path| path.is_file()).count();
+    if present == 0 {
+        cleanup_created_files(plan, &existing);
+        return Err(install_failure(
+            ctx.entry,
+            ctx.target,
+            "no files were written to the target platform directory",
+        ));
+    }
+
+    if present < expected {
+        cleanup_created_files(plan, &existing);
+        return Err(install_failure(
+            ctx.entry,
+            ctx.target,
+            &format!("only {present} of {expected} expected file(s) were written"),
+        ));
+    }
+
+    let outcome = if ctx.opts.overwrite || plan.existing_before.len() != expected {
+        InstallOutcome::Installed
+    } else {
+        InstallOutcome::Skipped(InstallSkipReason::NothingDeployed)
+    };
+    Ok(ValidatedInstall {
+        installed: existing,
+        outcome,
+    })
+}
+
+/// Returns `Err(PatchConflict)` if a stored patch fails to apply cleanly.
+pub fn install_entry_with_outcome(
+    entry: &Entry,
+    target: &InstallTarget,
+    ctx: &InstallCtx<'_>,
+) -> Result<InstallOutcome, SkillfileError> {
     let default_opts = InstallOptions::default();
     let opts = ctx.opts.unwrap_or(&default_opts);
 
     let all_adapters = adapters();
     let Some(adapter) = all_adapters.get(&target.adapter) else {
-        return Ok(());
+        return Ok(InstallOutcome::Skipped(InstallSkipReason::UnknownAdapter));
     };
 
     if !adapter.supports(entry.entity_type) {
-        return Ok(());
+        return Ok(InstallOutcome::Skipped(
+            InstallSkipReason::UnsupportedEntity,
+        ));
     }
 
     let source = match source_path(entry, ctx.repo_root) {
         Some(p) if p.exists() => p,
         _ => {
             eprintln!("  warning: source missing for {}, skipping", entry.name);
-            return Ok(());
+            return Ok(InstallOutcome::Skipped(InstallSkipReason::MissingSource));
         }
     };
 
     let is_dir = is_dir_entry(entry) || source.is_dir();
+    let validation_ctx = InstallValidationCtx {
+        entry,
+        target,
+        repo_root: ctx.repo_root,
+        source: &source,
+        adapter,
+        is_dir,
+        opts,
+    };
+    let plan = build_install_plan(&validation_ctx);
     let installed = adapter.deploy_entry(&DeployRequest {
         entry,
         source: &source,
@@ -346,8 +533,12 @@ pub fn install_entry(
         opts,
     });
 
-    if installed.is_empty() || opts.dry_run {
-        return Ok(());
+    if opts.dry_run {
+        return Ok(InstallOutcome::Skipped(InstallSkipReason::DryRun));
+    }
+    let validated = validate_installed_files(&validation_ctx, &plan, installed)?;
+    if let InstallOutcome::Skipped(reason) = validated.outcome {
+        return Ok(InstallOutcome::Skipped(reason));
     }
 
     let patch_ctx = PatchCtx {
@@ -355,15 +546,15 @@ pub fn install_entry(
         repo_root: ctx.repo_root,
     };
     if is_dir {
-        apply_dir_patches(&patch_ctx, &installed, &source)?;
+        apply_dir_patches(&patch_ctx, &validated.installed, &source)?;
     } else {
         let key = format!("{}.md", entry.name);
-        if let Some(dest) = installed.get(&key) {
+        if let Some(dest) = validated.installed.get(&key) {
             apply_single_file_patch(&patch_ctx, dest, &source)?;
         }
     }
 
-    Ok(())
+    Ok(InstallOutcome::Installed)
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +922,7 @@ mod tests {
 
         let entry = make_local_entry("my-skill", "skills/my-skill.md");
         let target = make_target("claude-code", Scope::Local);
-        install_entry(
+        let outcome = install_entry_with_outcome(
             &entry,
             &target,
             &InstallCtx {
@@ -740,6 +931,7 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(outcome, InstallOutcome::Installed);
 
         let dest = dir.path().join(".claude/skills/my-skill/SKILL.md");
         assert!(dest.exists());
@@ -798,7 +990,7 @@ mod tests {
             dry_run: true,
             ..Default::default()
         };
-        install_entry(
+        let outcome = install_entry_with_outcome(
             &entry,
             &target,
             &InstallCtx {
@@ -807,6 +999,7 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(outcome, InstallOutcome::Skipped(InstallSkipReason::DryRun));
 
         let dest = dir.path().join(".claude/skills/my-skill/SKILL.md");
         assert!(!dest.exists());
@@ -949,8 +1142,7 @@ mod tests {
         let entry = make_agent_entry("my-agent");
         let target = make_target("claude-code", Scope::Local);
 
-        // Should return Ok without error — just a warning
-        install_entry(
+        let outcome = install_entry_with_outcome(
             &entry,
             &target,
             &InstallCtx {
@@ -959,6 +1151,59 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(
+            outcome,
+            InstallOutcome::Skipped(InstallSkipReason::MissingSource)
+        );
+    }
+
+    #[test]
+    fn install_entry_unknown_adapter_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("skills/my-skill.md");
+        std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+        std::fs::write(&source_file, "# My Skill").unwrap();
+
+        let entry = make_local_entry("my-skill", "skills/my-skill.md");
+        let target = make_target("unknown-adapter", Scope::Local);
+        let outcome = install_entry_with_outcome(
+            &entry,
+            &target,
+            &InstallCtx {
+                repo_root: dir.path(),
+                opts: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            InstallOutcome::Skipped(InstallSkipReason::UnknownAdapter)
+        );
+    }
+
+    #[test]
+    fn install_entry_errors_when_target_path_is_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("skills/my-skill.md");
+        std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+        std::fs::write(&source_file, "# My Skill").unwrap();
+        std::fs::write(dir.path().join(".claude"), "not a directory").unwrap();
+
+        let entry = make_local_entry("my-skill", "skills/my-skill.md");
+        let target = make_target("claude-code", Scope::Local);
+        let result = install_entry(
+            &entry,
+            &target,
+            &InstallCtx {
+                repo_root: dir.path(),
+                opts: None,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(SkillfileError::Install(message))
+                if message.contains("failed to install 'my-skill' to claude-code (local)")
+        ));
     }
 
     // -- Patch application during install --
@@ -1106,7 +1351,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let entry = make_agent_entry("my-agent");
         let target = make_target("codex", Scope::Local);
-        install_entry(
+        let outcome = install_entry_with_outcome(
             &entry,
             &target,
             &InstallCtx {
@@ -1115,6 +1360,10 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(
+            outcome,
+            InstallOutcome::Skipped(InstallSkipReason::UnsupportedEntity)
+        );
 
         assert!(!dir.path().join(".codex").exists());
     }
