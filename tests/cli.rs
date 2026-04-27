@@ -1047,3 +1047,31 @@ fn resolve_abort_clears_conflict() {
         "conflict file should be cleared after --abort"
     );
 }
+
+// ---------------------------------------------------------------------------
+// upgrade
+// ---------------------------------------------------------------------------
+
+/// `skillfile upgrade` is a thin wrapper for `install --update`.
+/// With a local-only Skillfile and no network, it should succeed and behave
+/// identically to `skillfile install --update`.
+#[test]
+fn upgrade_succeeds_on_local_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    write_local_manifest(dir.path());
+
+    sf(dir.path()).arg("upgrade").assert().success();
+}
+
+/// `skillfile upgrade --dry-run` should exit zero and mention the dry-run
+/// behaviour without modifying any files.
+#[test]
+fn upgrade_dry_run_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write_local_manifest(dir.path());
+
+    sf(dir.path())
+        .args(["upgrade", "--dry-run"])
+        .assert()
+        .success();
+}

@@ -124,8 +124,23 @@ Examples:
     },
 
     // -- Workflow (display_order 20-29) ---------------------------------------
-    /// Fetch entries and deploy to platform directories
+    /// Re-resolve all refs, update the lock, and redeploy
     #[command(display_order = 20)]
+    #[command(long_about = "\
+Re-resolve all entry refs, update Skillfile.lock to the latest SHAs, and
+redeploy to all configured platforms. Equivalent to `install --update`.
+
+Examples:
+  skillfile upgrade
+  skillfile upgrade --dry-run")]
+    Upgrade {
+        /// Show planned actions without fetching or installing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Fetch entries and deploy to platform directories
+    #[command(display_order = 21)]
     #[command(long_about = "\
 Fetch all entries into .skillfile/cache/ and deploy them to the directories
 expected by each configured platform.
@@ -147,7 +162,7 @@ Examples:
     },
 
     /// Fetch entries into .skillfile/cache/ without deploying
-    #[command(display_order = 21)]
+    #[command(display_order = 22)]
     #[command(long_about = "\
 Fetch community entries into .skillfile/cache/ and update Skillfile.lock,
 but do not deploy to platform directories. Useful for reviewing changes
@@ -171,7 +186,7 @@ Examples:
     },
 
     /// Show state of all entries
-    #[command(display_order = 22)]
+    #[command(display_order = 23)]
     #[command(long_about = "\
 Show the state of every entry: locked, unlocked, pinned, or missing.
 
@@ -188,7 +203,7 @@ Examples:
     },
 
     /// Show detailed information about a single entry
-    #[command(display_order = 23)]
+    #[command(display_order = 24)]
     #[command(long_about = "\
 Display all known information about a single entry: source, lock state,
 pin state, modified state, installed paths across all targets, and cache path.
@@ -204,9 +219,9 @@ Examples:
         name: String,
     },
 
-    // -- Discovery (display_order 25-29) ----------------------------------------
+    // -- Discovery (display_order 26-29) ----------------------------------------
     /// Search community registries and add skills interactively
-    #[command(display_order = 25)]
+    #[command(display_order = 26)]
     #[command(long_about = "\
 Search community registries for skills and agents.
 
@@ -527,6 +542,7 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
             commands::status::cmd_status(repo_root, check_upstream)
         }
         Command::Init => commands::init::cmd_init(repo_root),
+        Command::Upgrade { dry_run } => run_install(repo_root, dry_run, true),
         Command::Install { dry_run, update } => run_install(repo_root, dry_run, update),
         Command::Add {
             source: Some(source),
