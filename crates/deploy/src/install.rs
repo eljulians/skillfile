@@ -389,7 +389,16 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
     let Ok(metadata) = std::fs::symlink_metadata(path) else {
         return Ok(());
     };
-    if metadata.file_type().is_dir() {
+    let file_type = metadata.file_type();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt as _;
+
+        if file_type.is_symlink_dir() {
+            return std::fs::remove_dir(path);
+        }
+    }
+    if file_type.is_dir() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
