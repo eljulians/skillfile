@@ -71,8 +71,7 @@ fn no_args_exits_nonzero() {
 #[test]
 fn github_auth_test_detects_config_file_token() {
     let dir = tempfile::tempdir().unwrap();
-    let config_root = dir.path().join("config-root");
-    let config_path = config_root.join("skillfile").join("config.toml");
+    let config_path = dir.path().join("config.toml");
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     std::fs::write(&config_path, "github_token = \"ghp_from_config\"\n").unwrap();
 
@@ -80,9 +79,7 @@ fn github_auth_test_detects_config_file_token() {
         .arg("__github-auth-test")
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_TOKEN")
-        .env("XDG_CONFIG_HOME", &config_root)
-        .env("HOME", &config_root)
-        .env("APPDATA", &config_root)
+        .env("SKILLFILE_CONFIG_PATH", &config_path)
         .env("PATH", fake_gh_path(dir.path()))
         .assert()
         .success()
