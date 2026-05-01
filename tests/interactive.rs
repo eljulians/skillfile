@@ -27,6 +27,15 @@ fn init_cmd(dir: &std::path::Path) -> Command {
     cmd
 }
 
+fn status_cmd(dir: &std::path::Path) -> Command {
+    let mut cmd = Command::new(skillfile_bin());
+    cmd.arg("status")
+        .current_dir(dir)
+        .env("TERM", "xterm-256color")
+        .env("CLICOLOR_FORCE", "1");
+    cmd
+}
+
 // ---------------------------------------------------------------------------
 // PTY sanity check
 // ---------------------------------------------------------------------------
@@ -157,4 +166,24 @@ fn search_tui_enters_alternate_screen() {
     // Kill the process (keystrokes don't reach crossterm through rexpect PTY).
     session.send_control('c').expect("send SIGINT");
     session.exp_eof().ok();
+}
+
+#[test]
+fn status_renders_ansi_in_pty() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/foo.md"), "# Foo\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         local  skill  foo  skills/foo.md\n",
+    )
+    .unwrap();
+
+    let mut session = rexpect::session::spawn_command(status_cmd(dir.path()), Some(TIMEOUT_MS))
+        .expect("failed to spawn status in PTY");
+    session
+        .exp_string("\x1b[")
+        .expect("status should render ANSI escapes on a TTY");
+    session.exp_eof().expect("status should exit cleanly");
 }

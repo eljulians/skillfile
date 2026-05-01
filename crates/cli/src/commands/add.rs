@@ -1,19 +1,16 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::format::sorted_manifest_text;
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{read_lock, write_lock};
-use skillfile_core::models::{
-    EntityType, Entry, InstallTarget, Manifest, SourceFields, DEFAULT_REF,
-};
+use skillfile_core::models::{EntityType, Entry, Manifest, SourceFields, DEFAULT_REF};
 use skillfile_core::parser::{infer_name, parse_manifest, MANIFEST_NAME};
-use skillfile_core::patch::walkdir;
-use skillfile_deploy::adapter::{adapters, AdapterScope, DirInstallMode};
-use skillfile_deploy::install::{install_entry_with_outcome, InstallOutcome, InstallSkipReason};
-use skillfile_deploy::paths::source_path;
-use skillfile_sources::strategy::{format_parts, is_dir_entry};
+use skillfile_deploy::install::{
+    capture_install_snapshot, install_entry_with_outcome, InstallOutcome, InstallSkipReason,
+    InstallSnapshot,
+};
+use skillfile_sources::strategy::format_parts;
 use skillfile_sources::sync::{sync_entry, vendor_dir_for, SyncContext};
 
 fn format_line(entry: &Entry) -> String {
@@ -25,16 +22,16 @@ fn format_line(entry: &Entry) -> String {
     parts.join("  ")
 }
 
-struct BackupCaptureCtx<'a> {
-    entry: &'a Entry,
-    manifest: &'a Manifest,
-    repo_root: &'a Path,
-}
-
 struct AddInstallCtx<'a, 'b> {
     manifest: &'a Manifest,
     rollback: &'a mut RollbackState,
     repo_root: &'b Path,
+}
+
+struct InstallSnapshotCapture<'a> {
+    entry: &'a Entry,
+    manifest: &'a Manifest,
+    repo_root: &'a Path,
 }
 
 fn sync_and_install(
@@ -52,12 +49,12 @@ fn sync_and_install(
     };
     sync_entry(&client, entry, &mut sync_ctx)?;
     write_lock(ctx.repo_root, &sync_ctx.locked)?;
-    let backup_ctx = BackupCaptureCtx {
-        entry,
-        manifest: ctx.manifest,
-        repo_root: ctx.repo_root,
-    };
-    ctx.rollback.capture_install_backups(&backup_ctx)?;
+    ctx.rollback
+        .capture_install_snapshot(&InstallSnapshotCapture {
+            entry,
+            manifest: ctx.manifest,
+            repo_root: ctx.repo_root,
+        })?;
 
     let mut report = InstallReport::default();
     for target in &ctx.manifest.install_targets {
@@ -256,166 +253,6 @@ fn skip_reason_text(reason: InstallSkipReason, entity_type: EntityType) -> Strin
     }
 }
 
-struct PathBackup {
-    live_path: PathBuf,
-    snapshot_path: Option<PathBuf>,
-}
-
-#[derive(Default)]
-struct InstallBackups {
-    scratch_dir: Option<PathBuf>,
-    paths: Vec<PathBackup>,
-}
-
-impl Drop for InstallBackups {
-    fn drop(&mut self) {
-        if let Some(path) = &self.scratch_dir {
-            let _ = std::fs::remove_dir_all(path);
-        }
-    }
-}
-
-fn remove_path(path: &Path) -> Result<(), SkillfileError> {
-    if !(path.exists() || path.is_symlink()) {
-        return Ok(());
-    }
-    if path.is_dir() {
-        std::fs::remove_dir_all(path)?;
-    } else {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
-fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<(), SkillfileError> {
-    std::fs::create_dir_all(dest)?;
-    for entry in std::fs::read_dir(source)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&source_path, &dest_path)?;
-        } else {
-            std::fs::copy(source_path, dest_path)?;
-        }
-    }
-    Ok(())
-}
-
-fn copy_path(source: &Path, dest: &Path) -> Result<(), SkillfileError> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if source.is_dir() {
-        copy_dir_recursive(source, dest)?;
-    } else {
-        std::fs::copy(source, dest)?;
-    }
-    Ok(())
-}
-
-fn backup_scratch_dir() -> Result<PathBuf, SkillfileError> {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| SkillfileError::Install(format!("clock error: {error}")))?
-        .as_nanos();
-    let scratch_dir = std::env::temp_dir()
-        .join("skillfile")
-        .join(format!("add-rollback-{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&scratch_dir)?;
-    Ok(scratch_dir)
-}
-
-fn capture_path_backup(
-    path: &Path,
-    scratch_dir: &Path,
-    index: usize,
-) -> Result<PathBackup, SkillfileError> {
-    let snapshot_path = if path.exists() || path.is_symlink() {
-        let snapshot_path = scratch_dir.join(index.to_string());
-        copy_path(path, &snapshot_path)?;
-        Some(snapshot_path)
-    } else {
-        None
-    };
-    Ok(PathBackup {
-        live_path: path.to_path_buf(),
-        snapshot_path,
-    })
-}
-
-fn flat_backup_roots(source: &Path, target_dir: &Path) -> Vec<PathBuf> {
-    walkdir(source)
-        .into_iter()
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .filter_map(|path| path.file_name().map(|name| target_dir.join(name)))
-        .collect()
-}
-
-fn restore_path_backup(backup: &PathBackup) -> Result<(), SkillfileError> {
-    remove_path(&backup.live_path)?;
-    let Some(snapshot_path) = &backup.snapshot_path else {
-        return Ok(());
-    };
-    copy_path(snapshot_path, &backup.live_path)
-}
-
-fn target_backup_roots(entry: &Entry, target: &InstallTarget, repo_root: &Path) -> Vec<PathBuf> {
-    let Some(adapter) = adapters().get(&target.adapter) else {
-        return Vec::new();
-    };
-    if !adapter.supports(entry.entity_type) {
-        return Vec::new();
-    }
-    let Some(source) = source_path(entry, repo_root).filter(|path| path.exists()) else {
-        return Vec::new();
-    };
-
-    let scope = AdapterScope {
-        scope: target.scope,
-        repo_root,
-    };
-    let target_dir = adapter.target_dir(entry.entity_type, &scope);
-    if !is_dir_entry(entry) && !source.is_dir() {
-        return vec![adapter.installed_path(entry, &scope)];
-    }
-
-    if adapter.dir_mode(entry.entity_type) == Some(DirInstallMode::Flat) {
-        return flat_backup_roots(&source, &target_dir);
-    }
-
-    vec![target_dir.join(&entry.name)]
-}
-
-impl InstallBackups {
-    fn capture(&mut self, ctx: &BackupCaptureCtx<'_>) -> Result<(), SkillfileError> {
-        let mut roots = Vec::new();
-        for target in &ctx.manifest.install_targets {
-            roots.extend(target_backup_roots(ctx.entry, target, ctx.repo_root));
-        }
-        if roots.is_empty() {
-            return Ok(());
-        }
-
-        let scratch_dir = backup_scratch_dir()?;
-        self.scratch_dir = Some(scratch_dir.clone());
-        let mut seen = std::collections::HashSet::new();
-        roots.retain(|root| seen.insert(root.clone()));
-        for root in roots {
-            let backup = capture_path_backup(&root, &scratch_dir, self.paths.len())?;
-            self.paths.push(backup);
-        }
-        Ok(())
-    }
-
-    fn restore(&self) -> Result<(), SkillfileError> {
-        for backup in self.paths.iter().rev() {
-            restore_path_backup(backup)?;
-        }
-        Ok(())
-    }
-}
-
 fn record_io_result(errors: &mut Vec<String>, label: &str, result: std::io::Result<()>) {
     if let Err(error) = result {
         errors.push(format!("{label}: {error}"));
@@ -428,21 +265,23 @@ struct RollbackState {
     lock_path: PathBuf,
     original_lock: Option<String>,
     cache_dir: PathBuf,
-    install_backups: InstallBackups,
+    install_snapshot: InstallSnapshot,
 }
 
 impl RollbackState {
-    fn capture_install_backups(
+    fn capture_install_snapshot(
         &mut self,
-        ctx: &BackupCaptureCtx<'_>,
+        ctx: &InstallSnapshotCapture<'_>,
     ) -> Result<(), SkillfileError> {
-        self.install_backups.capture(ctx)
+        self.install_snapshot =
+            capture_install_snapshot(ctx.entry, &ctx.manifest.install_targets, ctx.repo_root)?;
+        Ok(())
     }
 
     fn rollback(&self, entry_name: &str) -> Result<(), SkillfileError> {
         let mut errors = Vec::new();
 
-        if let Err(error) = self.install_backups.restore() {
+        if let Err(error) = self.install_snapshot.restore() {
             errors.push(format!("restore installed files: {error}"));
         }
         record_io_result(
@@ -554,7 +393,7 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
             .transpose()?,
         lock_path,
         cache_dir: vendor_dir_for(entry, repo_root),
-        install_backups: InstallBackups::default(),
+        install_snapshot: InstallSnapshot::default(),
     };
     let sync_result = {
         let mut install_ctx = AddInstallCtx {
@@ -1052,7 +891,7 @@ mod tests {
             lock_path,
             original_lock: None,
             cache_dir: cache_dir.clone(),
-            install_backups: InstallBackups::default(),
+            install_snapshot: InstallSnapshot::default(),
         };
         rb.rollback("foo").unwrap();
         let restored = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
@@ -1084,7 +923,7 @@ mod tests {
             lock_path,
             original_lock: Some(original_lock.to_string()),
             cache_dir: cache_dir.clone(),
-            install_backups: InstallBackups::default(),
+            install_snapshot: InstallSnapshot::default(),
         };
         rb.rollback("bar").unwrap();
         assert_eq!(
@@ -1112,56 +951,11 @@ mod tests {
             lock_path: dir.path().join("Skillfile.lock"),
             original_lock: None,
             cache_dir: dir.path().join(".skillfile/cache/skills/baz"),
-            install_backups: InstallBackups::default(),
+            install_snapshot: InstallSnapshot::default(),
         };
         let result = rb.rollback("baz");
         assert!(matches!(result, Err(SkillfileError::Install(message)) if
             message.contains("restore Skillfile")));
-    }
-
-    #[test]
-    fn install_backups_restore_removes_new_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let target_path = dir.path().join(".claude/skills/foo");
-        let scratch_dir = backup_scratch_dir().unwrap();
-        let backup = capture_path_backup(&target_path, &scratch_dir, 0).unwrap();
-        let backups = InstallBackups {
-            scratch_dir: Some(scratch_dir),
-            paths: vec![backup],
-        };
-
-        std::fs::create_dir_all(&target_path).unwrap();
-        std::fs::write(target_path.join("SKILL.md"), "# New\n").unwrap();
-
-        backups.restore().unwrap();
-        assert!(
-            !target_path.exists(),
-            "rollback should remove paths that were absent before add"
-        );
-    }
-
-    #[test]
-    fn install_backups_restore_previous_directory_contents() {
-        let dir = tempfile::tempdir().unwrap();
-        let target_path = dir.path().join(".claude/skills/foo");
-        std::fs::create_dir_all(&target_path).unwrap();
-        std::fs::write(target_path.join("SKILL.md"), "# Old\n").unwrap();
-        let scratch_dir = backup_scratch_dir().unwrap();
-        let backup = capture_path_backup(&target_path, &scratch_dir, 0).unwrap();
-        let backups = InstallBackups {
-            scratch_dir: Some(scratch_dir),
-            paths: vec![backup],
-        };
-
-        std::fs::remove_dir_all(&target_path).unwrap();
-        std::fs::create_dir_all(&target_path).unwrap();
-        std::fs::write(target_path.join("SKILL.md"), "# New\n").unwrap();
-
-        backups.restore().unwrap();
-        assert_eq!(
-            std::fs::read_to_string(target_path.join("SKILL.md")).unwrap(),
-            "# Old\n"
-        );
     }
 
     // --- add_selected tests ---

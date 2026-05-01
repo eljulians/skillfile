@@ -80,21 +80,32 @@ fn sf_retry(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     .expect("command failed after all retry attempts")
 }
 
-/// Check whether a GitHub token is available (env var or `gh` CLI).
 fn has_github_token() -> bool {
-    if std::env::var("GITHUB_TOKEN").is_ok() || std::env::var("GH_TOKEN").is_ok() {
-        return true;
+    std::env::var("GITHUB_TOKEN").is_ok_and(|t| !t.trim().is_empty())
+        || std::env::var("GH_TOKEN").is_ok_and(|t| !t.trim().is_empty())
+        || has_usable_gh_cli_token()
+}
+
+fn has_usable_gh_cli_token() -> bool {
+    let status = std::process::Command::new("gh")
+        .args(["auth", "status", "--hostname", "github.com"])
+        .output();
+    if !status.is_ok_and(|o| o.status.success()) {
+        return false;
     }
+
     std::process::Command::new("gh")
         .args(["auth", "token"])
         .output()
-        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+        .is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
 }
 
-/// Skip the test if no GitHub token is available. Returns true if token exists.
+/// Skip the test if no usable GitHub token is available. Returns true if token exists.
 fn require_github_token() -> bool {
     if !has_github_token() {
-        eprintln!("skipping: no GitHub token (set GITHUB_TOKEN, GH_TOKEN, or run `gh auth login`)");
+        eprintln!(
+            "skipping: no usable GitHub token (set GITHUB_TOKEN, GH_TOKEN, or run `gh auth login`)"
+        );
         return false;
     }
     true

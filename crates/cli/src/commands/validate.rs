@@ -88,6 +88,17 @@ fn ok_label() -> StyledObject<&'static str> {
     style("Skillfile OK").green().bold()
 }
 
+fn parse_warning_as_error(warning: &str) -> String {
+    warning
+        .strip_prefix("warning: ")
+        .unwrap_or(warning)
+        .to_string()
+}
+
+fn should_promote_parse_warning(warning: &str) -> bool {
+    !warning.contains("duplicate entry name")
+}
+
 pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
@@ -98,11 +109,13 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     }
 
     let result = parse_manifest(&manifest_path)?;
-    for w in &result.warnings {
-        eprintln!("{w}");
-    }
+    let mut errors: Vec<String> = result
+        .warnings
+        .iter()
+        .filter(|warning| should_promote_parse_warning(warning))
+        .map(|warning| parse_warning_as_error(warning))
+        .collect();
     let manifest = result.manifest;
-    let mut errors: Vec<String> = Vec::new();
 
     check_duplicate_names(&manifest, &mut errors);
     check_local_paths(&manifest, repo_root, &mut errors);
@@ -211,6 +224,13 @@ mod tests {
         );
         let result = cmd_validate(dir.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn duplicate_name_parser_warning_not_promoted_twice() {
+        assert!(!should_promote_parse_warning(
+            "warning: line 2: duplicate entry name 'dup'"
+        ));
     }
 
     #[test]

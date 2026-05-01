@@ -12,6 +12,30 @@ fn normalize_separators(text: &str) -> String {
     text.replace('\\', "/")
 }
 
+#[cfg(unix)]
+fn write_fake_gh(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let gh = dir.join("gh");
+    std::fs::write(&gh, "#!/bin/sh\nexit 1\n").unwrap();
+    let perms = std::fs::Permissions::from_mode(0o755);
+    std::fs::set_permissions(&gh, perms).unwrap();
+}
+
+#[cfg(windows)]
+fn write_fake_gh(dir: &Path) {
+    std::fs::write(dir.join("gh.cmd"), "@echo off\r\nexit /b 1\r\n").unwrap();
+}
+
+fn fake_gh_path(root: &Path) -> std::ffi::OsString {
+    let bin_dir = root.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_gh(&bin_dir);
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let paths = std::iter::once(bin_dir).chain(std::env::split_paths(&current));
+    std::env::join_paths(paths).unwrap()
+}
+
 // ---------------------------------------------------------------------------
 // Smoke tests (binary boots up)
 // ---------------------------------------------------------------------------
@@ -33,7 +57,7 @@ fn version_flag_exits_zero() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("skillfile"));
+        .stdout(predicate::str::starts_with("skillfile "));
 }
 
 #[test]
@@ -42,6 +66,27 @@ fn no_args_exits_nonzero() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Usage"));
+}
+
+#[test]
+fn github_auth_test_detects_config_file_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_root = dir.path().join("config-root");
+    let config_path = config_root.join("skillfile").join("config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, "github_token = \"ghp_from_config\"\n").unwrap();
+
+    sf(dir.path())
+        .arg("__github-auth-test")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env("HOME", &config_root)
+        .env("APPDATA", &config_root)
+        .env("PATH", fake_gh_path(dir.path()))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("available"));
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +179,61 @@ fn validate_error_output_is_plain_text_when_captured() {
     assert!(
         !stderr.contains("\u{1b}["),
         "captured validate stderr should stay plain text: {stderr:?}"
+    );
+}
+
+#[test]
+fn validate_parse_warnings_fail_as_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "svn  skill  bad\n").unwrap();
+
+    let output = sf(dir.path()).arg("validate").output().unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(
+        !output.status.success(),
+        "validate should fail for malformed manifest lines"
+    );
+    assert_eq!(stdout, "", "error path should not write to stdout");
+    assert!(
+        stderr.contains("error: line 1: unknown source type 'svn', skipping"),
+        "unexpected validate stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("\u{1b}["),
+        "captured validate stderr should stay plain text: {stderr:?}"
+    );
+}
+
+#[test]
+fn validate_duplicate_name_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/a.md"), "# A\n").unwrap();
+    std::fs::write(dir.path().join("skills/b.md"), "# B\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "local  skill  dup  skills/a.md\n\
+         local  skill  dup  skills/b.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).arg("validate").output().unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(
+        !output.status.success(),
+        "validate should fail on duplicate names"
+    );
+    assert_eq!(
+        stderr.matches("duplicate").count(),
+        1,
+        "duplicate name should be reported once, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error: duplicate name 'dup'"),
+        "unexpected validate stderr:\n{stderr}"
     );
 }
 
@@ -657,6 +757,48 @@ fn add_removes_earlier_platform_files_when_later_target_fails() {
 }
 
 #[test]
+fn add_restores_legacy_flat_file_when_later_target_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::create_dir_all(dir.path().join(".claude/skills")).unwrap();
+    std::fs::write(dir.path().join("skills/foo.md"), "# New Foo\n").unwrap();
+    std::fs::write(dir.path().join(".claude/skills/foo.md"), "# Legacy Foo\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         install  copilot  local\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".github"), "not a directory\n").unwrap();
+
+    let output = sf(dir.path())
+        .args(["add", "local", "skill", "skills/foo.md", "--name", "foo"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "command should fail when a later target is blocked"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Rolled back: removed 'foo' from Skillfile"),
+        "rollback should be announced, got: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".claude/skills/foo.md")).unwrap(),
+        "# Legacy Foo\n",
+        "rollback must restore adapter migration side effects"
+    );
+    assert!(
+        !dir.path().join(".claude/skills/foo/SKILL.md").exists(),
+        "new nested install must be removed on rollback"
+    );
+}
+
+#[test]
 fn install_fails_when_nested_target_path_is_blocked_without_update() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("skills")).unwrap();
@@ -734,6 +876,52 @@ fn install_cleans_up_partial_flat_write_failures() {
     assert!(
         !dir.path().join(".claude/agents/beta.md").exists(),
         "newly written files must be cleaned up after partial failure"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn install_update_restores_existing_nested_dir_when_copy_fails() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source_dir = dir.path().join("skills/foo");
+    let dest_dir = dir.path().join(".claude/skills/foo");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::create_dir_all(&dest_dir).unwrap();
+    std::fs::write(source_dir.join("SKILL.md"), "# New Foo\n").unwrap();
+    symlink("missing-target.md", source_dir.join("dangling.md")).unwrap();
+    std::fs::write(dest_dir.join("SKILL.md"), "# Old Foo\n").unwrap();
+    std::fs::write(dest_dir.join("keep.md"), "# Keep\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         local  skill  foo  skills/foo\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path())
+        .args(["install", "--update"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "install --update should fail when source copy fails"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to install 'foo' to claude-code (local)"),
+        "install failure should be surfaced, got: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest_dir.join("SKILL.md")).unwrap(),
+        "# Old Foo\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest_dir.join("keep.md")).unwrap(),
+        "# Keep\n"
     );
 }
 

@@ -182,6 +182,7 @@ Names are inferred from filenames when omitted. Full format specification in [SP
 | `sync` | Fetch into cache without deploying |
 | `search` | Browse community registries |
 | `status` | Show state of all entries |
+| `info` | Show detailed state for one entry |
 | `validate` | Check for errors in the Skillfile |
 | `format` | Sort and canonicalize the Skillfile |
 | `pin` | Capture local edits as a patch |
@@ -214,7 +215,7 @@ skillfile completions zsh > ~/.zfunc/_skillfile
 skillfile completions fish > ~/.config/fish/completions/skillfile.fish
 ```
 
-Tab completion covers all commands, flags, and entry names (for `remove`, `pin`, `unpin`, `diff`, `resolve`).
+Tab completion covers all commands, flags, and entry names (for `info`, `remove`, `pin`, `unpin`, `diff`, `resolve`).
 
 ## Security
 

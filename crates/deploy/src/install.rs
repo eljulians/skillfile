@@ -1,5 +1,8 @@
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use skillfile_core::conflict::{read_conflict, write_conflict};
 use skillfile_core::error::SkillfileError;
@@ -9,8 +12,8 @@ use skillfile_core::models::{
 };
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_core::patch::{
-    apply_patch_pure, dir_patch_path, generate_patch, has_patch, patches_root, read_patch,
-    remove_patch, walkdir, write_dir_patch, write_patch,
+    apply_patch_pure, dir_patch_path, generate_patch, has_patch, patch_path, patches_root,
+    read_patch, remove_patch, walkdir, write_dir_patch, write_patch,
 };
 use skillfile_core::progress;
 use skillfile_sources::strategy::{content_file, is_dir_entry};
@@ -18,6 +21,8 @@ use skillfile_sources::sync::{cmd_sync, vendor_dir_for};
 
 use crate::adapter::{adapters, AdapterScope, DeployRequest, DirInstallMode, PlatformAdapter};
 use crate::paths::{installed_dir_files, installed_path, source_path};
+
+static SNAPSHOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Patch application helpers
@@ -344,6 +349,197 @@ fn install_failure(entry: &Entry, target: &InstallTarget, detail: &str) -> Skill
     ))
 }
 
+struct PathSnapshot {
+    live_path: PathBuf,
+    snapshot_path: Option<PathBuf>,
+}
+
+#[derive(Default)]
+pub struct InstallSnapshot {
+    scratch_dir: Option<PathBuf>,
+    paths: Vec<PathSnapshot>,
+    preserve_scratch: Cell<bool>,
+}
+
+impl Drop for InstallSnapshot {
+    fn drop(&mut self) {
+        if self.preserve_scratch.get() {
+            return;
+        }
+        if let Some(path) = &self.scratch_dir {
+            let _ = std::fs::remove_dir_all(path);
+            remove_empty_dir(path.parent());
+        }
+    }
+}
+
+fn remove_empty_dir(path: Option<&Path>) {
+    let Some(path) = path else {
+        return;
+    };
+    if path
+        .read_dir()
+        .is_ok_and(|mut entries| entries.next().is_none())
+    {
+        let _ = std::fs::remove_dir(path);
+    }
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &Path, link: &Path, _is_dir: bool) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &Path, link: &Path, is_dir: bool) -> std::io::Result<()> {
+    if is_dir {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+#[cfg(windows)]
+fn symlink_is_dir(path: &Path) -> std::io::Result<bool> {
+    use std::os::windows::fs::FileTypeExt as _;
+
+    Ok(std::fs::symlink_metadata(path)?
+        .file_type()
+        .is_symlink_dir())
+}
+
+#[cfg(windows)]
+fn copy_symlink(source: &Path, dest: &Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(source)?;
+    create_symlink(&target, dest, symlink_is_dir(source)?)
+}
+
+#[cfg(not(windows))]
+fn copy_symlink(source: &Path, dest: &Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(source)?;
+    create_symlink(&target, dest, false)
+}
+
+fn copy_path(source: &Path, dest: &Path) -> std::io::Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let metadata = std::fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        copy_symlink(source, dest)
+    } else if metadata.is_dir() {
+        copy_snapshot_dir(source, dest)
+    } else {
+        std::fs::copy(source, dest).map(|_| ())
+    }
+}
+
+fn copy_snapshot_dir(source: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        copy_path(&source_path, &dest_path)?;
+    }
+    Ok(())
+}
+
+fn snapshot_scratch_dir(repo_root: &Path) -> std::io::Result<PathBuf> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let seq = SNAPSHOT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = repo_root.join(".skillfile").join("tmp").join(format!(
+        "install-snapshot-{}-{stamp}-{seq}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn capture_path_snapshot(
+    live_path: PathBuf,
+    scratch_dir: &Path,
+    index: usize,
+) -> std::io::Result<PathSnapshot> {
+    let snapshot_path = if live_path.exists() || live_path.is_symlink() {
+        let snapshot_path = scratch_dir.join(index.to_string());
+        copy_path(&live_path, &snapshot_path)?;
+        Some(snapshot_path)
+    } else {
+        None
+    };
+    Ok(PathSnapshot {
+        live_path,
+        snapshot_path,
+    })
+}
+
+impl InstallSnapshot {
+    fn capture(repo_root: &Path, paths: Vec<PathBuf>) -> Result<Self, SkillfileError> {
+        let mut seen = HashSet::new();
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .filter(|path| seen.insert(path.clone()))
+            .collect();
+        if paths.is_empty() {
+            return Ok(Self::default());
+        }
+
+        let scratch_dir = snapshot_scratch_dir(repo_root)?;
+        let mut snapshot = Self {
+            scratch_dir: Some(scratch_dir.clone()),
+            paths: Vec::new(),
+            preserve_scratch: Cell::new(false),
+        };
+        for (index, path) in paths.into_iter().enumerate() {
+            snapshot
+                .paths
+                .push(capture_path_snapshot(path, &scratch_dir, index)?);
+        }
+        Ok(snapshot)
+    }
+
+    pub fn restore(&self) -> Result<(), SkillfileError> {
+        for snapshot in self.paths.iter().rev() {
+            self.restore_path(snapshot)?;
+        }
+        Ok(())
+    }
+
+    fn scratch_dir(&self) -> Option<&Path> {
+        self.scratch_dir.as_deref()
+    }
+
+    fn restore_path(&self, snapshot: &PathSnapshot) -> Result<(), SkillfileError> {
+        let result = restore_path_snapshot(snapshot);
+        if result.is_err() {
+            self.preserve_scratch.set(true);
+        }
+        result.map_err(SkillfileError::from)
+    }
+}
+
+fn restore_path_snapshot(snapshot: &PathSnapshot) -> std::io::Result<()> {
+    remove_path(&snapshot.live_path)?;
+    let Some(snapshot_path) = &snapshot.snapshot_path else {
+        return Ok(());
+    };
+    copy_path(snapshot_path, &snapshot.live_path)
+}
+
 fn forward_slash(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -406,6 +602,79 @@ fn planned_install_paths(ctx: &InstallValidationCtx<'_>) -> HashMap<String, Path
         Some(DirInstallMode::Flat) => flat_expected_paths(ctx.source, &target_dir),
         _ => nested_expected_paths(ctx.source, &target_dir.join(&ctx.entry.name)),
     }
+}
+
+fn patch_effect_path(ctx: &InstallValidationCtx<'_>) -> PathBuf {
+    if ctx.is_dir {
+        patches_root(ctx.repo_root)
+            .join(ctx.entry.entity_type.dir_name())
+            .join(&ctx.entry.name)
+    } else {
+        patch_path(ctx.entry, ctx.repo_root)
+    }
+}
+
+fn install_effect_paths(ctx: &InstallValidationCtx<'_>) -> Vec<PathBuf> {
+    let scope = AdapterScope {
+        scope: ctx.target.scope,
+        repo_root: ctx.repo_root,
+    };
+    let target_dir = ctx.adapter.target_dir(ctx.entry.entity_type, &scope);
+    let mut paths = if !ctx.is_dir {
+        vec![ctx.adapter.installed_path(ctx.entry, &scope)]
+    } else if ctx.adapter.dir_mode(ctx.entry.entity_type) == Some(DirInstallMode::Flat) {
+        flat_expected_paths(ctx.source, &target_dir)
+            .into_values()
+            .collect()
+    } else {
+        vec![target_dir.join(&ctx.entry.name)]
+    };
+
+    if ctx.adapter.dir_mode(ctx.entry.entity_type) != Some(DirInstallMode::Flat) {
+        paths.push(target_dir.join(format!("{}.md", ctx.entry.name)));
+    }
+    paths.push(patch_effect_path(ctx));
+    paths
+}
+
+pub fn capture_install_snapshot(
+    entry: &Entry,
+    targets: &[InstallTarget],
+    repo_root: &Path,
+) -> Result<InstallSnapshot, SkillfileError> {
+    let mut paths = Vec::new();
+    for target in targets {
+        paths.extend(install_effect_paths_for_target(entry, target, repo_root));
+    }
+    InstallSnapshot::capture(repo_root, paths)
+}
+
+fn install_effect_paths_for_target(
+    entry: &Entry,
+    target: &InstallTarget,
+    repo_root: &Path,
+) -> Vec<PathBuf> {
+    let all_adapters = adapters();
+    let Some(adapter) = all_adapters.get(&target.adapter) else {
+        return Vec::new();
+    };
+    if !adapter.supports(entry.entity_type) {
+        return Vec::new();
+    }
+    let Some(source) = source_path(entry, repo_root).filter(|path| path.exists()) else {
+        return Vec::new();
+    };
+    let default_opts = InstallOptions::default();
+    let validation_ctx = InstallValidationCtx {
+        entry,
+        target,
+        repo_root,
+        source: &source,
+        adapter,
+        is_dir: is_dir_entry(entry) || source.is_dir(),
+        opts: &default_opts,
+    };
+    install_effect_paths(&validation_ctx)
 }
 
 fn build_install_plan(ctx: &InstallValidationCtx<'_>) -> InstallPlan {
@@ -486,6 +755,66 @@ fn validate_installed_files(
     })
 }
 
+fn restore_on_install_error(snapshot: &InstallSnapshot, error: SkillfileError) -> SkillfileError {
+    match snapshot.restore() {
+        Ok(()) => error,
+        Err(rollback_error) => {
+            let snapshot_hint = snapshot.scratch_dir().map_or_else(String::new, |path| {
+                format!("; rollback snapshot kept at {}", path.display())
+            });
+            let rollback_detail = format!(
+                "rollback failed: {rollback_error}{snapshot_hint}; target may need manual cleanup"
+            );
+            match error {
+                SkillfileError::PatchConflict {
+                    message,
+                    entry_name,
+                } => SkillfileError::PatchConflict {
+                    message: format!("{message}; {rollback_detail}"),
+                    entry_name,
+                },
+                other => SkillfileError::Install(format!("{other}; {rollback_detail}")),
+            }
+        }
+    }
+}
+
+fn deploy_and_patch_entry(
+    validation_ctx: &InstallValidationCtx<'_>,
+    plan: &InstallPlan,
+) -> Result<InstallOutcome, SkillfileError> {
+    let installed = validation_ctx.adapter.deploy_entry(&DeployRequest {
+        entry: validation_ctx.entry,
+        source: validation_ctx.source,
+        scope: validation_ctx.target.scope,
+        repo_root: validation_ctx.repo_root,
+        opts: validation_ctx.opts,
+    });
+
+    if validation_ctx.opts.dry_run {
+        return Ok(InstallOutcome::Skipped(InstallSkipReason::DryRun));
+    }
+    let validated = validate_installed_files(validation_ctx, plan, installed)?;
+    if let InstallOutcome::Skipped(reason) = validated.outcome {
+        return Ok(InstallOutcome::Skipped(reason));
+    }
+
+    let patch_ctx = PatchCtx {
+        entry: validation_ctx.entry,
+        repo_root: validation_ctx.repo_root,
+    };
+    if validation_ctx.is_dir {
+        apply_dir_patches(&patch_ctx, &validated.installed, validation_ctx.source)?;
+    } else {
+        let key = format!("{}.md", validation_ctx.entry.name);
+        if let Some(dest) = validated.installed.get(&key) {
+            apply_single_file_patch(&patch_ctx, dest, validation_ctx.source)?;
+        }
+    }
+
+    Ok(InstallOutcome::Installed)
+}
+
 /// Returns `Err(PatchConflict)` if a stored patch fails to apply cleanly.
 pub fn install_entry_with_outcome(
     entry: &Entry,
@@ -525,36 +854,13 @@ pub fn install_entry_with_outcome(
         opts,
     };
     let plan = build_install_plan(&validation_ctx);
-    let installed = adapter.deploy_entry(&DeployRequest {
-        entry,
-        source: &source,
-        scope: target.scope,
-        repo_root: ctx.repo_root,
-        opts,
-    });
-
-    if opts.dry_run {
-        return Ok(InstallOutcome::Skipped(InstallSkipReason::DryRun));
-    }
-    let validated = validate_installed_files(&validation_ctx, &plan, installed)?;
-    if let InstallOutcome::Skipped(reason) = validated.outcome {
-        return Ok(InstallOutcome::Skipped(reason));
-    }
-
-    let patch_ctx = PatchCtx {
-        entry,
-        repo_root: ctx.repo_root,
-    };
-    if is_dir {
-        apply_dir_patches(&patch_ctx, &validated.installed, &source)?;
+    let snapshot = if opts.dry_run {
+        InstallSnapshot::default()
     } else {
-        let key = format!("{}.md", entry.name);
-        if let Some(dest) = validated.installed.get(&key) {
-            apply_single_file_patch(&patch_ctx, dest, &source)?;
-        }
-    }
-
-    Ok(InstallOutcome::Installed)
+        InstallSnapshot::capture(ctx.repo_root, install_effect_paths(&validation_ctx))?
+    };
+    deploy_and_patch_entry(&validation_ctx, &plan)
+        .map_err(|error| restore_on_install_error(&snapshot, error))
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +951,18 @@ fn handle_patch_conflict(
     )))
 }
 
+fn append_rollback_detail(error: SkillfileError, patch_message: &str) -> SkillfileError {
+    if !patch_message.contains("rollback failed") {
+        return error;
+    }
+    match error {
+        SkillfileError::Install(message) => {
+            SkillfileError::Install(format!("{message}\nRollback warning: {patch_message}"))
+        }
+        other => other,
+    }
+}
+
 fn install_entry_or_conflict(
     entry: &Entry,
     target: &InstallTarget,
@@ -656,9 +974,11 @@ fn install_entry_or_conflict(
     };
     match install_entry(entry, target, &install_ctx) {
         Ok(()) => Ok(()),
-        Err(SkillfileError::PatchConflict { entry_name, .. }) => {
-            handle_patch_conflict(entry, &entry_name, ctx)
-        }
+        Err(SkillfileError::PatchConflict {
+            entry_name,
+            message,
+        }) => handle_patch_conflict(entry, &entry_name, ctx)
+            .map_err(|error| append_rollback_detail(error, &message)),
         Err(e) => Err(e),
     }
 }
@@ -1206,6 +1526,217 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn install_snapshot_restores_previous_directory_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("skills/foo");
+        let dest_dir = dir.path().join(".claude/skills/foo");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(source_dir.join("SKILL.md"), "# Source\n").unwrap();
+        std::fs::write(dest_dir.join("SKILL.md"), "# Old\n").unwrap();
+
+        let entry = make_local_entry("foo", "skills/foo");
+        let target = make_target("claude-code", Scope::Local);
+        let snapshot =
+            capture_install_snapshot(&entry, std::slice::from_ref(&target), dir.path()).unwrap();
+
+        std::fs::remove_dir_all(&dest_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(dest_dir.join("SKILL.md"), "# New\n").unwrap();
+
+        snapshot.restore().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest_dir.join("SKILL.md")).unwrap(),
+            "# Old\n"
+        );
+    }
+
+    #[test]
+    fn install_snapshot_restores_legacy_flat_file_side_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("skills/foo.md");
+        let legacy_file = dir.path().join(".claude/skills/foo.md");
+        std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(legacy_file.parent().unwrap()).unwrap();
+        std::fs::write(&source_file, "# Source\n").unwrap();
+        std::fs::write(&legacy_file, "# Legacy\n").unwrap();
+
+        let entry = make_local_entry("foo", "skills/foo.md");
+        let target = make_target("claude-code", Scope::Local);
+        let snapshot =
+            capture_install_snapshot(&entry, std::slice::from_ref(&target), dir.path()).unwrap();
+
+        std::fs::remove_file(&legacy_file).unwrap();
+        snapshot.restore().unwrap();
+        assert_eq!(std::fs::read_to_string(&legacy_file).unwrap(), "# Legacy\n");
+    }
+
+    #[test]
+    fn install_snapshot_restores_patch_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("skills/foo.md");
+        std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+        std::fs::write(&source_file, "# Source\n").unwrap();
+
+        let entry = make_local_entry("foo", "skills/foo.md");
+        let patch = patch_fixture_path(dir.path(), &entry);
+        std::fs::create_dir_all(patch.parent().unwrap()).unwrap();
+        std::fs::write(&patch, "old patch").unwrap();
+
+        let target = make_target("claude-code", Scope::Local);
+        let snapshot =
+            capture_install_snapshot(&entry, std::slice::from_ref(&target), dir.path()).unwrap();
+        std::fs::write(&patch, "new patch").unwrap();
+
+        snapshot.restore().unwrap();
+        assert_eq!(std::fs::read_to_string(&patch).unwrap(), "old patch");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_entry_restores_existing_directory_when_copy_fails() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("skills/foo");
+        let dest_dir = dir.path().join(".claude/skills/foo");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(source_dir.join("SKILL.md"), "# New\n").unwrap();
+        symlink("missing-target.md", source_dir.join("dangling.md")).unwrap();
+        std::fs::write(dest_dir.join("SKILL.md"), "# Old\n").unwrap();
+        std::fs::write(dest_dir.join("keep.md"), "# Keep\n").unwrap();
+
+        let entry = make_local_entry("foo", "skills/foo");
+        let target = make_target("claude-code", Scope::Local);
+        let result = install_entry(
+            &entry,
+            &target,
+            &InstallCtx {
+                repo_root: dir.path(),
+                opts: None,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(SkillfileError::Install(message))
+                if message.contains("failed to install 'foo' to claude-code (local)")
+        ));
+        assert_eq!(
+            std::fs::read_to_string(dest_dir.join("SKILL.md")).unwrap(),
+            "# Old\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest_dir.join("keep.md")).unwrap(),
+            "# Keep\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_snapshot_restores_symlink_as_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join(".claude/skills/foo.md");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink("target.md", &link).unwrap();
+        let snapshot = InstallSnapshot::capture(dir.path(), vec![link.clone()]).unwrap();
+
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(&link, "# regular file\n").unwrap();
+
+        snapshot.restore().unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            PathBuf::from("target.md")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_snapshot_restores_dangling_directory_symlink_kind() {
+        use std::os::windows::fs::{symlink_dir, FileTypeExt as _};
+
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join(".claude/skills/foo");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        if symlink_dir("missing-dir", &link).is_err() {
+            return;
+        }
+        let snapshot = InstallSnapshot::capture(dir.path(), vec![link.clone()]).unwrap();
+
+        remove_path(&link).unwrap();
+        std::fs::write(&link, "# regular file\n").unwrap();
+
+        snapshot.restore().unwrap();
+        let file_type = std::fs::symlink_metadata(&link).unwrap().file_type();
+        assert!(file_type.is_symlink_dir());
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            PathBuf::from("missing-dir")
+        );
+    }
+
+    #[test]
+    fn install_snapshot_keeps_scratch_dir_when_restore_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let live_path = dir.path().join("target/foo.md");
+        std::fs::create_dir_all(live_path.parent().unwrap()).unwrap();
+        std::fs::write(&live_path, "# old\n").unwrap();
+        let snapshot = InstallSnapshot::capture(dir.path(), vec![live_path.clone()]).unwrap();
+        let scratch_dir = snapshot.scratch_dir().unwrap().to_path_buf();
+
+        std::fs::remove_dir_all(live_path.parent().unwrap()).unwrap();
+        std::fs::write(live_path.parent().unwrap(), "parent is a file").unwrap();
+
+        let result = snapshot.restore();
+        assert!(result.is_err());
+        drop(snapshot);
+        assert!(scratch_dir.exists());
+
+        std::fs::remove_dir_all(&scratch_dir).unwrap();
+        remove_empty_dir(scratch_dir.parent());
+    }
+
+    #[test]
+    fn patch_conflict_type_survives_rollback_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let live_path = dir.path().join("target/foo.md");
+        std::fs::create_dir_all(live_path.parent().unwrap()).unwrap();
+        std::fs::write(&live_path, "# old\n").unwrap();
+        let snapshot = InstallSnapshot::capture(dir.path(), vec![live_path.clone()]).unwrap();
+        let scratch_dir = snapshot.scratch_dir().unwrap().to_path_buf();
+
+        std::fs::remove_dir_all(live_path.parent().unwrap()).unwrap();
+        std::fs::write(live_path.parent().unwrap(), "parent is a file").unwrap();
+
+        let error = restore_on_install_error(
+            &snapshot,
+            SkillfileError::PatchConflict {
+                message: "patch failed".to_string(),
+                entry_name: "foo".to_string(),
+            },
+        );
+        assert!(matches!(
+            error,
+            SkillfileError::PatchConflict { ref message, ref entry_name }
+                if entry_name == "foo"
+                    && message.contains("patch failed")
+                    && message.contains("rollback failed")
+        ));
+        drop(snapshot);
+
+        std::fs::remove_dir_all(&scratch_dir).unwrap();
+        remove_empty_dir(scratch_dir.parent());
+    }
+
     // -- Patch application during install --
 
     #[test]
@@ -1294,6 +1825,45 @@ mod tests {
         assert!(result.is_err());
         // Should be a PatchConflict error
         matches!(result.unwrap_err(), SkillfileError::PatchConflict { .. });
+    }
+
+    #[test]
+    fn install_patch_conflict_restores_previous_installed_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let vdir = dir.path().join(".skillfile/cache/skills/test");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("test.md"), "# New upstream\n").unwrap();
+
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "test".into(),
+            source: SourceFields::Github {
+                owner_repo: "owner/repo".into(),
+                path_in_repo: "skills/test.md".into(),
+                ref_: "main".into(),
+            },
+        };
+        let bad_patch =
+            "--- a/test.md\n+++ b/test.md\n@@ -1 +1 @@\n-expected_original_line\n+modified\n";
+        write_patch_fixture(dir.path(), &entry, bad_patch);
+
+        let dest = dir.path().join(".claude/skills/test/SKILL.md");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, "# Old installed\n").unwrap();
+
+        let target = make_target("claude-code", Scope::Local);
+        let result = install_entry(
+            &entry,
+            &target,
+            &InstallCtx {
+                repo_root: dir.path(),
+                opts: None,
+            },
+        );
+
+        assert!(matches!(result, Err(SkillfileError::PatchConflict { .. })));
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# Old installed\n");
     }
 
     // -- Multi-adapter --

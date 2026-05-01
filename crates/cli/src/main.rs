@@ -257,6 +257,10 @@ Examples:
     #[command(name = "__search-tui-test", hide = true)]
     SearchTuiTest,
 
+    #[cfg(debug_assertions)]
+    #[command(name = "__github-auth-test", hide = true)]
+    GithubAuthTest,
+
     // -- Validation (display_order 30-39) -------------------------------------
     /// Check the Skillfile for errors
     #[command(display_order = 30)]
@@ -551,6 +555,8 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
         }),
         #[cfg(debug_assertions)]
         Command::SearchTuiTest => run_search_tui_test(),
+        #[cfg(debug_assertions)]
+        Command::GithubAuthTest => run_github_auth_test(),
         _ => Ok(()), // covered by run_content_commands
     }
 }
@@ -574,6 +580,19 @@ fn run_search_tui_test() -> Result<(), SkillfileError> {
     commands::search_tui::run_tui(&items, items.len())
         .map(|_| ())
         .map_err(|e| SkillfileError::Install(format!("TUI error: {e}")))
+}
+
+#[cfg(debug_assertions)]
+fn run_github_auth_test() -> Result<(), SkillfileError> {
+    if skillfile_sources::http::github_token()
+        .for_url("https://api.github.com/user")
+        .is_some()
+    {
+        println!("available");
+        Ok(())
+    } else {
+        Err(SkillfileError::Install("github auth unavailable".into()))
+    }
 }
 
 fn run() -> Result<(), SkillfileError> {
