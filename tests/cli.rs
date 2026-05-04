@@ -594,17 +594,31 @@ fn add_github_normal_path_no_bulk() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
 
-    // This will fail at sync (no network), but should NOT try to discover.
+    // With no install targets configured, direct add returns early after
+    // appending the entry. Bulk discovery would fail before printing this.
     let output = sf(dir.path())
+        .env(
+            "SKILLFILE_CONFIG_PATH",
+            dir.path().join("missing-config.toml"),
+        )
         .args(["add", "github", "skill", "owner/repo", "skills/SKILL.md"])
         .timeout(std::time::Duration::from_secs(10))
         .output()
         .expect("failed to execute");
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("fetching https://api.github.com/repos/owner/repo/commits/main"),
-        "normal add path should attempt direct sync, got: {stderr}"
+        output.status.success(),
+        "normal add path should succeed without install targets: {stderr}"
+    );
+    assert!(
+        stdout.contains("Added: github  skill  owner/repo  skills/SKILL.md"),
+        "normal add path should print the added entry, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("No install targets configured yet"),
+        "normal add path should take the direct add path, got: {stdout}"
     );
     assert!(
         !stderr.contains("no skills found under"),
