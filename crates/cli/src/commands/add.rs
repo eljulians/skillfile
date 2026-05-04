@@ -377,7 +377,9 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
     let original_manifest = append_and_format_entry(entry, &manifest_path)?;
 
     let result = parse_manifest(&manifest_path)?;
-    if result.manifest.install_targets.is_empty() {
+    let mut manifest = result.manifest;
+    crate::config::resolve_targets_into(&mut manifest);
+    if manifest.install_targets.is_empty() {
         println!("Added: {line}");
         println!("No install targets configured yet. Run `skillfile init` to pick platforms.");
         return Ok(());
@@ -397,7 +399,7 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
     };
     let sync_result = {
         let mut install_ctx = AddInstallCtx {
-            manifest: &result.manifest,
+            manifest: &manifest,
             rollback: &mut rb,
             repo_root,
         };

@@ -65,3 +65,69 @@ fn install_junie_agent_flat() {
         "# My Agent\n"
     );
 }
+
+#[test]
+fn install_junie_skill_global() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let home = tempfile::tempdir().unwrap();
+
+    std::fs::create_dir_all(root.join("skills")).unwrap();
+    std::fs::write(root.join("skills/my-skill.md"), "# My Skill\n").unwrap();
+
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  junie  global\n\
+         local  skill  my-skill  skills/my-skill.md\n",
+    )
+    .unwrap();
+
+    sf(root)
+        .env("HOME", home.path())
+        .arg("install")
+        .assert()
+        .success();
+
+    let deployed_skill = home.path().join(".junie/skills/my-skill/SKILL.md");
+    assert!(
+        deployed_skill.exists(),
+        "Junie global skill must deploy as ~/.junie/skills/<name>/SKILL.md"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&deployed_skill).unwrap(),
+        "# My Skill\n"
+    );
+}
+
+#[test]
+fn install_junie_agent_global() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let home = tempfile::tempdir().unwrap();
+
+    std::fs::create_dir_all(root.join("agents")).unwrap();
+    std::fs::write(root.join("agents/my-agent.md"), "# My Agent\n").unwrap();
+
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  junie  global\n\
+         local  agent  my-agent  agents/my-agent.md\n",
+    )
+    .unwrap();
+
+    sf(root)
+        .env("HOME", home.path())
+        .arg("install")
+        .assert()
+        .success();
+
+    let deployed_agent = home.path().join(".junie/agents/my-agent.md");
+    assert!(
+        deployed_agent.exists(),
+        "Junie global agent must deploy as ~/.junie/agents/<name>.md"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&deployed_agent).unwrap(),
+        "# My Agent\n"
+    );
+}

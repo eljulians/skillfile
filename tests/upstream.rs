@@ -269,6 +269,27 @@ fn status_after_install() {
         .stdout(predicate::str::contains("requesting-code-review"));
 }
 
+#[test]
+#[serial]
+fn status_after_install_check_upstream() {
+    if !require_github_token() {
+        return;
+    }
+    let dir = make_repo();
+
+    sf_retry(dir.path(), &["install"]);
+
+    let output = sf_retry(dir.path(), &["status", "--check-upstream"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("code-refactorer"));
+    assert!(stdout.contains("requesting-code-review"));
+    assert!(
+        stdout.contains("up to date") || stdout.contains("outdated"),
+        "expected upstream-aware status output, got:\n{stdout}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Search — registry smoke tests (network, no GitHub token)
 // ---------------------------------------------------------------------------

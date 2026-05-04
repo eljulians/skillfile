@@ -296,14 +296,19 @@ fn format_golden_path() {
 #[test]
 fn add_then_remove() {
     let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/test.md"), "# Test Skill\n").unwrap();
     std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
 
     sf(dir.path())
+        .env(
+            "SKILLFILE_CONFIG_PATH",
+            dir.path().join("missing-config.toml"),
+        )
         .args([
             "add",
-            "github",
+            "local",
             "skill",
-            "owner/repo",
             "skills/test.md",
             "--name",
             "my-new-skill",
@@ -384,6 +389,126 @@ fn write_multi_target_skill_fixture(dir: &Path, name: &str) {
         )
         .unwrap();
     }
+}
+
+struct RemoteSkillFixture<'a> {
+    name: &'a str,
+    installed_text: Option<&'a str>,
+    patch_text: Option<&'a str>,
+}
+
+fn write_remote_skill_fixture(dir: &Path, fixture: &RemoteSkillFixture<'_>) {
+    let RemoteSkillFixture {
+        name,
+        installed_text,
+        patch_text,
+    } = fixture;
+    let manifest = format!(
+        "install  claude-code  local\n\
+         github  skill  {name}  owner/repo  skills/{name}.md  main\n"
+    );
+    std::fs::write(dir.join("Skillfile"), manifest).unwrap();
+
+    let lock_json = serde_json::json!({
+        format!("github/skill/{name}"): {
+            "sha": "abc123def456abc123def456abc123def456abc1",
+            "raw_url": format!("https://raw.githubusercontent.com/owner/repo/abc123/skills/{name}.md")
+        }
+    });
+    std::fs::write(
+        dir.join("Skillfile.lock"),
+        serde_json::to_string_pretty(&lock_json).unwrap(),
+    )
+    .unwrap();
+
+    let vdir = dir.join(format!(".skillfile/cache/skills/{name}"));
+    std::fs::create_dir_all(&vdir).unwrap();
+    std::fs::write(
+        vdir.join(format!("{name}.md")),
+        "# Skill\n\nUpstream content.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        vdir.join(".meta"),
+        r#"{"sha":"abc123def456abc123def456abc123def456abc1"}"#,
+    )
+    .unwrap();
+
+    if let Some(text) = installed_text {
+        let installed_dir = dir.join(".claude/skills").join(name);
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), text).unwrap();
+    }
+
+    if let Some(text) = patch_text {
+        let patch_dir = dir.join(".skillfile/patches/skills");
+        std::fs::create_dir_all(&patch_dir).unwrap();
+        std::fs::write(patch_dir.join(format!("{name}.patch")), text).unwrap();
+    }
+}
+
+fn write_info_lock_pin_cache_fixture(dir: &Path) {
+    write_remote_skill_fixture(
+        dir,
+        &RemoteSkillFixture {
+            name: "info-skill",
+            installed_text: Some(
+                "# Skill\n\nUpstream content.\n\n## Custom Section\n\nAdded by user.\n",
+            ),
+            patch_text: Some(
+                "--- a/info-skill.md\n+++ b/info-skill.md\n@@ -1,3 +1,7 @@\n # Skill\n \n Upstream content.\n+\n+## Custom Section\n+\n+Added by user.\n",
+            ),
+        },
+    );
+}
+
+fn output_line<'a>(stdout: &'a str, label: &str) -> &'a str {
+    stdout
+        .lines()
+        .find(|line| line.contains(label))
+        .unwrap_or_else(|| panic!("missing {label} line:\n{stdout}"))
+}
+
+fn assert_output_contains(stdout: &str, label: &str, value: &str) {
+    let line = output_line(stdout, label);
+    assert!(
+        line.contains(value),
+        "{label} line missing {value}:\n{stdout}"
+    );
+}
+
+fn assert_info_lock_pin_cache_output(stdout: &str) {
+    let stdout = normalize_separators(stdout);
+
+    assert_output_contains(&stdout, "Name:", "info-skill");
+    assert_output_contains(&stdout, "Type:", "skill");
+    assert_output_contains(&stdout, "Source:", "github (owner/repo)");
+    assert_output_contains(&stdout, "Path:", "skills/info-skill.md");
+    assert_output_contains(&stdout, "Ref:", "main");
+    assert_output_contains(&stdout, "Locked:", "abc123d");
+    assert_output_contains(
+        &stdout,
+        "Pinned:",
+        ".skillfile/patches/skills/info-skill.patch",
+    );
+    assert_output_contains(&stdout, "Installed:", ".claude/skills/info-skill/SKILL.md");
+    assert_output_contains(
+        &stdout,
+        "Cache:",
+        ".skillfile/cache/skills/info-skill/info-skill.md",
+    );
+
+    let installed_line = output_line(&stdout, "Installed:");
+    assert!(
+        !installed_line.contains("(not installed)"),
+        "info output must show the installed path as present:\n{stdout}"
+    );
+
+    let modified_line = output_line(&stdout, "Modified:");
+    assert!(
+        modified_line.trim_end().ends_with("no"),
+        "pinned fixture should report modified=no:\n{stdout}"
+    );
 }
 
 #[test]
@@ -476,11 +601,14 @@ fn add_github_normal_path_no_bulk() {
         .output()
         .expect("failed to execute");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Normal add prints "Added: github  skill  ..." before attempting sync.
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("Added:"),
-        "normal add path should print 'Added:' line, got: {stdout}"
+        stderr.contains("fetching https://api.github.com/repos/owner/repo/commits/main"),
+        "normal add path should attempt direct sync, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("no skills found under"),
+        "normal add path must not route into bulk discovery, got: {stderr}"
     );
 }
 
@@ -537,6 +665,10 @@ fn add_prints_no_targets_message_when_none_configured() {
     std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
 
     let output = sf(dir.path())
+        .env(
+            "SKILLFILE_CONFIG_PATH",
+            dir.path().join("missing-config.toml"),
+        )
         .args(["add", "local", "skill", "skills/test.md"])
         .timeout(std::time::Duration::from_secs(5))
         .output()
@@ -550,6 +682,54 @@ fn add_prints_no_targets_message_when_none_configured() {
     assert!(
         stdout.contains("skillfile init"),
         "should point to `skillfile init`, got: {stdout}"
+    );
+}
+
+#[test]
+fn add_uses_config_backed_install_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/test.md"), "# Test Skill\n").unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        "[[install]]\nplatform = \"claude-code\"\nscope = \"local\"\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path())
+        .env("SKILLFILE_CONFIG_PATH", &config_path)
+        .args(["add", "local", "skill", "skills/test.md"])
+        .timeout(std::time::Duration::from_secs(5))
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        output.status.success(),
+        "add should succeed with config-backed targets: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Installed to: claude-code (local)"),
+        "config-backed targets should be used for install, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("No install targets configured yet"),
+        "config-backed targets must suppress the no-targets message, got: {stdout}"
+    );
+    assert!(
+        dir.path().join(".claude/skills/test/SKILL.md").exists(),
+        "add should install into the config-backed target"
+    );
+
+    let skillfile = std::fs::read_to_string(dir.path().join("Skillfile")).unwrap();
+    assert!(
+        skillfile.contains("local  skill  skills/test.md"),
+        "add should still persist the entry in Skillfile"
     );
 }
 
@@ -1013,6 +1193,46 @@ fn info_shows_missing_secondary_target() {
 }
 
 #[test]
+fn info_shows_lock_pin_and_cache_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_info_lock_pin_cache_fixture(root);
+
+    let output = sf(root).args(["info", "info-skill"]).output().unwrap();
+
+    assert!(output.status.success());
+    assert_info_lock_pin_cache_output(std::str::from_utf8(&output.stdout).unwrap());
+}
+
+#[test]
+fn info_reports_modified_when_pinned_entry_has_extra_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_info_lock_pin_cache_fixture(root);
+
+    let installed = root.join(".claude/skills/info-skill/SKILL.md");
+    std::fs::write(
+        &installed,
+        "# Skill\n\nUpstream content.\n\n## Custom Section\n\nAdded by user.\nExtra drift.\n",
+    )
+    .unwrap();
+
+    let output = sf(root).args(["info", "info-skill"]).output().unwrap();
+
+    assert!(output.status.success());
+
+    let stdout = normalize_separators(std::str::from_utf8(&output.stdout).unwrap());
+    let modified_line = stdout
+        .lines()
+        .find(|line| line.contains("Modified:"))
+        .unwrap();
+    assert!(
+        modified_line.trim_end().ends_with("yes"),
+        "info should report pinned extra edits as modified:\n{stdout}"
+    );
+}
+
+#[test]
 fn info_shows_flat_dir_installed_files() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -1039,6 +1259,34 @@ fn info_shows_flat_dir_installed_files() {
     assert!(stdout.contains(".claude/agents/agent.md"));
     assert!(stdout.contains(".claude/agents/notes.md"));
     assert!(!stdout.contains("(not installed)"));
+}
+
+#[test]
+fn status_reports_remote_entry_as_not_installed_when_files_are_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_remote_skill_fixture(
+        root,
+        &RemoteSkillFixture {
+            name: "remote-skill",
+            installed_text: None,
+            patch_text: None,
+        },
+    );
+
+    let output = sf(root).arg("status").output().unwrap();
+
+    assert!(output.status.success());
+
+    let stdout = normalize_separators(std::str::from_utf8(&output.stdout).unwrap());
+    assert!(
+        stdout.contains("remote-skill"),
+        "status output must include the entry name:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[not installed]"),
+        "status must surface missing installs for locked remote entries:\n{stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------

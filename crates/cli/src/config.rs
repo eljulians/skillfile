@@ -124,6 +124,10 @@ pub fn read_user_targets_from(path: &Path) -> Vec<InstallTarget> {
 /// Returns an empty `Vec` if no config directory exists, the file is missing,
 /// or it contains no valid entries.
 pub fn read_user_targets() -> Vec<InstallTarget> {
+    #[cfg(test)]
+    if std::env::var_os(CONFIG_PATH_OVERRIDE_ENV).is_none() {
+        return Vec::new();
+    }
     match config_path() {
         Some(path) => read_user_targets_from(&path),
         None => Vec::new(),

@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,14 +13,14 @@ use skillfile_core::models::{
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_core::patch::{
     apply_patch_pure, dir_patch_path, generate_patch, has_patch, patch_path, patches_root,
-    read_patch, remove_patch, walkdir, write_dir_patch, write_patch,
+    read_patch, remove_dir_patch, remove_patch, walkdir, write_dir_patch, write_patch,
 };
 use skillfile_core::progress;
 use skillfile_sources::strategy::{content_file, is_dir_entry};
 use skillfile_sources::sync::{cmd_sync, vendor_dir_for};
 
 use crate::adapter::{adapters, AdapterScope, DeployRequest, DirInstallMode, PlatformAdapter};
-use crate::paths::{installed_dir_files, installed_path, source_path};
+use crate::paths::source_path;
 
 static SNAPSHOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -161,69 +161,152 @@ fn should_skip_pin(ctx: &PatchCtx<'_>, cache_text: &str, installed_text: &str) -
     patch_already_covers(&pt, cache_text, installed_text)
 }
 
-fn auto_pin_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
+fn divergent_auto_pin_error(entry_name: &str, labels: &[String]) -> SkillfileError {
+    SkillfileError::Install(format!(
+        "'{entry_name}' has divergent edits across install targets: {} — reconcile them before running `skillfile install --update`",
+        labels.join(", ")
+    ))
+}
+
+fn target_adapter(target: &InstallTarget) -> Result<&'static dyn PlatformAdapter, SkillfileError> {
+    adapters()
+        .get(&target.adapter)
+        .ok_or_else(|| SkillfileError::Manifest(format!("unknown adapter '{}'", target.adapter)))
+}
+
+struct SingleInstalledVariant {
+    label: String,
+    content: String,
+}
+
+fn installed_single_file_variants(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<Vec<SingleInstalledVariant>, SkillfileError> {
+    let mut variants = Vec::new();
+    for target in &manifest.install_targets {
+        let adapter = target_adapter(target)?;
+        if !adapter.supports(entry.entity_type) {
+            continue;
+        }
+        let scope = AdapterScope {
+            scope: target.scope,
+            repo_root,
+        };
+        let path = adapter.installed_path(entry, &scope);
+        if !path.exists() {
+            continue;
+        }
+        variants.push(SingleInstalledVariant {
+            label: target.to_string(),
+            content: std::fs::read_to_string(path)?,
+        });
+    }
+    Ok(variants)
+}
+
+fn representative_single_file_content(
+    entry_name: &str,
+    cache_text: &str,
+    variants: &[SingleInstalledVariant],
+) -> Result<Option<String>, SkillfileError> {
+    let modified: Vec<&SingleInstalledVariant> = variants
+        .iter()
+        .filter(|variant| variant.content != cache_text)
+        .collect();
+    if modified.is_empty() {
+        return Ok(None);
+    }
+    let representative = &modified[0].content;
+    if modified
+        .iter()
+        .any(|variant| variant.content != *representative)
+    {
+        let labels: Vec<String> = modified
+            .iter()
+            .map(|variant| variant.label.clone())
+            .collect();
+        return Err(divergent_auto_pin_error(entry_name, &labels));
+    }
+    Ok(Some(representative.clone()))
+}
+
+struct AutoPinSingleCtx<'a> {
+    entry: &'a Entry,
+    manifest: &'a Manifest,
+    repo_root: &'a Path,
+    cache_file: &'a Path,
+}
+
+fn auto_pin_single_file_entry(ctx: &AutoPinSingleCtx<'_>) -> Result<(), SkillfileError> {
+    let cache_text = std::fs::read_to_string(ctx.cache_file)?;
+    let variants = installed_single_file_variants(ctx.entry, ctx.manifest, ctx.repo_root)?;
+    let Some(installed_text) =
+        representative_single_file_content(&ctx.entry.name, &cache_text, &variants)?
+    else {
+        return Ok(());
+    };
+
+    let patch_ctx = PatchCtx {
+        entry: ctx.entry,
+        repo_root: ctx.repo_root,
+    };
+    if should_skip_pin(&patch_ctx, &cache_text, &installed_text) {
+        return Ok(());
+    }
+
+    let patch_text = generate_patch(
+        &cache_text,
+        &installed_text,
+        &format!("{}.md", ctx.entry.name),
+    );
+    if !patch_text.is_empty() && write_patch(ctx.entry, &patch_text, ctx.repo_root).is_ok() {
+        progress!(
+            "  {}: local changes auto-saved to .skillfile/patches/",
+            ctx.entry.name
+        );
+    }
+    Ok(())
+}
+
+fn auto_pin_entry(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
     if entry.source_type() == "local" {
-        return;
+        return Ok(());
     }
 
     let Ok(locked) = read_lock(repo_root) else {
-        return;
+        return Ok(());
     };
     let key = lock_key(entry);
     if !locked.contains_key(&key) {
-        return;
+        return Ok(());
     }
 
     let vdir = vendor_dir_for(entry, repo_root);
 
     if is_dir_entry(entry) {
-        auto_pin_dir_entry(entry, manifest, repo_root);
-        return;
+        return auto_pin_dir_entry(entry, manifest, repo_root);
     }
 
     let cf = content_file(entry);
     if cf.is_empty() {
-        return;
+        return Ok(());
     }
     let cache_file = vdir.join(&cf);
     if !cache_file.exists() {
-        return;
+        return Ok(());
     }
-
-    let Ok(dest) = installed_path(entry, manifest, repo_root) else {
-        return;
-    };
-    if !dest.exists() {
-        return;
-    }
-
-    let Ok(cache_text) = std::fs::read_to_string(&cache_file) else {
-        return;
-    };
-    let Ok(installed_text) = std::fs::read_to_string(&dest) else {
-        return;
-    };
-
-    // If already pinned, check if stored patch still describes the installed content exactly.
-    let ctx = PatchCtx { entry, repo_root };
-    if should_skip_pin(&ctx, &cache_text, &installed_text) {
-        return;
-    }
-
-    let patch_text = generate_patch(&cache_text, &installed_text, &format!("{}.md", entry.name));
-    if !patch_text.is_empty() && write_patch(entry, &patch_text, repo_root).is_ok() {
-        progress!(
-            "  {}: local changes auto-saved to .skillfile/patches/",
-            entry.name
-        );
-    }
-}
-
-struct AutoPinCtx<'a> {
-    vdir: &'a Path,
-    entry: &'a Entry,
-    installed: &'a HashMap<String, PathBuf>,
-    repo_root: &'a Path,
+    auto_pin_single_file_entry(&AutoPinSingleCtx {
+        entry,
+        manifest,
+        repo_root,
+        cache_file: &cache_file,
+    })
 }
 
 /// Return `true` if the dir-entry patch file at `patch_path` already describes
@@ -238,65 +321,155 @@ fn dir_patch_already_matches(patch_path: &Path, cache_text: &str, installed_text
     patch_already_covers(&pt, cache_text, installed_text)
 }
 
-fn try_auto_pin_file(cache_file: &Path, ctx: &AutoPinCtx<'_>) -> Option<String> {
-    if cache_file.file_name().is_some_and(|n| n == ".meta") {
-        return None;
-    }
-    let filename = cache_file
-        .strip_prefix(ctx.vdir)
-        .ok()?
-        .to_str()?
-        .to_string();
-    let inst_path = match ctx.installed.get(&filename) {
-        Some(p) if p.exists() => p,
-        _ => return None,
-    };
-
-    let cache_text = std::fs::read_to_string(cache_file).ok()?;
-    let installed_text = std::fs::read_to_string(inst_path).ok()?;
-
-    // Check if stored dir patch still matches
-    let p = dir_patch_path(ctx.entry, &filename, ctx.repo_root);
-    if dir_patch_already_matches(&p, &cache_text, &installed_text) {
-        return None;
-    }
-
-    let patch_text = generate_patch(&cache_text, &installed_text, &filename);
-    if !patch_text.is_empty()
-        && write_dir_patch(
-            &dir_patch_path(ctx.entry, &filename, ctx.repo_root),
-            &patch_text,
-        )
-        .is_ok()
-    {
-        Some(filename)
-    } else {
-        None
-    }
+fn load_cache_files(vdir: &Path) -> BTreeMap<String, PathBuf> {
+    walkdir(vdir)
+        .into_iter()
+        .filter(|cache_file| cache_file.file_name().is_none_or(|name| name != ".meta"))
+        .filter_map(|cache_file| {
+            let filename = cache_file
+                .strip_prefix(vdir)
+                .ok()
+                .and_then(|path| path.to_str())
+                .map(str::to_string)?;
+            Some((filename, cache_file))
+        })
+        .collect()
 }
 
-fn auto_pin_dir_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
+struct DirInstalledVariant {
+    label: String,
+    files: HashMap<String, PathBuf>,
+}
+
+type DirModifiedMap = BTreeMap<String, String>;
+
+fn installed_dir_variants(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<Vec<DirInstalledVariant>, SkillfileError> {
+    let mut variants = Vec::new();
+    for target in &manifest.install_targets {
+        let adapter = target_adapter(target)?;
+        if !adapter.supports(entry.entity_type) {
+            continue;
+        }
+        let scope = AdapterScope {
+            scope: target.scope,
+            repo_root,
+        };
+        let files = adapter.installed_dir_files(entry, &scope);
+        if files.is_empty() {
+            continue;
+        }
+        variants.push(DirInstalledVariant {
+            label: target.to_string(),
+            files,
+        });
+    }
+    Ok(variants)
+}
+
+fn modified_dir_content(
+    cache_files: &BTreeMap<String, PathBuf>,
+    variant: &DirInstalledVariant,
+) -> Result<DirModifiedMap, SkillfileError> {
+    let mut modified = BTreeMap::new();
+    for (filename, cache_file) in cache_files {
+        let Some(installed_path) = variant.files.get(filename).filter(|path| path.exists()) else {
+            continue;
+        };
+        let cache_text = std::fs::read_to_string(cache_file)?;
+        let installed_text = std::fs::read_to_string(installed_path)?;
+        if installed_text != cache_text {
+            modified.insert(filename.clone(), installed_text);
+        }
+    }
+    Ok(modified)
+}
+
+fn representative_dir_changes(
+    entry_name: &str,
+    cache_files: &BTreeMap<String, PathBuf>,
+    variants: &[DirInstalledVariant],
+) -> Result<Option<DirModifiedMap>, SkillfileError> {
+    let mut modified = Vec::new();
+    for variant in variants {
+        let changed = modified_dir_content(cache_files, variant)?;
+        if !changed.is_empty() {
+            modified.push((variant.label.clone(), changed));
+        }
+    }
+    if modified.is_empty() {
+        return Ok(None);
+    }
+    let representative = &modified[0].1;
+    if modified
+        .iter()
+        .any(|(_, changed)| changed != representative)
+    {
+        let labels: Vec<String> = modified.iter().map(|(label, _)| label.clone()).collect();
+        return Err(divergent_auto_pin_error(entry_name, &labels));
+    }
+    Ok(Some(representative.clone()))
+}
+
+struct WriteDirPatchesCtx<'a> {
+    entry: &'a Entry,
+    repo_root: &'a Path,
+    cache_files: &'a BTreeMap<String, PathBuf>,
+    representative: &'a DirModifiedMap,
+}
+
+fn write_auto_pin_dir_patches(ctx: &WriteDirPatchesCtx<'_>) -> Result<Vec<String>, SkillfileError> {
+    let mut pinned = Vec::new();
+    for (filename, cache_file) in ctx.cache_files {
+        let Some(installed_text) = ctx.representative.get(filename) else {
+            remove_dir_patch(ctx.entry, filename, ctx.repo_root)?;
+            continue;
+        };
+
+        let cache_text = std::fs::read_to_string(cache_file)?;
+        let patch_path = dir_patch_path(ctx.entry, filename, ctx.repo_root);
+        if dir_patch_already_matches(&patch_path, &cache_text, installed_text) {
+            continue;
+        }
+
+        let patch_text = generate_patch(&cache_text, installed_text, filename);
+        if patch_text.is_empty() {
+            continue;
+        }
+
+        write_dir_patch(&patch_path, &patch_text)?;
+        pinned.push(filename.clone());
+    }
+    Ok(pinned)
+}
+
+fn auto_pin_dir_entry(
+    entry: &Entry,
+    manifest: &Manifest,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
     let vdir = &vendor_dir_for(entry, repo_root);
     if !vdir.is_dir() {
-        return;
+        return Ok(());
     }
-    let Ok(installed) = installed_dir_files(entry, manifest, repo_root) else {
-        return;
-    };
+    let installed = installed_dir_variants(entry, manifest, repo_root)?;
     if installed.is_empty() {
-        return;
+        return Ok(());
     }
-
-    let ctx = AutoPinCtx {
-        vdir,
-        entry,
-        installed: &installed,
-        repo_root,
+    let cache_files = load_cache_files(vdir);
+    let Some(representative) = representative_dir_changes(&entry.name, &cache_files, &installed)?
+    else {
+        return Ok(());
     };
-    let pinned: Vec<String> = walkdir(vdir)
-        .into_iter()
-        .filter_map(|f| try_auto_pin_file(&f, &ctx))
-        .collect();
+    let pinned = write_auto_pin_dir_patches(&WriteDirPatchesCtx {
+        entry,
+        repo_root,
+        cache_files: &cache_files,
+        representative: &representative,
+    })?;
 
     if !pinned.is_empty() {
         progress!(
@@ -305,6 +478,7 @@ fn auto_pin_dir_entry(entry: &Entry, manifest: &Manifest, repo_root: &Path) {
             pinned.join(", ")
         );
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,10 +1229,11 @@ fn load_manifest(
     Ok(manifest)
 }
 
-fn auto_pin_all(manifest: &Manifest, repo_root: &Path) {
+fn auto_pin_all(manifest: &Manifest, repo_root: &Path) -> Result<(), SkillfileError> {
     for entry in &manifest.entries {
-        auto_pin_entry(entry, manifest, repo_root);
+        auto_pin_entry(entry, manifest, repo_root)?;
     }
+    Ok(())
 }
 
 fn print_first_install_hint(manifest: &Manifest) {
@@ -1091,7 +1266,7 @@ pub fn cmd_install(repo_root: &Path, opts: &CmdInstallOpts<'_>) -> Result<(), Sk
 
     // Auto-pin local edits before re-fetching upstream (--update only).
     if opts.update && !opts.dry_run {
-        auto_pin_all(&manifest, repo_root);
+        auto_pin_all(&manifest, repo_root)?;
     }
 
     // Ensure cache dir exists (used as first-install marker and by sync).
@@ -2284,7 +2459,7 @@ mod tests {
         std::fs::create_dir_all(&skills_dir).unwrap();
         std::fs::write(skills_dir.join("my-skill.md"), "# Original\n").unwrap();
 
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         // No patch must have been written.
         assert!(
@@ -2304,7 +2479,7 @@ mod tests {
         };
 
         // No Skillfile.lock — should silently return without panicking.
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         assert!(!patch_fixture_path(dir.path(), &entry).exists());
     }
@@ -2330,7 +2505,7 @@ mod tests {
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
 
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         assert!(!patch_fixture_path(dir.path(), &entry).exists());
     }
@@ -2356,7 +2531,7 @@ mod tests {
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
 
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         assert!(
             patch_fixture_path(dir.path(), &entry).exists(),
@@ -2379,6 +2554,94 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(installed_dir.join("SKILL.md")).unwrap(),
             installed_content,
+        );
+    }
+
+    #[test]
+    fn auto_pin_entry_uses_second_target_when_first_is_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "my-skill";
+
+        let cache_content = "# My Skill\n\nOriginal content.\n";
+        let installed_content = "# My Skill\n\nUser-modified content.\n";
+
+        setup_github_skill_repo(dir.path(), name, cache_content);
+
+        let first_installed_dir = dir.path().join(format!(".claude/skills/{name}"));
+        std::fs::create_dir_all(&first_installed_dir).unwrap();
+        std::fs::write(first_installed_dir.join("SKILL.md"), cache_content).unwrap();
+
+        let second_installed_dir = dir.path().join(format!(".cursor/skills/{name}"));
+        std::fs::create_dir_all(&second_installed_dir).unwrap();
+        std::fs::write(second_installed_dir.join("SKILL.md"), installed_content).unwrap();
+
+        let entry = make_skill_entry(name);
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                make_target("claude-code", Scope::Local),
+                make_target("cursor", Scope::Local),
+            ],
+        };
+
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
+
+        std::fs::write(first_installed_dir.join("SKILL.md"), cache_content).unwrap();
+        install_entry(
+            &entry,
+            &make_target("claude-code", Scope::Local),
+            &InstallCtx {
+                repo_root: dir.path(),
+                opts: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(first_installed_dir.join("SKILL.md")).unwrap(),
+            installed_content,
+            "auto-pin must preserve edits from a modified secondary target"
+        );
+    }
+
+    #[test]
+    fn auto_pin_entry_errors_on_divergent_multi_target_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "my-skill";
+
+        let cache_content = "# My Skill\n\nOriginal content.\n";
+        setup_github_skill_repo(dir.path(), name, cache_content);
+
+        let first_installed_dir = dir.path().join(format!(".claude/skills/{name}"));
+        std::fs::create_dir_all(&first_installed_dir).unwrap();
+        std::fs::write(
+            first_installed_dir.join("SKILL.md"),
+            "# My Skill\n\nClaude edit.\n",
+        )
+        .unwrap();
+
+        let second_installed_dir = dir.path().join(format!(".cursor/skills/{name}"));
+        std::fs::create_dir_all(&second_installed_dir).unwrap();
+        std::fs::write(
+            second_installed_dir.join("SKILL.md"),
+            "# My Skill\n\nCursor edit.\n",
+        )
+        .unwrap();
+
+        let entry = make_skill_entry(name);
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                make_target("claude-code", Scope::Local),
+                make_target("cursor", Scope::Local),
+            ],
+        };
+
+        let error = auto_pin_entry(&entry, &manifest, dir.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("divergent edits across install targets"),
+            "unexpected error: {error}"
         );
     }
 
@@ -2415,7 +2678,7 @@ mod tests {
         // Small sleep so that any write would produce a different mtime.
         std::thread::sleep(std::time::Duration::from_millis(20));
 
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         let mtime_after = std::fs::metadata(&patch_path).unwrap().modified().unwrap();
 
@@ -2450,7 +2713,7 @@ mod tests {
         std::fs::create_dir_all(&installed_dir).unwrap();
         std::fs::write(installed_dir.join("SKILL.md"), new_installed).unwrap();
 
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         // The patch was re-written to reflect new_installed. Verify by resetting the
         // installed file to cache_content and reinstalling — must yield new_installed.
@@ -2517,7 +2780,7 @@ mod tests {
             install_targets: vec![make_target("claude-code", Scope::Local)],
         };
 
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         // Patch for the modified file should exist.
         let skill_patch = dir_patch_fixture_path(dir.path(), &entry, "SKILL.md");
@@ -2528,6 +2791,72 @@ mod tests {
         assert!(
             !examples_patch.exists(),
             "patch for examples.md must not be written (content unchanged)"
+        );
+    }
+
+    #[test]
+    fn auto_pin_dir_entry_uses_second_target_when_first_is_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "lang-pro";
+
+        std::fs::write(
+            dir.path().join("Skillfile"),
+            format!(
+                "install  claude-code  local\ninstall  cursor  local\ngithub  skill  {name}  owner/repo  skills/{name}\n"
+            ),
+        )
+        .unwrap();
+        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
+        locked.insert(
+            format!("github/skill/{name}"),
+            LockEntry {
+                sha: "deadbeefdeadbeefdeadbeef".into(),
+                raw_url: format!("https://example.com/{name}"),
+            },
+        );
+        write_lock_fixture(dir.path(), &locked);
+
+        let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("SKILL.md"), "# Lang Pro\n\nOriginal.\n").unwrap();
+
+        let first_inst_dir = dir.path().join(format!(".claude/skills/{name}"));
+        std::fs::create_dir_all(&first_inst_dir).unwrap();
+        std::fs::write(first_inst_dir.join("SKILL.md"), "# Lang Pro\n\nOriginal.\n").unwrap();
+
+        let second_inst_dir = dir.path().join(format!(".cursor/skills/{name}"));
+        std::fs::create_dir_all(&second_inst_dir).unwrap();
+        std::fs::write(
+            second_inst_dir.join("SKILL.md"),
+            "# Lang Pro\n\nModified.\n",
+        )
+        .unwrap();
+
+        let entry = make_dir_skill_entry(name);
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                make_target("claude-code", Scope::Local),
+                make_target("cursor", Scope::Local),
+            ],
+        };
+
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
+
+        std::fs::write(first_inst_dir.join("SKILL.md"), "# Lang Pro\n\nOriginal.\n").unwrap();
+        install_entry(
+            &entry,
+            &make_target("claude-code", Scope::Local),
+            &InstallCtx {
+                repo_root: dir.path(),
+                opts: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(first_inst_dir.join("SKILL.md")).unwrap(),
+            "# Lang Pro\n\nModified.\n",
+            "auto-pin must preserve dir-entry edits from a modified secondary target"
         );
     }
 
@@ -2554,7 +2883,7 @@ mod tests {
         };
 
         // No vendor dir — must silently return without panicking.
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         assert!(!has_dir_patch_fixture(dir.path(), &entry));
     }
@@ -2605,7 +2934,7 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(20));
 
-        auto_pin_entry(&entry, &manifest, dir.path());
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         let mtime_after = std::fs::metadata(&patch_path).unwrap().modified().unwrap();
 
