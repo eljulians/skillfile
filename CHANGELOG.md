@@ -4,6 +4,31 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.6.0 - 04-05-2026
+
+### Added
+
+- **`skillfile info <name>`** - inspect a single skill or agent with its source, ref, lock SHA, pin status, install locations, cache path, and local modification state by @costajohnt
+- **Junie adapter** - skillfile can now deploy skills and agents to Junie by @RLittlesII
+
+### Changed
+
+- **Clearer `skillfile add` outcome summary** - `add` now reports which targets were updated and which were skipped after the command completes. By @niklasmarderx
+- **Styled `status` and `validate` output** - terminal output now uses color while captured output stays plain text for scripts and tests. By @niklasmarderx
+- **`skillfile add` now respects personal platform config** - when a shared repo omits `install` lines, `add` now installs to targets from personal config.
+- **Dependency refresh** - bumped `clap` to 4.6.1, `clap_complete` to 4.6.2, and `assert_cmd` to 2.2.1.
+
+### Security
+
+- **`rustls-webpki` updated to 0.103.13** - pulls in the fix for `RUSTSEC-2026-0104` by @niklasmarderx
+
+### Fixed
+
+- **Multi-target auto-pin no longer trusts the first install target** - `skillfile install --update` now compares every configured install target before saving local edits. Matching edits on secondary targets are preserved, and divergent edits now stop with an explicit error instead of risking silent data loss.
+- **Pinned drift detection is now patch-aware** - `skillfile status` and `skillfile info` now compare installed content against the cached upstream plus the saved patch, so extra unsaved edits are shown as modified instead of being hidden by the mere presence of a pin.
+- **Missing remote installs are now visible** - locked remote entries now show `[not installed]` or `[partial install]` in `status`, and `info` marks missing install locations explicitly.
+- **Rollback paths are more reliable** - failed installs and blocked target paths now clean up partial writes more consistently across `add` and `install`.
+
 ## v1.5.0 - 12-04-2026
 
 ### Added
