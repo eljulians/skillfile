@@ -121,6 +121,21 @@ impl FileSystemAdapter {
     }
 }
 
+fn preferred_home_dir_from(
+    home_override: Option<std::ffi::OsString>,
+    fallback: Option<PathBuf>,
+) -> PathBuf {
+    home_override
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or(fallback)
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn preferred_home_dir() -> PathBuf {
+    preferred_home_dir_from(std::env::var_os("HOME"), dirs::home_dir())
+}
+
 impl PlatformAdapter for FileSystemAdapter {
     fn name(&self) -> &str {
         &self.name
@@ -143,7 +158,7 @@ impl PlatformAdapter for FileSystemAdapter {
             Scope::Local => &config.local_path,
         };
         if raw.starts_with('~') {
-            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+            let home = preferred_home_dir();
             home.join(raw.strip_prefix("~/").unwrap_or(raw))
         } else {
             ctx.repo_root.join(raw)
@@ -1545,6 +1560,13 @@ mod tests {
             skill.to_string_lossy().ends_with("antigravity/skills"),
             "unexpected: {skill:?}"
         );
+    }
+
+    #[test]
+    fn global_target_dir_prefers_home_env_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = preferred_home_dir_from(Some(dir.path().as_os_str().to_owned()), None);
+        assert_eq!(home, dir.path());
     }
 
     #[test]
