@@ -66,27 +66,56 @@ fn completion_env_shell(shell: clap_complete::Shell) -> &'static str {
     }
 }
 
-fn write_completion_registration(shell: clap_complete::Shell) -> Result<(), SkillfileError> {
-    let completer = std::env::current_exe()
-        .map_err(|e| SkillfileError::Install(format!("failed to locate skillfile binary: {e}")))?;
-    let output = std::process::Command::new(&completer)
-        .env("COMPLETE", completion_env_shell(shell))
+fn completion_registration_output(
+    completer: &Path,
+    shell_name: &str,
+) -> Result<Vec<u8>, SkillfileError> {
+    let output = std::process::Command::new(completer)
+        .env("COMPLETE", shell_name)
         .output()
         .map_err(|e| {
             SkillfileError::Install(format!("failed to generate shell completions: {e}"))
         })?;
 
     if output.status.success() {
-        use std::io::Write as _;
-        std::io::stdout()
-            .write_all(&output.stdout)
-            .map_err(SkillfileError::Io)
+        Ok(output.stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(SkillfileError::Install(format!(
             "failed to generate shell completions: {stderr}"
         )))
     }
+}
+
+fn completion_registration_completer() -> Result<PathBuf, SkillfileError> {
+    let current_exe = std::env::current_exe()
+        .map_err(|e| SkillfileError::Install(format!("failed to locate skillfile binary: {e}")))?;
+
+    if current_exe
+        .file_name()
+        .is_some_and(|name| name == std::ffi::OsStr::new("skillfile"))
+    {
+        return Ok(current_exe);
+    }
+
+    let Some(profile_dir) = current_exe.parent().and_then(|p| p.parent()) else {
+        return Ok(current_exe);
+    };
+    let candidate = profile_dir.join("skillfile");
+
+    Ok(candidate
+        .exists()
+        .then_some(candidate)
+        .unwrap_or(current_exe))
+}
+
+fn write_completion_registration(shell: clap_complete::Shell) -> Result<(), SkillfileError> {
+    let completer = completion_registration_completer()?;
+    let output = completion_registration_output(&completer, completion_env_shell(shell))?;
+    use std::io::Write as _;
+    std::io::stdout()
+        .write_all(&output)
+        .map_err(SkillfileError::Io)
 }
 
 #[derive(Parser)]
@@ -697,6 +726,25 @@ fn main() {
 mod tests {
     use super::*;
     use clap::ValueEnum;
+    use std::path::{Path, PathBuf};
+
+    fn skillfile_bin_from_test_dir() -> Option<PathBuf> {
+        let test_exe = std::env::current_exe().ok()?;
+        let profile_dir = test_exe.parent().and_then(|p| p.parent())?;
+        let candidate = profile_dir.join("skillfile");
+        candidate.exists().then_some(candidate)
+    }
+
+    fn skillfile_bin() -> PathBuf {
+        skillfile_bin_from_test_dir().unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("cli crate should live under workspace root")
+                .parent()
+                .expect("workspace root should have a parent")
+                .join("target/debug/skillfile")
+        })
+    }
 
     fn completions_non_empty(shell: clap_complete::Shell) {
         let mut buf = Vec::new();
@@ -741,5 +789,37 @@ mod tests {
         for shell in clap_complete::Shell::value_variants() {
             assert_eq!(completion_env_shell(*shell), shell.to_string());
         }
+    }
+
+    #[test]
+    fn completion_registration_output_returns_dynamic_zsh_script() {
+        let output = completion_registration_output(&skillfile_bin(), "zsh")
+            .expect("zsh registration should succeed");
+        let output = String::from_utf8(output).expect("completion output should be utf-8");
+        assert!(output.contains("_clap_dynamic_completer_skillfile"));
+        assert!(output.contains("COMPLETE=\"zsh\""));
+    }
+
+    #[test]
+    fn completion_registration_output_reports_unknown_shell() {
+        let err = completion_registration_output(&skillfile_bin(), "bogus")
+            .expect_err("unknown shell should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to generate shell completions"));
+        assert!(msg.contains("unknown shell `bogus`"));
+    }
+
+    #[test]
+    fn completion_registration_output_reports_spawn_failure() {
+        let err = completion_registration_output(Path::new("/definitely/missing-skillfile"), "zsh")
+            .expect_err("missing completer should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to generate shell completions"));
+    }
+
+    #[test]
+    fn write_completion_registration_uses_real_binary_in_tests() {
+        write_completion_registration(clap_complete::Shell::Zsh)
+            .expect("zsh registration should write to stdout");
     }
 }
