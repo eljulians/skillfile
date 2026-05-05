@@ -4,6 +4,13 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.6.1 - 05-05-2026
+
+### Fixed
+
+- **Zsh autocomplete now works reliably** - `skillfile completions zsh` now generates a dynamic completion hook that calls back into `skillfile` at completion time, so commands like `info`, `remove`, `pin`, `unpin`, `diff`, and `resolve` can complete entry names from your `Skillfile`.
+- **Zsh setup guidance is clearer** - the recommended setup now uses `source <(skillfile completions zsh)` to avoid stale `compinit` / `.zcompdump` state after upgrades, with a documented fallback for file-based setups.
+
 ## v1.6.0 - 04-05-2026
 
 ### Added

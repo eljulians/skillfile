@@ -210,14 +210,28 @@ Generate completions for your shell, then source or install them:
 skillfile completions bash > ~/.local/share/bash-completion/completions/skillfile
 
 # Zsh
-skillfile completions zsh > ~/.zfunc/_skillfile
-# (add `fpath+=~/.zfunc` to .zshrc before compinit)
+# add this after your existing `compinit` in ~/.zshrc
+echo 'source <(skillfile completions zsh)' >> ~/.zshrc
 
 # Fish
 skillfile completions fish > ~/.config/fish/completions/skillfile.fish
 ```
 
-Tab completion covers all commands, flags, and entry names (for `info`, `remove`, `pin`, `unpin`, `diff`, `resolve`).
+For zsh, sourcing the generated script on shell startup is the most reliable option because it avoids stale `compinit` / `.zcompdump` state after upgrades.
+
+If you prefer a file-based zsh setup instead:
+
+```zsh
+skillfile completions zsh > ~/.zfunc/_skillfile
+# add this before `compinit` in ~/.zshrc:
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit
+compinit
+```
+
+If zsh still serves stale completions after switching methods, run `rm -f ~/.zcompdump && compinit` once.
+
+These scripts call back into `skillfile` at completion time, so tab completion covers commands, flags, and entry names (for `info`, `remove`, `pin`, `unpin`, `diff`, `resolve`).
 
 ## Security
 

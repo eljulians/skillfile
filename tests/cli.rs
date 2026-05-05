@@ -61,6 +61,38 @@ fn version_flag_exits_zero() {
 }
 
 #[test]
+fn completions_zsh_outputs_dynamic_registration() {
+    skillfile_cmd()
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "_clap_dynamic_completer_skillfile",
+        ))
+        .stdout(predicate::str::contains("COMPLETE=\"zsh\""));
+}
+
+#[test]
+fn complete_env_zsh_suggests_entry_names() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "local  skill  browser  skills/browser.md\n\
+         local  agent  reviewer  agents/reviewer.md\n",
+    )
+    .unwrap();
+
+    sf(dir.path())
+        .args(["--", "skillfile", "remove"])
+        .env("COMPLETE", "zsh")
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("browser"))
+        .stdout(predicate::str::contains("reviewer"));
+}
+
+#[test]
 fn no_args_exits_nonzero() {
     skillfile_cmd()
         .assert()

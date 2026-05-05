@@ -55,6 +55,40 @@ fn cli_command() -> clap::Command {
     Cli::command().long_about(cli_long_about())
 }
 
+fn completion_env_shell(shell: clap_complete::Shell) -> &'static str {
+    match shell.to_string().as_str() {
+        "bash" => "bash",
+        "elvish" => "elvish",
+        "fish" => "fish",
+        "powershell" => "powershell",
+        "zsh" => "zsh",
+        other => panic!("unsupported completion shell: {other}"),
+    }
+}
+
+fn write_completion_registration(shell: clap_complete::Shell) -> Result<(), SkillfileError> {
+    let completer = std::env::current_exe()
+        .map_err(|e| SkillfileError::Install(format!("failed to locate skillfile binary: {e}")))?;
+    let output = std::process::Command::new(&completer)
+        .env("COMPLETE", completion_env_shell(shell))
+        .output()
+        .map_err(|e| {
+            SkillfileError::Install(format!("failed to generate shell completions: {e}"))
+        })?;
+
+    if output.status.success() {
+        use std::io::Write as _;
+        std::io::stdout()
+            .write_all(&output.stdout)
+            .map_err(SkillfileError::Io)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(SkillfileError::Install(format!(
+            "failed to generate shell completions: {stderr}"
+        )))
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "skillfile",
@@ -508,15 +542,7 @@ fn run_install(repo_root: &Path, dry_run: bool, update: bool) -> Result<(), Skil
 
 fn run_content_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileError> {
     match cmd {
-        Command::Completions { shell } => {
-            clap_complete::generate(
-                shell,
-                &mut Cli::command(),
-                "skillfile",
-                &mut std::io::stdout(),
-            );
-            Ok(())
-        }
+        Command::Completions { shell } => write_completion_registration(shell),
         Command::Validate => commands::validate::cmd_validate(repo_root),
         Command::Info { name } => commands::info::cmd_info(&name, repo_root),
         Command::Format { dry_run } => commands::format::cmd_format(repo_root, dry_run),
@@ -670,6 +696,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::ValueEnum;
 
     fn completions_non_empty(shell: clap_complete::Shell) {
         let mut buf = Vec::new();
@@ -707,5 +734,12 @@ mod tests {
     #[test]
     fn completions_powershell() {
         completions_non_empty(clap_complete::Shell::PowerShell);
+    }
+
+    #[test]
+    fn completion_env_shell_names_match_clap() {
+        for shell in clap_complete::Shell::value_variants() {
+            assert_eq!(completion_env_shell(*shell), shell.to_string());
+        }
     }
 }
