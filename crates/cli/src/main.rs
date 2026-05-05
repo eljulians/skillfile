@@ -3,6 +3,7 @@ mod update_check;
 use skillfile::commands;
 use skillfile::config;
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -103,16 +104,16 @@ fn completion_registration_completer() -> Result<PathBuf, SkillfileError> {
     };
     let candidate = profile_dir.join("skillfile");
 
-    Ok(candidate
-        .exists()
-        .then_some(candidate)
-        .unwrap_or(current_exe))
+    Ok(if candidate.exists() {
+        candidate
+    } else {
+        current_exe
+    })
 }
 
 fn write_completion_registration(shell: clap_complete::Shell) -> Result<(), SkillfileError> {
     let completer = completion_registration_completer()?;
     let output = completion_registration_output(&completer, completion_env_shell(shell))?;
-    use std::io::Write as _;
     std::io::stdout()
         .write_all(&output)
         .map_err(SkillfileError::Io)
