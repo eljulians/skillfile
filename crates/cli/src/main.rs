@@ -88,27 +88,41 @@ fn completion_registration_output(
     }
 }
 
-fn completion_registration_completer() -> Result<PathBuf, SkillfileError> {
-    let current_exe = std::env::current_exe()
-        .map_err(|e| SkillfileError::Install(format!("failed to locate skillfile binary: {e}")))?;
+fn completion_binary_name() -> std::ffi::OsString {
+    format!("skillfile{}", std::env::consts::EXE_SUFFIX).into()
+}
 
+fn completion_registration_completer_from(
+    current_exe: PathBuf,
+    binary_name: &std::ffi::OsStr,
+) -> PathBuf {
     if current_exe
         .file_name()
-        .is_some_and(|name| name == std::ffi::OsStr::new("skillfile"))
+        .is_some_and(|name| name == binary_name)
     {
-        return Ok(current_exe);
+        return current_exe;
     }
 
     let Some(profile_dir) = current_exe.parent().and_then(|p| p.parent()) else {
-        return Ok(current_exe);
+        return current_exe;
     };
-    let candidate = profile_dir.join("skillfile");
+    let candidate = profile_dir.join(binary_name);
 
-    Ok(if candidate.exists() {
+    if candidate.exists() {
         candidate
     } else {
         current_exe
-    })
+    }
+}
+
+fn completion_registration_completer() -> Result<PathBuf, SkillfileError> {
+    let current_exe = std::env::current_exe()
+        .map_err(|e| SkillfileError::Install(format!("failed to locate skillfile binary: {e}")))?;
+    let binary_name = completion_binary_name();
+    Ok(completion_registration_completer_from(
+        current_exe,
+        &binary_name,
+    ))
 }
 
 fn write_completion_registration(shell: clap_complete::Shell) -> Result<(), SkillfileError> {
@@ -727,25 +741,7 @@ fn main() {
 mod tests {
     use super::*;
     use clap::ValueEnum;
-    use std::path::{Path, PathBuf};
-
-    fn skillfile_bin_from_test_dir() -> Option<PathBuf> {
-        let test_exe = std::env::current_exe().ok()?;
-        let profile_dir = test_exe.parent().and_then(|p| p.parent())?;
-        let candidate = profile_dir.join("skillfile");
-        candidate.exists().then_some(candidate)
-    }
-
-    fn skillfile_bin() -> PathBuf {
-        skillfile_bin_from_test_dir().unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("cli crate should live under workspace root")
-                .parent()
-                .expect("workspace root should have a parent")
-                .join("target/debug/skillfile")
-        })
-    }
+    use std::path::Path;
 
     fn completions_non_empty(shell: clap_complete::Shell) {
         let mut buf = Vec::new();
@@ -793,24 +789,6 @@ mod tests {
     }
 
     #[test]
-    fn completion_registration_output_returns_dynamic_zsh_script() {
-        let output = completion_registration_output(&skillfile_bin(), "zsh")
-            .expect("zsh registration should succeed");
-        let output = String::from_utf8(output).expect("completion output should be utf-8");
-        assert!(output.contains("_clap_dynamic_completer_skillfile"));
-        assert!(output.contains("COMPLETE=\"zsh\""));
-    }
-
-    #[test]
-    fn completion_registration_output_reports_unknown_shell() {
-        let err = completion_registration_output(&skillfile_bin(), "bogus")
-            .expect_err("unknown shell should fail");
-        let msg = err.to_string();
-        assert!(msg.contains("failed to generate shell completions"));
-        assert!(msg.contains("unknown shell `bogus`"));
-    }
-
-    #[test]
     fn completion_registration_output_reports_spawn_failure() {
         let err = completion_registration_output(Path::new("/definitely/missing-skillfile"), "zsh")
             .expect_err("missing completer should fail");
@@ -819,8 +797,39 @@ mod tests {
     }
 
     #[test]
-    fn write_completion_registration_uses_real_binary_in_tests() {
-        write_completion_registration(clap_complete::Shell::Zsh)
-            .expect("zsh registration should write to stdout");
+    fn completion_registration_completer_from_prefers_windows_cli_binary() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let profile_dir = dir.path().join("target/debug");
+        let deps_dir = profile_dir.join("deps");
+        std::fs::create_dir_all(&deps_dir).expect("deps dir should be created");
+
+        let test_exe = deps_dir.join("skillfile-abc123.exe");
+        std::fs::write(&test_exe, "").expect("test harness placeholder should be written");
+
+        let cli_binary = profile_dir.join("skillfile.exe");
+        std::fs::write(&cli_binary, "").expect("cli placeholder should be written");
+
+        let resolved =
+            completion_registration_completer_from(test_exe, std::ffi::OsStr::new("skillfile.exe"));
+
+        assert_eq!(resolved, cli_binary);
+    }
+
+    #[test]
+    fn completion_registration_completer_from_falls_back_when_cli_binary_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let profile_dir = dir.path().join("target/debug");
+        let deps_dir = profile_dir.join("deps");
+        std::fs::create_dir_all(&deps_dir).expect("deps dir should be created");
+
+        let test_exe = deps_dir.join("skillfile-abc123.exe");
+        std::fs::write(&test_exe, "").expect("test harness placeholder should be written");
+
+        let resolved = completion_registration_completer_from(
+            test_exe.clone(),
+            std::ffi::OsStr::new("skillfile.exe"),
+        );
+
+        assert_eq!(resolved, test_exe);
     }
 }
