@@ -482,6 +482,24 @@ enum AddSource {
         #[arg(long)]
         no_interactive: bool,
     },
+    /// Add a GitLab-hosted entry
+    Gitlab {
+        /// Entity type: skill or agent
+        #[arg(value_name = "TYPE", value_parser = parse_entity_type)]
+        entity_type: String,
+        /// GitLab project path (e.g. group/project or group/subgroup/project)
+        #[arg(value_name = "PROJECT")]
+        owner_repo: String,
+        /// Path within the repo
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+        /// Branch, tag, or SHA (default: main)
+        #[arg(value_name = "REF")]
+        ref_: Option<String>,
+        /// Override name (default: filename stem)
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
     /// Add a local file entry
     Local {
         /// Entity type: skill or agent
@@ -547,6 +565,19 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             name,
             no_interactive: _,
         } => commands::add::entry_from_github(&commands::add::GithubEntryArgs {
+            entity_type: &entity_type,
+            owner_repo: &owner_repo,
+            path: path.as_deref().unwrap_or("."),
+            ref_: ref_.as_deref(),
+            name: name.as_deref(),
+        }),
+        AddSource::Gitlab {
+            entity_type,
+            owner_repo,
+            path,
+            ref_,
+            name,
+        } => commands::add::entry_from_gitlab(&commands::add::GitlabEntryArgs {
             entity_type: &entity_type,
             owner_repo: &owner_repo,
             path: path.as_deref().unwrap_or("."),
