@@ -233,27 +233,27 @@ pub(crate) fn list_gitlab_dir_recursive(
     base_path: &str,
 ) -> Result<Vec<DirEntry>, SkillfileError> {
     let encoded = gl.owner_repo.replace('/', "%2F");
+    let trimmed = base_path.trim_end_matches('/');
+    // Use GitLab's `path` parameter to scope the tree to the target directory,
+    // avoiding pagination issues on large repos.
+    let encoded_path = encode_url_path(trimmed);
     let url = format!(
-        "https://{}/api/v4/projects/{}/repository/tree?ref={}&recursive=true&per_page=100",
-        gl.host, encoded, gl.ref_
+        "https://{}/api/v4/projects/{}/repository/tree?ref={}&recursive=true&per_page=100&path={}",
+        gl.host, encoded, gl.ref_, encoded_path
     );
     let Some(text) = gl.client.get_json(&url)? else {
         return Ok(Vec::new());
     };
-    // GitLab returns a flat JSON array, not {"tree": [...]} like GitHub
+    // GitLab returns a flat JSON array, not {"tree": [...]} like GitHub.
+    // With the `path` parameter, returned paths are still repo-absolute.
     let items: Vec<serde_json::Value> = serde_json::from_str(&text)
         .map_err(|e| SkillfileError::Network(format!("invalid GitLab tree JSON: {e}")))?;
 
-    let prefix = format!("{}/", base_path.trim_end_matches('/'));
+    let prefix = format!("{trimmed}/");
 
     let entries = items
         .iter()
-        .filter(|item| {
-            item["type"].as_str() == Some("blob")
-                && item["path"]
-                    .as_str()
-                    .is_some_and(|p| p.starts_with(&prefix))
-        })
+        .filter(|item| item["type"].as_str() == Some("blob"))
         .filter_map(|item| {
             let path = item["path"].as_str()?;
             let relative_path = path.strip_prefix(&prefix)?.to_string();
@@ -2085,9 +2085,9 @@ mod tests {
     // GitLab fetch helpers
     // -----------------------------------------------------------------------
 
-    fn gitlab_tree_url(host: &str, owner_repo: &str, ref_: &str) -> String {
+    fn gitlab_tree_url(host: &str, owner_repo: &str, ref_: &str, path: &str) -> String {
         let encoded = owner_repo.replace('/', "%2F");
-        format!("https://{host}/api/v4/projects/{encoded}/repository/tree?ref={ref_}&recursive=true&per_page=100")
+        format!("https://{host}/api/v4/projects/{encoded}/repository/tree?ref={ref_}&recursive=true&per_page=100&path={path}")
     }
 
     // -----------------------------------------------------------------------
@@ -2164,7 +2164,7 @@ mod tests {
     fn list_gitlab_dir_recursive_returns_blobs_under_prefix() {
         let owner_repo = "group/project";
         let ref_ = "main";
-        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_);
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
 
         // GitLab tree API returns a flat JSON array (not {"tree": [...]})
         let json = r#"[
@@ -2196,7 +2196,7 @@ mod tests {
     fn list_gitlab_dir_recursive_download_urls_use_file_api() {
         let owner_repo = "mygroup/myrepo";
         let ref_ = "abc123sha";
-        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_);
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/python");
 
         let json = r#"[{"path": "skills/python/SKILL.md", "type": "blob"}]"#;
 
@@ -2223,7 +2223,7 @@ mod tests {
     fn list_gitlab_dir_recursive_empty_returns_empty() {
         let owner_repo = "group/project";
         let ref_ = "main";
-        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_);
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
 
         let mut client = MockClient::new();
         client.add_json(&url, "[]");
@@ -2242,7 +2242,7 @@ mod tests {
     fn list_gitlab_dir_recursive_4xx_returns_empty() {
         let owner_repo = "group/project";
         let ref_ = "main";
-        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_);
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
 
         let mut client = MockClient::new();
         client.add_json_none(&url);
