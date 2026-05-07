@@ -1132,22 +1132,38 @@ pub fn fetch_file_at_sha(
     entry: &Entry,
     sha: &str,
 ) -> Result<String, SkillfileError> {
-    let SourceFields::Github {
-        owner_repo,
-        path_in_repo,
-        ..
-    } = &entry.source
-    else {
-        return Err(SkillfileError::Network(
-            "fetch_file_at_sha only supports github entries".into(),
-        ));
+    let bytes = match &entry.source {
+        SourceFields::Github {
+            owner_repo,
+            path_in_repo,
+            ..
+        } => {
+            let ghf = GithubFetch {
+                client,
+                owner_repo,
+                ref_: sha,
+            };
+            crate::resolver::fetch_github_file(&ghf, path_in_repo)?
+        }
+        SourceFields::Gitlab {
+            owner_repo,
+            path_in_repo,
+            ..
+        } => {
+            let glf = GitlabFetch {
+                client,
+                owner_repo,
+                ref_: sha,
+                host: &crate::http::gitlab_host(),
+            };
+            crate::resolver::fetch_gitlab_file(&glf, path_in_repo)?
+        }
+        _ => {
+            return Err(SkillfileError::Network(
+                "fetch_file_at_sha only supports github and gitlab entries".into(),
+            ));
+        }
     };
-    let ghf = GithubFetch {
-        client,
-        owner_repo,
-        ref_: sha,
-    };
-    let bytes = crate::resolver::fetch_github_file(&ghf, path_in_repo)?;
     crate::resolver::decode_safe(bytes)
         .map_err(|_| SkillfileError::Network(format!("binary file at sha {sha}")))
 }
@@ -1159,22 +1175,38 @@ pub fn fetch_dir_at_sha(
     entry: &Entry,
     sha: &str,
 ) -> Result<HashMap<String, String>, SkillfileError> {
-    let SourceFields::Github {
-        owner_repo,
-        path_in_repo,
-        ..
-    } = &entry.source
-    else {
-        return Err(SkillfileError::Network(
-            "fetch_dir_at_sha only supports github entries".into(),
-        ));
+    let dir_entries = match &entry.source {
+        SourceFields::Github {
+            owner_repo,
+            path_in_repo,
+            ..
+        } => {
+            let ghf = GithubFetch {
+                client,
+                owner_repo,
+                ref_: sha,
+            };
+            crate::resolver::list_github_dir_recursive(&ghf, path_in_repo)?
+        }
+        SourceFields::Gitlab {
+            owner_repo,
+            path_in_repo,
+            ..
+        } => {
+            let glf = GitlabFetch {
+                client,
+                owner_repo,
+                ref_: sha,
+                host: &crate::http::gitlab_host(),
+            };
+            crate::resolver::list_gitlab_dir_recursive(&glf, path_in_repo)?
+        }
+        _ => {
+            return Err(SkillfileError::Network(
+                "fetch_dir_at_sha only supports github and gitlab entries".into(),
+            ));
+        }
     };
-    let ghf = GithubFetch {
-        client,
-        owner_repo,
-        ref_: sha,
-    };
-    let dir_entries = crate::resolver::list_github_dir_recursive(&ghf, path_in_repo)?;
     let fetched = crate::resolver::fetch_files_parallel(client, &dir_entries)?;
     let mut result = HashMap::new();
     for (path, content) in fetched {
@@ -2053,6 +2085,84 @@ mod tests {
                 ref_: "main".into(),
             },
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // fetch_file_at_sha -- gitlab
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fetch_file_at_sha_gitlab_returns_content() {
+        let sha = "abcdef1234567890abcdef1234567890abcdef12";
+        let entry = gitlab_skill_entry("my-skill", "skills/my-skill.md");
+        let encoded_project = "group%2Fproject";
+        let encoded_path = "skills%2Fmy-skill.md";
+        let raw_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={sha}"
+        );
+        let client = MockClient::new().with_bytes(raw_url, b"# My Skill\nHello world.".to_vec());
+
+        let result = fetch_file_at_sha(&client, &entry, sha);
+        assert!(result.is_ok(), "fetch_file_at_sha failed: {result:?}");
+        assert_eq!(result.unwrap(), "# My Skill\nHello world.");
+    }
+
+    #[test]
+    fn fetch_file_at_sha_gitlab_binary_returns_error() {
+        let sha = "abcdef1234567890abcdef1234567890abcdef12";
+        let entry = gitlab_skill_entry("my-skill", "skills/my-skill.md");
+        let encoded_project = "group%2Fproject";
+        let encoded_path = "skills%2Fmy-skill.md";
+        let raw_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={sha}"
+        );
+        let client = MockClient::new().with_bytes(
+            raw_url,
+            vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        );
+
+        let result = fetch_file_at_sha(&client, &entry, sha);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("binary"));
+    }
+
+    // -----------------------------------------------------------------------
+    // fetch_dir_at_sha -- gitlab
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fetch_dir_at_sha_gitlab_returns_map() {
+        let sha = "deadbeef1234deadbeef1234deadbeef12345678";
+        let entry = gitlab_skill_entry("release-helper", "skills/release-helper");
+
+        let encoded_project = "group%2Fproject";
+        let tree_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/tree?ref={sha}&recursive=true&per_page=100&path=skills/release-helper"
+        );
+        let tree_json = r#"[
+            {"path": "skills/release-helper/SKILL.md", "type": "blob"},
+            {"path": "skills/release-helper/refs/guide.md", "type": "blob"}
+        ]"#;
+
+        let file1_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/skills%2Frelease-helper%2FSKILL.md/raw?ref={sha}"
+        );
+        let file2_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/skills%2Frelease-helper%2Frefs%2Fguide.md/raw?ref={sha}"
+        );
+
+        let client = MockClient::new()
+            .with_json(tree_url, Some(tree_json.to_string()))
+            .with_bytes(file1_url, b"# Release Helper".to_vec())
+            .with_bytes(file2_url, b"# Guide".to_vec());
+
+        let result = fetch_dir_at_sha(&client, &entry, sha);
+        assert!(result.is_ok(), "fetch_dir_at_sha failed: {result:?}");
+
+        let map = result.unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["SKILL.md"], "# Release Helper");
+        assert_eq!(map["refs/guide.md"], "# Guide");
     }
 
     // -----------------------------------------------------------------------
