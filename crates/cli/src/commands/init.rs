@@ -273,11 +273,6 @@ fn handle_gh_cli() -> Result<(), SkillfileError> {
 /// Skips when a token is already available. Otherwise presents options for gh
 /// CLI auth, pasting a token, or skipping (with a rate-limit warning).
 fn setup_github_token() -> Result<(), SkillfileError> {
-    if detect_existing_token() {
-        cliclack::log::success("GitHub token found")?;
-        return Ok(());
-    }
-
     let show_gh = gh_available();
     let mut select = cliclack::select("No GitHub token found. How would you like to authenticate?");
     if show_gh {
@@ -377,11 +372,6 @@ fn handle_glab_cli() -> Result<(), SkillfileError> {
 /// Skips when a token is already available. Otherwise presents options for glab
 /// CLI auth, pasting a token, or skipping.
 fn setup_gitlab_token() -> Result<(), SkillfileError> {
-    if detect_existing_gitlab_token() {
-        cliclack::log::success("GitLab token found")?;
-        return Ok(());
-    }
-
     let show_glab = glab_available();
     let mut select = cliclack::select("No GitLab token found. How would you like to authenticate?");
     if show_glab {
@@ -410,6 +400,34 @@ fn setup_gitlab_token() -> Result<(), SkillfileError> {
             Ok(())
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Combined forge token setup
+// ---------------------------------------------------------------------------
+
+fn setup_forge_tokens() -> Result<(), SkillfileError> {
+    let github_ok = detect_existing_token();
+    let gitlab_ok = detect_existing_gitlab_token();
+
+    if github_ok && gitlab_ok {
+        cliclack::log::success("GitHub and GitLab tokens found")?;
+        return Ok(());
+    }
+    if github_ok {
+        cliclack::log::success("GitHub token found")?;
+    }
+    if gitlab_ok {
+        cliclack::log::success("GitLab token found")?;
+    }
+
+    if !github_ok {
+        setup_github_token()?;
+    }
+    if !gitlab_ok {
+        setup_gitlab_token()?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -496,8 +514,7 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
 
     let destination = select_destination()?;
     persist_targets(&manifest_path, destination, &new_targets)?;
-    setup_github_token()?;
-    setup_gitlab_token()?;
+    setup_forge_tokens()?;
     update_gitignore(repo_root)?;
 
     let outro = if result.manifest.entries.is_empty() {
