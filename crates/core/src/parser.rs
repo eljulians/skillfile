@@ -5,7 +5,7 @@ use crate::error::SkillfileError;
 use crate::models::{EntityType, Entry, InstallTarget, Manifest, Scope, SourceFields, DEFAULT_REF};
 
 pub const MANIFEST_NAME: &str = "Skillfile";
-const KNOWN_SOURCES: &[&str] = &["github", "local", "url"];
+const KNOWN_SOURCES: &[&str] = &["github", "gitlab", "local", "url"];
 
 /// Result of parsing a Skillfile: the manifest plus any warnings.
 #[derive(Debug)]
@@ -119,6 +119,54 @@ fn parse_github_entry(
         entity_type,
         name,
         source: SourceFields::Github {
+            owner_repo: owner_repo.clone(),
+            path_in_repo: path_in_repo.clone(),
+            ref_: ref_.to_owned(),
+        },
+    };
+    (Some(entry), warnings)
+}
+
+/// Parse a gitlab entry line. Identical logic to github but creates `SourceFields::Gitlab`.
+fn parse_gitlab_entry(
+    parts: &[String],
+    entity_type: EntityType,
+    lineno: usize,
+) -> (Option<Entry>, Vec<String>) {
+    let mut warnings = Vec::new();
+
+    let (name, owner_repo, path_in_repo, ref_) = if parts[2].contains('/') {
+        if parts.len() < 4 {
+            warnings.push(format!(
+                "warning: line {lineno}: gitlab entry needs at least: owner/repo path"
+            ));
+            return (None, warnings);
+        }
+        let ref_ = parts.get(4).map_or(DEFAULT_REF, String::as_str);
+        (infer_name(&parts[3]), &parts[2], &parts[3], ref_)
+    } else {
+        if parts.len() < 5 {
+            warnings.push(format!(
+                "warning: line {lineno}: gitlab entry needs at least: name owner/repo path"
+            ));
+            return (None, warnings);
+        }
+        if !parts[3].contains('/') {
+            warnings.push(format!(
+                "warning: line {lineno}: invalid owner/repo '{}' \
+                 — expected 'owner/repo' format",
+                parts[3],
+            ));
+            return (None, warnings);
+        }
+        let ref_ = parts.get(5).map_or(DEFAULT_REF, String::as_str);
+        (parts[2].clone(), &parts[3], &parts[4], ref_)
+    };
+
+    let entry = Entry {
+        entity_type,
+        name,
+        source: SourceFields::Gitlab {
             owner_repo: owner_repo.clone(),
             path_in_repo: path_in_repo.clone(),
             ref_: ref_.to_owned(),
@@ -278,6 +326,7 @@ fn parse_source_entry(
     };
     match source_type {
         "github" => parse_github_entry(parts, entity_type, lineno),
+        "gitlab" => parse_gitlab_entry(parts, entity_type, lineno),
         "local" => parse_local_entry(parts, entity_type),
         "url" => parse_url_entry(parts, entity_type, lineno),
         _ => (None, vec![]),
@@ -360,6 +409,7 @@ pub fn parse_manifest_line(line: &str) -> Option<Entry> {
     let entity_type = EntityType::parse(&parts[1])?;
     let (entry_opt, _) = match source_type {
         "github" => parse_github_entry(&parts, entity_type, 0),
+        "gitlab" => parse_gitlab_entry(&parts, entity_type, 0),
         "local" => parse_local_entry(&parts, entity_type),
         "url" => parse_url_entry(&parts, entity_type, 0),
         _ => return None,
@@ -925,5 +975,55 @@ mod tests {
             split_line("local\tskill\tfoo.md"),
             vec!["local", "skill", "foo.md"]
         );
+    }
+
+    // -------------------------------------------------------------------
+    // GitLab entries
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn gitlab_entry_explicit_name_and_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(
+            dir.path(),
+            "gitlab  skill  my-skill  my-group/my-project  skills/my-skill.md  v2.0",
+        );
+        let r = parse_manifest(&p).unwrap();
+        assert_eq!(r.manifest.entries.len(), 1);
+        let e = &r.manifest.entries[0];
+        assert_eq!(e.source_type(), "gitlab");
+        assert_eq!(e.entity_type, EntityType::Skill);
+        assert_eq!(e.name, "my-skill");
+        let (or, pir, ref_) = e.source.as_gitlab().unwrap();
+        assert_eq!(or, "my-group/my-project");
+        assert_eq!(pir, "skills/my-skill.md");
+        assert_eq!(ref_, "v2.0");
+    }
+
+    #[test]
+    fn gitlab_entry_inferred_name_default_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(
+            dir.path(),
+            "gitlab  agent  my-group/my-project  agents/reviewer.md",
+        );
+        let r = parse_manifest(&p).unwrap();
+        assert_eq!(r.manifest.entries.len(), 1);
+        let e = &r.manifest.entries[0];
+        assert_eq!(e.source_type(), "gitlab");
+        assert_eq!(e.name, "reviewer");
+        let (or, pir, ref_) = e.source.as_gitlab().unwrap();
+        assert_eq!(or, "my-group/my-project");
+        assert_eq!(pir, "agents/reviewer.md");
+        assert_eq!(ref_, "main");
+    }
+
+    #[test]
+    fn gitlab_entry_too_few_fields_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(dir.path(), "gitlab  skill");
+        let r = parse_manifest(&p).unwrap();
+        assert!(r.manifest.entries.is_empty());
+        assert!(r.warnings.iter().any(|w| w.contains("warning")));
     }
 }
