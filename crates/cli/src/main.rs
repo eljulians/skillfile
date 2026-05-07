@@ -685,6 +685,8 @@ fn run() -> Result<(), SkillfileError> {
     // Inject config-file token before any command (and before the OnceLock is
     // populated by `github_token()`). This runs once; subsequent calls are no-ops.
     skillfile_sources::http::set_config_token(crate::config::read_config_token());
+    skillfile_sources::http::set_gitlab_config_token(crate::config::read_gitlab_config_token());
+    skillfile_sources::http::set_gitlab_config_host(crate::config::read_gitlab_config_host());
 
     let cli = match cli_command().try_get_matches() {
         Ok(matches) => Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit()),
