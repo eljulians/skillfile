@@ -1996,8 +1996,7 @@ mod tests {
         let url = gitlab_commit_url("my-group/my-project", "main");
         client.add_json(&url, &gitlab_sha_json("aabbccdd11223344"));
 
-        let sha =
-            resolve_gitlab_sha(&client, "my-group/my-project", "main", "gitlab.com").unwrap();
+        let sha = resolve_gitlab_sha(&client, "my-group/my-project", "main", "gitlab.com").unwrap();
         assert_eq!(sha, "aabbccdd11223344");
     }
 
@@ -2042,8 +2041,7 @@ mod tests {
             format!("https://gitlab.internal/api/v4/projects/{encoded}/repository/commits/main");
         client.add_json(&url, &gitlab_sha_json("selfhosted123"));
 
-        let sha =
-            resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.internal").unwrap();
+        let sha = resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.internal").unwrap();
         assert_eq!(sha, "selfhosted123");
     }
 

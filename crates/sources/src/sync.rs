@@ -956,7 +956,12 @@ fn resolve_shas_parallel(
     let mut cache = HashMap::with_capacity(results.len());
     for (p, result) in pending.into_iter().zip(results) {
         let sha = result?;
-        progress!("  resolved {}@{} -> {}", p.owner_repo, p.ref_, short_sha(&sha));
+        progress!(
+            "  resolved {}@{} -> {}",
+            p.owner_repo,
+            p.ref_,
+            short_sha(&sha)
+        );
         cache.insert((p.owner_repo, p.ref_), sha);
     }
     Ok(cache)
@@ -2100,9 +2105,8 @@ mod tests {
         let entry = gitlab_skill_entry("my-skill", "skills/my-skill.md");
 
         let encoded = "group%2Fproject";
-        let sha_url = format!(
-            "https://gitlab.com/api/v4/projects/{encoded}/repository/commits/main"
-        );
+        let sha_url =
+            format!("https://gitlab.com/api/v4/projects/{encoded}/repository/commits/main");
         let sha_json = serde_json::json!({ "id": sha }).to_string();
 
         let encoded_path = "skills%2Fmy-skill.md";

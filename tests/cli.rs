@@ -1576,10 +1576,7 @@ fn gitlab_entry_dry_run_sync() {
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "sync --dry-run failed: {stderr}"
-    );
+    assert!(output.status.success(), "sync --dry-run failed: {stderr}");
     // Verify the GitLab entry was actually parsed (not silently dropped)
     assert!(
         stderr.contains("gitlab/skill/my-skill"),
@@ -1597,8 +1594,5 @@ fn gitlab_entry_validate_passes() {
     )
     .unwrap();
 
-    sf(dir.path())
-        .arg("validate")
-        .assert()
-        .success();
+    sf(dir.path()).arg("validate").assert().success();
 }

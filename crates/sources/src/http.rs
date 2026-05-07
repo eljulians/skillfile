@@ -108,14 +108,20 @@ pub struct GitlabToken(Option<&'static str>);
 impl GitlabToken {
     #[must_use]
     pub fn for_url(&self, url: &str) -> Option<&'static str> {
-        is_gitlab_url(url, &gitlab_host()).then_some(self.0).flatten()
+        is_gitlab_url(url, &gitlab_host())
+            .then_some(self.0)
+            .flatten()
     }
 }
 
 /// Discover a GitLab token. Cached after first call.
 #[must_use]
 pub fn gitlab_token() -> GitlabToken {
-    GitlabToken(GITLAB_TOKEN_CACHE.get_or_init(discover_gitlab_token).as_deref())
+    GitlabToken(
+        GITLAB_TOKEN_CACHE
+            .get_or_init(discover_gitlab_token)
+            .as_deref(),
+    )
 }
 
 fn discover_gitlab_token() -> Option<String> {
