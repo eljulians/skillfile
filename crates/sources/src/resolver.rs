@@ -197,6 +197,79 @@ pub fn fetch_github_file(
 }
 
 // ---------------------------------------------------------------------------
+// GitLab file fetching & directory listing
+// ---------------------------------------------------------------------------
+
+/// Reference to a GitLab project at a specific commit, bundling client + coordinates.
+pub struct GitlabFetch<'a> {
+    pub client: &'a dyn HttpClient,
+    pub owner_repo: &'a str,
+    pub ref_: &'a str,
+    pub host: &'a str,
+}
+
+fn gitlab_file_url(host: &str, owner_repo: &str, ref_: &str, path: &str) -> String {
+    let encoded_project = owner_repo.replace('/', "%2F");
+    let encoded_path = encode_url_path(path).replace('/', "%2F");
+    format!(
+        "https://{host}/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={ref_}"
+    )
+}
+
+pub fn fetch_gitlab_file(
+    gl: &GitlabFetch<'_>,
+    path_in_repo: &str,
+) -> Result<Vec<u8>, SkillfileError> {
+    let effective_path = if path_in_repo == "." {
+        "SKILL.md"
+    } else {
+        path_in_repo
+    };
+    let url = gitlab_file_url(gl.host, gl.owner_repo, gl.ref_, effective_path);
+    http_get(gl.client, &url)
+}
+
+pub(crate) fn list_gitlab_dir_recursive(
+    gl: &GitlabFetch<'_>,
+    base_path: &str,
+) -> Result<Vec<DirEntry>, SkillfileError> {
+    let encoded = gl.owner_repo.replace('/', "%2F");
+    let url = format!(
+        "https://{}/api/v4/projects/{}/repository/tree?ref={}&recursive=true&per_page=100",
+        gl.host, encoded, gl.ref_
+    );
+    let Some(text) = gl.client.get_json(&url)? else {
+        return Ok(Vec::new());
+    };
+    // GitLab returns a flat JSON array, not {"tree": [...]} like GitHub
+    let items: Vec<serde_json::Value> = serde_json::from_str(&text)
+        .map_err(|e| SkillfileError::Network(format!("invalid GitLab tree JSON: {e}")))?;
+
+    let prefix = format!("{}/", base_path.trim_end_matches('/'));
+
+    let entries = items
+        .iter()
+        .filter(|item| {
+            item["type"].as_str() == Some("blob")
+                && item["path"]
+                    .as_str()
+                    .is_some_and(|p| p.starts_with(&prefix))
+        })
+        .filter_map(|item| {
+            let path = item["path"].as_str()?;
+            let relative_path = path.strip_prefix(&prefix)?.to_string();
+            let download_url = gitlab_file_url(gl.host, gl.owner_repo, gl.ref_, path);
+            Some(DirEntry {
+                relative_path,
+                download_url,
+            })
+        })
+        .collect();
+
+    Ok(entries)
+}
+
+// ---------------------------------------------------------------------------
 // list_repo_skill_entries — discover skill entry paths in a repo
 // ---------------------------------------------------------------------------
 
@@ -2009,5 +2082,181 @@ mod tests {
         assert!(err
             .to_string()
             .contains("could not resolve group/repo@main"));
+    }
+
+    // -----------------------------------------------------------------------
+    // GitLab fetch helpers
+    // -----------------------------------------------------------------------
+
+    fn gitlab_tree_url(host: &str, owner_repo: &str, ref_: &str) -> String {
+        let encoded = owner_repo.replace('/', "%2F");
+        format!("https://{host}/api/v4/projects/{encoded}/repository/tree?ref={ref_}&recursive=true&per_page=100")
+    }
+
+    // -----------------------------------------------------------------------
+    // fetch_gitlab_file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fetch_gitlab_file_basic() {
+        let sha = "abc123";
+        let encoded_project = "group%2Fproject";
+        let encoded_path = "skills%2Fgit.md";
+        let url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={sha}"
+        );
+        let mut client = MockClient::new();
+        client.add_bytes(&url, b"# Git skill".to_vec());
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo: "group/project",
+            ref_: sha,
+            host: "gitlab.com",
+        };
+        let result = fetch_gitlab_file(&gl, "skills/git.md").unwrap();
+        assert_eq!(result, b"# Git skill");
+    }
+
+    #[test]
+    fn fetch_gitlab_file_dot_path_becomes_skill_md() {
+        let sha = "def456";
+        let encoded_project = "group%2Fproject";
+        let url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/SKILL.md/raw?ref={sha}"
+        );
+        let mut client = MockClient::new();
+        client.add_bytes(&url, b"# Root skill".to_vec());
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo: "group/project",
+            ref_: sha,
+            host: "gitlab.com",
+        };
+        let result = fetch_gitlab_file(&gl, ".").unwrap();
+        assert_eq!(result, b"# Root skill");
+    }
+
+    #[test]
+    fn fetch_gitlab_file_propagates_error() {
+        let sha = "fff000";
+        let encoded_project = "group%2Fproject";
+        let encoded_path = "missing.md";
+        let url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={sha}"
+        );
+        let mut client = MockClient::new();
+        client.add_bytes_err(&url, "HTTP 404: not found");
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo: "group/project",
+            ref_: sha,
+            host: "gitlab.com",
+        };
+        let err = fetch_gitlab_file(&gl, "missing.md").unwrap_err();
+        assert!(err.to_string().contains("HTTP 404: not found"));
+    }
+
+    // -----------------------------------------------------------------------
+    // list_gitlab_dir_recursive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn list_gitlab_dir_recursive_returns_blobs_under_prefix() {
+        let owner_repo = "group/project";
+        let ref_ = "main";
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_);
+
+        // GitLab tree API returns a flat JSON array (not {"tree": [...]})
+        let json = r#"[
+            {"path": "skills/dir/file1.md", "type": "blob"},
+            {"path": "skills/dir/file2.md", "type": "blob"},
+            {"path": "skills/dir/sub", "type": "tree"},
+            {"path": "skills/other/file.md", "type": "blob"},
+            {"path": "readme.md", "type": "blob"}
+        ]"#;
+
+        let mut client = MockClient::new();
+        client.add_json(&url, json);
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+            host: "gitlab.com",
+        };
+        let entries = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap();
+
+        assert_eq!(entries.len(), 2);
+        let paths: Vec<&str> = entries.iter().map(|e| e.relative_path.as_str()).collect();
+        assert!(paths.contains(&"file1.md"));
+        assert!(paths.contains(&"file2.md"));
+    }
+
+    #[test]
+    fn list_gitlab_dir_recursive_download_urls_use_file_api() {
+        let owner_repo = "mygroup/myrepo";
+        let ref_ = "abc123sha";
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_);
+
+        let json = r#"[{"path": "skills/python/SKILL.md", "type": "blob"}]"#;
+
+        let mut client = MockClient::new();
+        client.add_json(&url, json);
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+            host: "gitlab.com",
+        };
+        let entries = list_gitlab_dir_recursive(&gl, "skills/python").unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].relative_path, "SKILL.md");
+        // Download URL should use the GitLab Files API format
+        assert!(entries[0].download_url.contains("/api/v4/projects/"));
+        assert!(entries[0].download_url.contains("/repository/files/"));
+        assert!(entries[0].download_url.contains("/raw?ref="));
+    }
+
+    #[test]
+    fn list_gitlab_dir_recursive_empty_returns_empty() {
+        let owner_repo = "group/project";
+        let ref_ = "main";
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_);
+
+        let mut client = MockClient::new();
+        client.add_json(&url, "[]");
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+            host: "gitlab.com",
+        };
+        let entries = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn list_gitlab_dir_recursive_4xx_returns_empty() {
+        let owner_repo = "group/project";
+        let ref_ = "main";
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_);
+
+        let mut client = MockClient::new();
+        client.add_json_none(&url);
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+            host: "gitlab.com",
+        };
+        let entries = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap();
+        assert!(entries.is_empty());
     }
 }
