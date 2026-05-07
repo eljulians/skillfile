@@ -9,8 +9,9 @@ use skillfile_core::progress;
 
 use crate::http::{HttpClient, UreqClient};
 use crate::resolver::{
-    fetch_files_parallel, fetch_github_file, http_get, list_github_dir_recursive,
-    resolve_github_sha, GithubFetch,
+    fetch_files_parallel, fetch_github_file, fetch_gitlab_file, http_get,
+    list_github_dir_recursive, list_gitlab_dir_recursive, resolve_github_sha, resolve_gitlab_sha,
+    GithubFetch, GitlabFetch,
 };
 use crate::strategy::{content_file, is_dir_entry, meta_sha};
 
@@ -45,7 +46,7 @@ fn dir_has_content(vdir: &Path) -> bool {
 
 fn content_exists(entry: &Entry, vdir: &Path) -> bool {
     match &entry.source {
-        SourceFields::Github { .. } => {
+        SourceFields::Github { .. } | SourceFields::Gitlab { .. } => {
             if is_dir_entry(entry) {
                 dir_has_content(vdir)
             } else {
@@ -53,7 +54,6 @@ fn content_exists(entry: &Entry, vdir: &Path) -> bool {
                 !cf.is_empty() && vdir.join(&cf).exists()
             }
         }
-        SourceFields::Gitlab { .. } => todo!("gitlab support"),
         SourceFields::Local { .. } => false,
         SourceFields::Url { .. } => {
             let cf = content_file(entry);
@@ -64,6 +64,19 @@ fn content_exists(entry: &Entry, vdir: &Path) -> bool {
 
 fn cache_github_sha(ctx: &mut SyncContext, entry: &Entry, sha: &str) {
     let SourceFields::Github {
+        owner_repo, ref_, ..
+    } = &entry.source
+    else {
+        return;
+    };
+    let cache_key = (owner_repo.clone(), ref_.clone());
+    ctx.sha_cache
+        .entry(cache_key)
+        .or_insert_with(|| sha.to_owned());
+}
+
+fn cache_gitlab_sha(ctx: &mut SyncContext, entry: &Entry, sha: &str) {
+    let SourceFields::Gitlab {
         owner_repo, ref_, ..
     } = &entry.source
     else {
@@ -100,7 +113,20 @@ pub fn sync_entry(
             }
             Ok(())
         }
-        SourceFields::Gitlab { .. } => todo!("gitlab support"),
+        SourceFields::Gitlab { .. } => {
+            let params = SyncParams {
+                repo_root: &ctx.repo_root,
+                dry_run: ctx.dry_run,
+                update: ctx.update,
+                sha_cache: &ctx.sha_cache,
+                locked: &ctx.locked,
+            };
+            if let Some((key, le)) = sync_gitlab_core(client, entry, &params)? {
+                cache_gitlab_sha(ctx, entry, &le.sha);
+                ctx.locked.insert(key, le);
+            }
+            Ok(())
+        }
         SourceFields::Url { url } => sync_url_core(&UrlSyncOp {
             client,
             entry,
@@ -421,6 +447,294 @@ fn sync_github_core(
     Ok(Some((key, LockEntry { sha, raw_url })))
 }
 
+// ---------------------------------------------------------------------------
+// GitLab sync helpers — mirrors the GitHub equivalents above
+// ---------------------------------------------------------------------------
+
+struct GitlabRef<'a> {
+    owner_repo: &'a str,
+    path_in_repo: &'a str,
+    sha: &'a str,
+    host: &'a str,
+}
+
+struct GitlabFetchOp<'a> {
+    client: &'a dyn HttpClient,
+    gl: &'a GitlabRef<'a>,
+    vdir: &'a Path,
+    label: &'a str,
+}
+
+/// Fetch and write a GitLab directory entry. Returns the lock `raw_url`.
+fn write_gitlab_dir(op: &GitlabFetchOp<'_>) -> Result<String, SkillfileError> {
+    let GitlabFetchOp {
+        client,
+        gl:
+            GitlabRef {
+                owner_repo,
+                path_in_repo,
+                sha,
+                host,
+            },
+        vdir,
+        label,
+    } = op;
+    let glf = GitlabFetch {
+        client: *client,
+        owner_repo,
+        ref_: sha,
+        host,
+    };
+    let dir_entries = list_gitlab_dir_recursive(&glf, path_in_repo)?;
+    let fetched = fetch_files_parallel(*client, &dir_entries)?;
+    for (relative_path, content) in &fetched {
+        let dest = vdir.join(relative_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest, content.as_bytes())?;
+    }
+    progress!(
+        "{label}: sha={} -> {}/ ({} files)",
+        short_sha(sha),
+        vdir.display(),
+        fetched.len()
+    );
+    let encoded_project = owner_repo.replace('/', "%2F");
+    Ok(format!(
+        "https://{host}/api/v4/projects/{encoded_project}/repository/tree?ref={sha}&path={path_in_repo}"
+    ))
+}
+
+/// Fetch and write a single GitLab file entry. Returns the lock `raw_url`.
+fn write_gitlab_file(op: &GitlabFetchOp<'_>) -> Result<String, SkillfileError> {
+    let GitlabFetchOp {
+        client,
+        gl:
+            GitlabRef {
+                owner_repo,
+                path_in_repo,
+                sha,
+                host,
+            },
+        vdir,
+        label,
+    } = op;
+    let glf = GitlabFetch {
+        client: *client,
+        owner_repo,
+        ref_: sha,
+        host,
+    };
+    let content = fetch_gitlab_file(&glf, path_in_repo)?;
+    let effective_path = if *path_in_repo == "." {
+        "SKILL.md"
+    } else {
+        path_in_repo
+    };
+    let filename = std::path::Path::new(effective_path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("content.md");
+    let dest = vdir.join(filename);
+    std::fs::write(&dest, &content)?;
+    progress!("{label}: sha={} -> {}", short_sha(sha), dest.display());
+    let encoded_project = owner_repo.replace('/', "%2F");
+    let encoded_path = effective_path.replace('/', "%2F");
+    Ok(format!(
+        "https://{host}/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={sha}"
+    ))
+}
+
+/// Fetch and write the content for a GitLab entry into `op.vdir`.
+fn fetch_and_write_gitlab(op: &GitlabFetchOp<'_>, is_dir: bool) -> Result<String, SkillfileError> {
+    std::fs::create_dir_all(op.vdir)?;
+    if is_dir {
+        write_gitlab_dir(op)
+    } else {
+        write_gitlab_file(op)
+    }
+}
+
+struct GitlabMeta<'a> {
+    vdir: &'a Path,
+    owner_repo: &'a str,
+    path_in_repo: &'a str,
+    ref_: &'a str,
+    sha: &'a str,
+    raw_url: &'a str,
+    host: &'a str,
+}
+
+/// Write the `.meta` JSON file for a GitLab entry.
+fn write_gitlab_meta(m: &GitlabMeta<'_>) -> Result<(), SkillfileError> {
+    let GitlabMeta {
+        vdir,
+        owner_repo,
+        path_in_repo,
+        ref_,
+        sha,
+        raw_url,
+        host,
+    } = m;
+    let meta_data = serde_json::json!({
+        "source_type": "gitlab",
+        "host": host,
+        "owner_repo": owner_repo,
+        "path_in_repo": path_in_repo,
+        "ref": ref_,
+        "sha": sha,
+        "raw_url": raw_url,
+    });
+    std::fs::write(
+        vdir.join(".meta"),
+        serde_json::to_string_pretty(&meta_data).expect("json! values are always serializable")
+            + "\n",
+    )?;
+    Ok(())
+}
+
+/// Fetch content, write it to disk, and record `.meta` for a GitLab entry.
+fn fetch_store_gitlab(op: &StoreOp<'_>) -> Result<String, SkillfileError> {
+    let StoreOp {
+        client,
+        entry,
+        vdir,
+        label,
+        sha,
+    } = op;
+    let SourceFields::Gitlab {
+        owner_repo,
+        path_in_repo,
+        ref_,
+    } = &entry.source
+    else {
+        unreachable!()
+    };
+    let host = crate::http::gitlab_host();
+    let gl = GitlabRef {
+        owner_repo,
+        path_in_repo,
+        sha,
+        host: &host,
+    };
+    let fetch_op = GitlabFetchOp {
+        client: *client,
+        gl: &gl,
+        vdir,
+        label,
+    };
+    let raw_url = fetch_and_write_gitlab(&fetch_op, is_dir_entry(entry))?;
+    write_gitlab_meta(&GitlabMeta {
+        vdir,
+        owner_repo,
+        path_in_repo,
+        ref_,
+        sha,
+        raw_url: &raw_url,
+        host: &host,
+    })?;
+    Ok(raw_url)
+}
+
+/// Resolve the SHA for a GitLab entry, returning `None` in dry-run mode.
+fn resolve_gitlab_sha_for_entry(
+    client: &dyn HttpClient,
+    q: &ShaLookup<'_>,
+    params: &SyncParams<'_>,
+) -> Result<Option<String>, SkillfileError> {
+    if let Some(ls) = q.locked_sha {
+        progress!(
+            "{}: re-fetching (locked sha={}) ...",
+            q.label,
+            short_sha(ls)
+        );
+        return Ok(Some(ls.to_owned()));
+    }
+
+    let cache_key = (q.owner_repo.to_owned(), q.ref_.to_owned());
+    if let Some(cached) = params.sha_cache.get(&cache_key) {
+        return Ok(Some(cached.clone()));
+    }
+
+    if params.dry_run {
+        progress!(
+            "{}: resolving {}@{} ... [dry-run]",
+            q.label,
+            q.owner_repo,
+            q.ref_
+        );
+        return Ok(None);
+    }
+
+    let host = crate::http::gitlab_host();
+    let sha = resolve_gitlab_sha(client, q.owner_repo, q.ref_, &host)?;
+    Ok(Some(sha))
+}
+
+/// Core sync logic for a GitLab entry. Mirrors `sync_github_core`.
+fn sync_gitlab_core(
+    client: &dyn HttpClient,
+    entry: &Entry,
+    params: &SyncParams<'_>,
+) -> Result<Option<(String, LockEntry)>, SkillfileError> {
+    let label = format!("  {entry}");
+    let vdir = vendor_dir_for(entry, params.repo_root);
+    let key = lock_key(entry);
+
+    let SourceFields::Gitlab {
+        owner_repo, ref_, ..
+    } = &entry.source
+    else {
+        unreachable!()
+    };
+    let locked_sha = if params.update {
+        None
+    } else {
+        params.locked.get(&key).map(|le| le.sha.clone())
+    };
+    let meta = meta_sha(&vdir);
+    let has_content = content_exists(entry, &vdir);
+
+    // Skip if locked SHA matches meta and content exists
+    if let Some(ref ls) = locked_sha {
+        if meta.as_deref() == Some(ls.as_str()) && has_content {
+            progress!("{label}: up to date (sha={})", short_sha(ls));
+            return Ok(None);
+        }
+    }
+
+    let q = ShaLookup {
+        owner_repo,
+        ref_,
+        label: &label,
+        locked_sha: locked_sha.as_deref(),
+    };
+    let Some(sha) = resolve_gitlab_sha_for_entry(client, &q, params)? else {
+        return Ok(None); // dry-run
+    };
+
+    // After resolving SHA on --update, skip download if cache is current
+    if params.update && meta.as_deref() == Some(sha.as_str()) && has_content {
+        progress!("{label}: up to date (sha={})", short_sha(&sha));
+        let raw_url = params
+            .locked
+            .get(&key)
+            .map(|le| le.raw_url.clone())
+            .unwrap_or_default();
+        return Ok(Some((key, LockEntry { sha, raw_url })));
+    }
+
+    let raw_url = fetch_store_gitlab(&StoreOp {
+        client,
+        entry,
+        vdir: &vdir,
+        label: &label,
+        sha: &sha,
+    })?;
+    Ok(Some((key, LockEntry { sha, raw_url })))
+}
+
 struct UrlSyncOp<'a> {
     client: &'a dyn HttpClient,
     entry: &'a Entry,
@@ -483,7 +797,7 @@ fn sync_entry_core(
             Ok(None)
         }
         SourceFields::Github { .. } => sync_github_core(client, entry, params),
-        SourceFields::Gitlab { .. } => todo!("gitlab support"),
+        SourceFields::Gitlab { .. } => sync_gitlab_core(client, entry, params),
         SourceFields::Url { url } => {
             sync_url_core(&UrlSyncOp {
                 client,
@@ -494,6 +808,27 @@ fn sync_entry_core(
             })?;
             Ok(None)
         }
+    }
+}
+
+/// Which forge a repo+ref pair belongs to, so `resolve_shas_parallel` can
+/// dispatch to the correct SHA resolution function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ForgeType {
+    Github,
+    Gitlab,
+}
+
+/// Extract `(owner_repo, ref_)` from any remote source type.
+fn remote_repo_ref(entry: &Entry) -> Option<(&str, &str, ForgeType)> {
+    match &entry.source {
+        SourceFields::Github {
+            owner_repo, ref_, ..
+        } => Some((owner_repo, ref_, ForgeType::Github)),
+        SourceFields::Gitlab {
+            owner_repo, ref_, ..
+        } => Some((owner_repo, ref_, ForgeType::Gitlab)),
+        _ => None,
     }
 }
 
@@ -508,12 +843,7 @@ fn entry_needs_resolution(
     rr: &RepoRef<'_>,
     locked: &BTreeMap<String, LockEntry>,
 ) -> bool {
-    let SourceFields::Github {
-        owner_repo: or,
-        ref_: r,
-        ..
-    } = &e.source
-    else {
+    let Some((or, r, _)) = remote_repo_ref(e) else {
         return false;
     };
     or == rr.owner_repo && r == rr.ref_ && locked.get(&lock_key(e)).is_none()
@@ -533,23 +863,21 @@ fn needs_sha_resolution(
         .any(|e| entry_needs_resolution(e, rr, locked))
 }
 
-/// Collect unique `(owner_repo, ref_)` pairs that need SHA resolution.
+/// Collect unique `(owner_repo, ref_)` pairs that need SHA resolution,
+/// tagged with their forge type so the resolver knows which API to call.
 fn collect_pairs_to_resolve(
     entries: &[&Entry],
     locked: &BTreeMap<String, LockEntry>,
     update: bool,
-) -> Vec<(String, String)> {
-    let mut need_resolve: Vec<(String, String)> = Vec::new();
+) -> Vec<(String, String, ForgeType)> {
+    let mut need_resolve: Vec<(String, String, ForgeType)> = Vec::new();
     let mut seen = HashSet::new();
 
     for entry in entries {
-        let SourceFields::Github {
-            owner_repo, ref_, ..
-        } = &entry.source
-        else {
+        let Some((owner_repo, ref_, forge)) = remote_repo_ref(entry) else {
             continue;
         };
-        let key_pair = (owner_repo.clone(), ref_.clone());
+        let key_pair = (owner_repo.to_owned(), ref_.to_owned());
         if !seen.insert(key_pair.clone()) {
             continue;
         }
@@ -557,7 +885,7 @@ fn collect_pairs_to_resolve(
         // with this repo+ref already have locked SHAs.
         let rr = RepoRef { owner_repo, ref_ };
         if update || needs_sha_resolution(entries, &rr, locked) {
-            need_resolve.push(key_pair);
+            need_resolve.push((key_pair.0, key_pair.1, forge));
         }
     }
 
@@ -570,25 +898,54 @@ struct ResolveCtx<'a> {
     update: bool,
 }
 
+/// A pending SHA resolution: repo coordinates plus which forge to call.
+struct PendingResolve {
+    owner_repo: String,
+    ref_: String,
+    forge: ForgeType,
+}
+
+impl PendingResolve {
+    /// Dispatch to the correct forge API.
+    fn resolve(&self, client: &dyn HttpClient) -> Result<String, SkillfileError> {
+        match self.forge {
+            ForgeType::Github => resolve_github_sha(client, &self.owner_repo, &self.ref_),
+            ForgeType::Gitlab => {
+                let host = crate::http::gitlab_host();
+                resolve_gitlab_sha(client, &self.owner_repo, &self.ref_, &host)
+            }
+        }
+    }
+}
+
 /// Resolve all unique `(owner_repo, ref_)` SHAs in parallel.
 ///
-/// In `--update` mode, all github entries need resolution (locked SHAs ignored).
+/// In `--update` mode, all remote entries need resolution (locked SHAs ignored).
 /// In normal mode, only entries without a locked SHA need resolution.
 fn resolve_shas_parallel(
     client: &dyn HttpClient,
     ctx: &ResolveCtx<'_>,
 ) -> Result<HashMap<(String, String), String>, SkillfileError> {
-    let need_resolve = collect_pairs_to_resolve(ctx.entries, ctx.locked, ctx.update);
+    let triples = collect_pairs_to_resolve(ctx.entries, ctx.locked, ctx.update);
 
-    if need_resolve.is_empty() {
+    if triples.is_empty() {
         return Ok(HashMap::new());
     }
 
+    let pending: Vec<PendingResolve> = triples
+        .into_iter()
+        .map(|(owner_repo, ref_, forge)| PendingResolve {
+            owner_repo,
+            ref_,
+            forge,
+        })
+        .collect();
+
     // Resolve in parallel using scoped threads — borrows avoid cloning.
     let results: Vec<Result<String, SkillfileError>> = std::thread::scope(|s| {
-        let handles: Vec<_> = need_resolve
+        let handles: Vec<_> = pending
             .iter()
-            .map(|(owner_repo, ref_)| s.spawn(|| resolve_github_sha(client, owner_repo, ref_)))
+            .map(|p| s.spawn(|| p.resolve(client)))
             .collect();
         handles
             .into_iter()
@@ -597,10 +954,10 @@ fn resolve_shas_parallel(
     });
 
     let mut cache = HashMap::with_capacity(results.len());
-    for (key, result) in need_resolve.into_iter().zip(results) {
+    for (p, result) in pending.into_iter().zip(results) {
         let sha = result?;
-        progress!("  resolved {}@{} -> {}", key.0, key.1, short_sha(&sha));
-        cache.insert(key, sha);
+        progress!("  resolved {}@{} -> {}", p.owner_repo, p.ref_, short_sha(&sha));
+        cache.insert((p.owner_repo, p.ref_), sha);
     }
     Ok(cache)
 }
@@ -1675,5 +2032,106 @@ mod tests {
         let result = fetch_dir_at_sha(&client, &entry, sha);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // GitLab helpers
+    // -----------------------------------------------------------------------
+
+    fn gitlab_skill_entry(name: &str, path_in_repo: &str) -> Entry {
+        Entry {
+            entity_type: EntityType::Skill,
+            name: name.into(),
+            source: SourceFields::Gitlab {
+                owner_repo: "group/project".into(),
+                path_in_repo: path_in_repo.into(),
+                ref_: "main".into(),
+            },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // content_exists -- gitlab
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn content_exists_gitlab_single_file_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = gitlab_skill_entry("my-skill", "skills/my-skill.md");
+        let vdir = dir.path().join("vdir");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("my-skill.md"), b"# skill").unwrap();
+        assert!(content_exists(&entry, &vdir));
+    }
+
+    #[test]
+    fn content_exists_gitlab_single_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = gitlab_skill_entry("my-skill", "skills/my-skill.md");
+        let vdir = dir.path().join("vdir");
+        std::fs::create_dir_all(&vdir).unwrap();
+        assert!(!content_exists(&entry, &vdir));
+    }
+
+    // -----------------------------------------------------------------------
+    // sync_entry -- gitlab dry_run
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sync_entry_gitlab_dry_run_skips_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = gitlab_skill_entry("my-skill", "skills/my-skill.md");
+        let client = MockClient::new();
+        let mut ctx = make_sync_ctx(dir.path());
+        ctx.dry_run = true;
+        let result = sync_entry(&client, &entry, &mut ctx);
+        assert!(result.is_ok());
+        assert!(ctx.locked.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // sync_entry -- gitlab single-file entry, SHA resolved via mock
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sync_entry_gitlab_fetches_and_writes_file() {
+        let sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let dir = tempfile::tempdir().unwrap();
+        let entry = gitlab_skill_entry("my-skill", "skills/my-skill.md");
+
+        let encoded = "group%2Fproject";
+        let sha_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded}/repository/commits/main"
+        );
+        let sha_json = serde_json::json!({ "id": sha }).to_string();
+
+        let encoded_path = "skills%2Fmy-skill.md";
+        let raw_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded}/repository/files/{encoded_path}/raw?ref={sha}"
+        );
+
+        let client = MockClient::new()
+            .with_json(sha_url, Some(sha_json))
+            .with_bytes(raw_url, b"# My Skill\nContent here.".to_vec());
+
+        let mut ctx = make_sync_ctx(dir.path());
+        let result = sync_entry(&client, &entry, &mut ctx);
+        assert!(result.is_ok(), "sync_entry failed: {result:?}");
+
+        let lock_entry = ctx
+            .locked
+            .get("gitlab/skill/my-skill")
+            .expect("lock entry missing");
+        assert_eq!(lock_entry.sha, sha);
+
+        let vdir = vendor_dir_for(&entry, dir.path());
+        assert!(vdir.join("my-skill.md").exists());
+        let written = std::fs::read_to_string(vdir.join("my-skill.md")).unwrap();
+        assert_eq!(written, "# My Skill\nContent here.");
+
+        assert!(vdir.join(".meta").exists());
+        let meta_text = std::fs::read_to_string(vdir.join(".meta")).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&meta_text).unwrap();
+        assert_eq!(meta["source_type"], "gitlab");
     }
 }
