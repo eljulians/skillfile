@@ -116,6 +116,63 @@ pub fn resolve_github_sha(
     )))
 }
 
+// ---------------------------------------------------------------------------
+// GitLab SHA resolution
+// ---------------------------------------------------------------------------
+
+fn gitlab_api_commit_url(host: &str, owner_repo: &str, ref_: &str) -> String {
+    let encoded = owner_repo.replace('/', "%2F");
+    format!("https://{host}/api/v4/projects/{encoded}/repository/commits/{ref_}")
+}
+
+/// Try to resolve a git ref to a commit SHA via GitLab API. Returns `None` on 4xx.
+fn try_resolve_gitlab_sha(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    ref_: &str,
+    host: &str,
+) -> Result<Option<String>, SkillfileError> {
+    let url = gitlab_api_commit_url(host, owner_repo, ref_);
+    let Some(text) = client.get_json(&url)? else {
+        return Ok(None);
+    };
+    let data: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        SkillfileError::Network(format!(
+            "invalid JSON in GitLab SHA response for {owner_repo}@{ref_}: {e}"
+        ))
+    })?;
+    // GitLab returns "id" for commit SHA (not "sha" like GitHub)
+    Ok(data["id"].as_str().map(ToString::to_string))
+}
+
+/// Resolve a branch/tag/SHA ref to a full commit SHA via GitLab API.
+///
+/// When ref is `main` and the repo uses `master`, falls back automatically.
+pub fn resolve_gitlab_sha(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    ref_: &str,
+    host: &str,
+) -> Result<String, SkillfileError> {
+    if let Some(sha) = try_resolve_gitlab_sha(client, owner_repo, ref_, host)? {
+        return Ok(sha);
+    }
+    // Fall back: main <-> master
+    let fallback = match ref_ {
+        "main" => Some("master"),
+        "master" => Some("main"),
+        _ => None,
+    };
+    if let Some(fb) = fallback {
+        if let Some(sha) = try_resolve_gitlab_sha(client, owner_repo, fb, host)? {
+            return Ok(sha);
+        }
+    }
+    Err(SkillfileError::Network(format!(
+        "could not resolve {owner_repo}@{ref_} on GitLab ({host}) -- check that the project exists and the ref is valid"
+    )))
+}
+
 /// Reference to a GitHub repo at a specific commit, bundling client + coordinates.
 pub struct GithubFetch<'a> {
     pub client: &'a dyn HttpClient,
@@ -1842,5 +1899,115 @@ mod tests {
         assert!(entries.contains(&"skills/browser".to_string()));
         assert!(entries.contains(&"skills/git.md".to_string()));
         assert_eq!(entries.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // GitLab SHA resolution helpers
+    // -----------------------------------------------------------------------
+
+    fn gitlab_commit_url(owner_repo: &str, ref_: &str) -> String {
+        let encoded = owner_repo.replace('/', "%2F");
+        format!("https://gitlab.com/api/v4/projects/{encoded}/repository/commits/{ref_}")
+    }
+
+    fn gitlab_sha_json(sha: &str) -> String {
+        format!(r#"{{"id": "{sha}"}}"#)
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_gitlab_sha
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_gitlab_sha_happy_path() {
+        let mut client = MockClient::new();
+        let url = gitlab_commit_url("my-group/my-project", "main");
+        client.add_json(&url, &gitlab_sha_json("aabbccdd11223344"));
+
+        let sha =
+            resolve_gitlab_sha(&client, "my-group/my-project", "main", "gitlab.com").unwrap();
+        assert_eq!(sha, "aabbccdd11223344");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_with_tag() {
+        let mut client = MockClient::new();
+        let url = gitlab_commit_url("group/repo", "v1.0.0");
+        client.add_json(&url, r#"{"id": "cafebabe12345678"}"#);
+
+        let sha = resolve_gitlab_sha(&client, "group/repo", "v1.0.0", "gitlab.com").unwrap();
+        assert_eq!(sha, "cafebabe12345678");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_not_found() {
+        let mut client = MockClient::new();
+        client.add_json_none(&gitlab_commit_url("group/repo", "nonexistent"));
+
+        let err =
+            resolve_gitlab_sha(&client, "group/repo", "nonexistent", "gitlab.com").unwrap_err();
+        assert!(err.to_string().contains("could not resolve"));
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_main_falls_back_to_master() {
+        let mut client = MockClient::new();
+        client.add_json_none(&gitlab_commit_url("group/repo", "main"));
+        client.add_json(
+            &gitlab_commit_url("group/repo", "master"),
+            &gitlab_sha_json("fallback123"),
+        );
+
+        let sha = resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.com").unwrap();
+        assert_eq!(sha, "fallback123");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_self_hosted() {
+        let mut client = MockClient::new();
+        let encoded = "group%2Frepo";
+        let url =
+            format!("https://gitlab.internal/api/v4/projects/{encoded}/repository/commits/main");
+        client.add_json(&url, &gitlab_sha_json("selfhosted123"));
+
+        let sha =
+            resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.internal").unwrap();
+        assert_eq!(sha, "selfhosted123");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_malformed_json_returns_error() {
+        let mut client = MockClient::new();
+        client.add_json(&gitlab_commit_url("group/repo", "main"), "not json {{{{");
+
+        let err = resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.com").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("invalid JSON in GitLab SHA response"));
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_master_falls_back_to_main() {
+        let mut client = MockClient::new();
+        client.add_json_none(&gitlab_commit_url("group/repo", "master"));
+        client.add_json(
+            &gitlab_commit_url("group/repo", "main"),
+            &gitlab_sha_json("1234abcd"),
+        );
+
+        let sha = resolve_gitlab_sha(&client, "group/repo", "master", "gitlab.com").unwrap();
+        assert_eq!(sha, "1234abcd");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_fails_when_both_branches_absent() {
+        let mut client = MockClient::new();
+        client.add_json_none(&gitlab_commit_url("group/repo", "main"));
+        client.add_json_none(&gitlab_commit_url("group/repo", "master"));
+
+        let err = resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.com").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("could not resolve group/repo@main"));
     }
 }
