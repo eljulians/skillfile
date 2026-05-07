@@ -1554,3 +1554,51 @@ fn upgrade_dry_run_exits_zero() {
         .assert()
         .success();
 }
+
+// ---------------------------------------------------------------------------
+// GitLab integration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gitlab_entry_dry_run_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  global\n\
+         gitlab  skill  my-group/my-project  skills/my-skill.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path())
+        .args(["sync", "--dry-run"])
+        .env("GITLAB_TOKEN", "")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "sync --dry-run failed: {stderr}"
+    );
+    // Verify the GitLab entry was actually parsed (not silently dropped)
+    assert!(
+        stderr.contains("gitlab/skill/my-skill"),
+        "output should mention the gitlab entry: {stderr}"
+    );
+}
+
+#[test]
+fn gitlab_entry_validate_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  global\n\
+         gitlab  skill  my-group/my-project  skills/my-skill.md\n",
+    )
+    .unwrap();
+
+    sf(dir.path())
+        .arg("validate")
+        .assert()
+        .success();
+}
