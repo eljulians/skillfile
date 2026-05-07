@@ -4,7 +4,7 @@ use skillfile_core::models::{Entry, SourceFields, DEFAULT_REF};
 use skillfile_core::parser::infer_name;
 
 /// Known source types.
-pub const KNOWN_SOURCES: &[&str] = &["github", "local", "url"];
+pub const KNOWN_SOURCES: &[&str] = &["github", "gitlab", "local", "url"];
 
 /// Return the expected filename in the vendor cache directory.
 /// Empty string for directory entries and local entries.
@@ -12,7 +12,7 @@ pub const KNOWN_SOURCES: &[&str] = &["github", "local", "url"];
 pub fn content_file(entry: &Entry) -> String {
     match &entry.source {
         SourceFields::Github { path_in_repo, .. } => github_content_file(entry, path_in_repo),
-        SourceFields::Gitlab { .. } => todo!("gitlab support"),
+        SourceFields::Gitlab { path_in_repo, .. } => github_content_file(entry, path_in_repo),
         SourceFields::Local { .. } => String::new(),
         SourceFields::Url { url } => url_content_file(url),
     }
@@ -55,7 +55,12 @@ pub fn is_dir_entry(entry: &Entry) -> bool {
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("md"))
         }
-        SourceFields::Gitlab { .. } => todo!("gitlab support"),
+        SourceFields::Gitlab { path_in_repo, .. } => {
+            path_in_repo != "."
+                && !Path::new(path_in_repo)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        }
         SourceFields::Local { path } => !Path::new(path)
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md")),
@@ -84,7 +89,22 @@ pub fn format_parts(entry: &Entry) -> Vec<String> {
             }
             parts
         }
-        SourceFields::Gitlab { .. } => todo!("gitlab support"),
+        SourceFields::Gitlab {
+            owner_repo,
+            path_in_repo,
+            ref_,
+        } => {
+            let mut parts = Vec::new();
+            if entry.name != infer_name(path_in_repo) {
+                parts.push(entry.name.clone());
+            }
+            parts.push(owner_repo.clone());
+            parts.push(path_in_repo.clone());
+            if ref_ != DEFAULT_REF {
+                parts.push(ref_.clone());
+            }
+            parts
+        }
         SourceFields::Local { path } => {
             let mut parts = Vec::new();
             if entry.name != infer_name(path) {
@@ -264,6 +284,82 @@ mod tests {
             },
         };
         assert_eq!(format_parts(&e), vec!["git-commit", "skills/git/commit.md"]);
+    }
+
+    fn gitlab_entry(path_in_repo: &str) -> Entry {
+        Entry {
+            entity_type: EntityType::Skill,
+            name: "test".into(),
+            source: SourceFields::Gitlab {
+                owner_repo: "group/project".into(),
+                path_in_repo: path_in_repo.into(),
+                ref_: "main".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn content_file_gitlab_single_file() {
+        let e = gitlab_entry("skills/my-skill.md");
+        assert_eq!(content_file(&e), "my-skill.md");
+    }
+
+    #[test]
+    fn content_file_gitlab_dot_path() {
+        let e = gitlab_entry(".");
+        assert_eq!(content_file(&e), "SKILL.md");
+    }
+
+    #[test]
+    fn content_file_gitlab_dir_entry() {
+        let e = gitlab_entry("skills/python-pro");
+        assert_eq!(content_file(&e), "");
+    }
+
+    #[test]
+    fn is_dir_entry_gitlab_md_file() {
+        assert!(!is_dir_entry(&gitlab_entry("skills/foo.md")));
+    }
+
+    #[test]
+    fn is_dir_entry_gitlab_dot_path() {
+        assert!(!is_dir_entry(&gitlab_entry(".")));
+    }
+
+    #[test]
+    fn is_dir_entry_gitlab_directory() {
+        assert!(is_dir_entry(&gitlab_entry("skills/python-pro")));
+    }
+
+    #[test]
+    fn format_parts_gitlab_inferred_name() {
+        let e = Entry {
+            entity_type: EntityType::Skill,
+            name: "my-skill".into(),
+            source: SourceFields::Gitlab {
+                owner_repo: "group/project".into(),
+                path_in_repo: "skills/my-skill.md".into(),
+                ref_: "main".into(),
+            },
+        };
+        assert_eq!(format_parts(&e), vec!["group/project", "skills/my-skill.md"]);
+    }
+
+    #[test]
+    fn format_parts_gitlab_explicit_name_and_ref() {
+        let e = Entry {
+            entity_type: EntityType::Skill,
+            name: "custom-name".into(),
+            source: SourceFields::Gitlab {
+                owner_repo: "group/project".into(),
+                path_in_repo: "skills/my-skill.md".into(),
+                ref_: "v2.0".into(),
+            },
+        };
+        assert_eq!(
+            format_parts(&e),
+            vec!["custom-name", "group/project", "skills/my-skill.md", "v2.0"]
+        );
     }
 
     #[test]
