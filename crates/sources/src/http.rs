@@ -140,12 +140,25 @@ fn discover_gitlab_token() -> Option<String> {
 }
 
 fn glab_cli_token() -> Option<String> {
-    let output = Command::new("glab").args(["auth", "token"]).output().ok()?;
+    let output = Command::new("glab")
+        .args(["auth", "status", "--show-token"])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
-    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!token.is_empty()).then_some(token)
+    // glab writes status output to stderr, not stdout
+    let text = String::from_utf8_lossy(&output.stderr);
+    // Parse token from "✓ Token found: <token>" line
+    for line in text.lines() {
+        if let Some(pos) = line.find("Token found:") {
+            let token = line[pos + "Token found:".len()..].trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Returns the GitLab host. Priority: GITLAB_HOST env > config file > "gitlab.com".
@@ -280,7 +293,7 @@ impl UreqClient {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         if let Some(token) = gitlab_token().for_url(url) {
-            req = req.header("PRIVATE-TOKEN", token);
+            req = req.header("Authorization", &format!("Bearer {token}"));
         }
         req
     }
@@ -291,7 +304,7 @@ impl UreqClient {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         if let Some(token) = gitlab_token().for_url(url) {
-            req = req.header("PRIVATE-TOKEN", token);
+            req = req.header("Authorization", &format!("Bearer {token}"));
         }
         req
     }
