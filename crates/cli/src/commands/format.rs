@@ -37,6 +37,11 @@ fn sort_key(entry: &Entry) -> (String, String, String) {
             owner_repo,
             path_in_repo,
             ..
+        }
+        | skillfile_core::models::SourceFields::Gitlab {
+            owner_repo,
+            path_in_repo,
+            ..
         } => (owner_repo.clone(), path_in_repo.clone()),
         skillfile_core::models::SourceFields::Local { path } => (String::new(), path.clone()),
         skillfile_core::models::SourceFields::Url { url } => (String::new(), url.clone()),
@@ -46,7 +51,8 @@ fn sort_key(entry: &Entry) -> (String, String, String) {
 
 fn entry_repo_key(entry: &Entry) -> (String, String) {
     let repo = match &entry.source {
-        skillfile_core::models::SourceFields::Github { owner_repo, .. } => owner_repo.clone(),
+        skillfile_core::models::SourceFields::Github { owner_repo, .. }
+        | skillfile_core::models::SourceFields::Gitlab { owner_repo, .. } => owner_repo.clone(),
         _ => String::new(),
     };
     (entry.source_type().to_string(), repo)

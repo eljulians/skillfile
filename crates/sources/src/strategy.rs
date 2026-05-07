@@ -12,6 +12,7 @@ pub const KNOWN_SOURCES: &[&str] = &["github", "local", "url"];
 pub fn content_file(entry: &Entry) -> String {
     match &entry.source {
         SourceFields::Github { path_in_repo, .. } => github_content_file(entry, path_in_repo),
+        SourceFields::Gitlab { .. } => todo!("gitlab support"),
         SourceFields::Local { .. } => String::new(),
         SourceFields::Url { url } => url_content_file(url),
     }
@@ -54,6 +55,7 @@ pub fn is_dir_entry(entry: &Entry) -> bool {
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("md"))
         }
+        SourceFields::Gitlab { .. } => todo!("gitlab support"),
         SourceFields::Local { path } => !Path::new(path)
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md")),
@@ -82,6 +84,7 @@ pub fn format_parts(entry: &Entry) -> Vec<String> {
             }
             parts
         }
+        SourceFields::Gitlab { .. } => todo!("gitlab support"),
         SourceFields::Local { path } => {
             let mut parts = Vec::new();
             if entry.name != infer_name(path) {

@@ -53,6 +53,7 @@ fn content_exists(entry: &Entry, vdir: &Path) -> bool {
                 !cf.is_empty() && vdir.join(&cf).exists()
             }
         }
+        SourceFields::Gitlab { .. } => todo!("gitlab support"),
         SourceFields::Local { .. } => false,
         SourceFields::Url { .. } => {
             let cf = content_file(entry);
@@ -99,6 +100,7 @@ pub fn sync_entry(
             }
             Ok(())
         }
+        SourceFields::Gitlab { .. } => todo!("gitlab support"),
         SourceFields::Url { url } => sync_url_core(&UrlSyncOp {
             client,
             entry,
@@ -481,6 +483,7 @@ fn sync_entry_core(
             Ok(None)
         }
         SourceFields::Github { .. } => sync_github_core(client, entry, params),
+        SourceFields::Gitlab { .. } => todo!("gitlab support"),
         SourceFields::Url { url } => {
             sync_url_core(&UrlSyncOp {
                 client,
