@@ -1,6 +1,6 @@
 //! User-global config for personal platform preferences and secrets.
 //!
-//! Stores install targets (platform + scope) and an optional GitHub token in a
+//! Stores install targets (platform + scope) and optional platform tokens in a
 //! TOML config file so collaborative repos don't need `install` lines in the
 //! committed Skillfile.
 //!
@@ -15,6 +15,8 @@
 //!
 //! ```toml
 //! github_token = "ghp_..."
+//! gitlab_token = "glpat-..."
+//! gitlab_host = "gitlab.example.com"
 //!
 //! [[install]]
 //! platform = "claude-code"
@@ -45,6 +47,10 @@ const CONFIG_PATH_OVERRIDE_ENV: &str = "SKILLFILE_CONFIG_PATH";
 struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     github_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gitlab_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gitlab_host: Option<String>,
     #[serde(default)]
     install: Vec<InstallEntry>,
 }
@@ -136,7 +142,7 @@ pub fn read_user_targets() -> Vec<InstallTarget> {
 
 /// Write install targets to the given TOML config file path.
 ///
-/// Creates parent directories if needed. Preserves any existing `github_token`.
+/// Creates parent directories if needed. Preserves any existing token and host fields.
 pub fn write_user_targets_to(targets: &[InstallTarget], path: &Path) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -144,6 +150,8 @@ pub fn write_user_targets_to(targets: &[InstallTarget], path: &Path) -> Result<(
     let existing = read_config_from(path);
     let config = Config {
         github_token: existing.github_token,
+        gitlab_token: existing.gitlab_token,
+        gitlab_host: existing.gitlab_host,
         install: targets.iter().map(InstallEntry::from).collect(),
     };
     write_config_to(&config, path)
@@ -177,6 +185,26 @@ pub fn write_user_targets(targets: &[InstallTarget]) -> Result<(), std::io::Erro
             "could not determine config directory",
         )),
     }
+}
+
+/// Read the GitLab token from the user-global config file.
+///
+/// Returns `Some(token)` only when `gitlab_token` is set and non-empty.
+/// Returns `None` if the config file is missing, unreadable, or has no token.
+pub fn read_gitlab_config_token() -> Option<String> {
+    let path = config_path()?;
+    let config = read_config_from(&path);
+    config.gitlab_token.filter(|t| !t.is_empty())
+}
+
+/// Read the GitLab host from the user-global config file.
+///
+/// Returns `Some(host)` only when `gitlab_host` is set and non-empty.
+/// Returns `None` if the config file is missing, unreadable, or has no host.
+pub fn read_gitlab_config_host() -> Option<String> {
+    let path = config_path()?;
+    let config = read_config_from(&path);
+    config.gitlab_host.filter(|h| !h.is_empty())
 }
 
 /// Read the GitHub token from the user-global config file.
@@ -495,6 +523,60 @@ mod tests {
         let config = read_config_from(&path);
         // The field is present but empty; filter(|t| !t.is_empty()) would drop it.
         let token = config.github_token.filter(|t| !t.is_empty());
+        assert!(token.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // GitLab config helpers
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn read_gitlab_config_token_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "gitlab_token = \"glpat-test123\"\n").unwrap();
+        let config = read_config_from(&path);
+        assert_eq!(config.gitlab_token.as_deref(), Some("glpat-test123"));
+    }
+
+    #[test]
+    fn read_gitlab_host_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "gitlab_host = \"gitlab.mycompany.com\"\n").unwrap();
+        let config = read_config_from(&path);
+        assert_eq!(config.gitlab_host.as_deref(), Some("gitlab.mycompany.com"));
+    }
+
+    #[test]
+    fn write_config_preserves_gitlab_and_github_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "github_token = \"ghp_keep\"\ngitlab_token = \"glpat-keep\"\ngitlab_host = \"gitlab.internal\"\n",
+        )
+        .unwrap();
+
+        let targets = vec![InstallTarget {
+            adapter: "claude-code".to_string(),
+            scope: Scope::Global,
+        }];
+        write_user_targets_to(&targets, &path).unwrap();
+
+        let config = read_config_from(&path);
+        assert_eq!(config.github_token.as_deref(), Some("ghp_keep"));
+        assert_eq!(config.gitlab_token.as_deref(), Some("glpat-keep"));
+        assert_eq!(config.gitlab_host.as_deref(), Some("gitlab.internal"));
+    }
+
+    #[test]
+    fn gitlab_token_skipped_when_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "gitlab_token = \"\"\n").unwrap();
+        let config = read_config_from(&path);
+        let token = config.gitlab_token.filter(|t| !t.is_empty());
         assert!(token.is_none());
     }
 }
