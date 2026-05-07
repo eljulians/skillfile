@@ -236,6 +236,25 @@ pub fn write_config_token(token: &str) -> Result<(), std::io::Error> {
     write_config_to(&config, &path)
 }
 
+/// Write a GitLab token to the user-global config file.
+///
+/// Existing `install` entries and other tokens are preserved. On Unix the
+/// file is created with `0o600` permissions so the token is not world-readable.
+pub fn write_gitlab_config_token(token: &str) -> Result<(), std::io::Error> {
+    let path = config_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "could not determine config directory",
+        )
+    })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut config = read_config_from(&path);
+    config.gitlab_token = Some(token.to_string());
+    write_config_to(&config, &path)
+}
+
 /// If the manifest has no install targets, fill them from the user config.
 ///
 /// This is the central target resolution point for CLI commands. Call after

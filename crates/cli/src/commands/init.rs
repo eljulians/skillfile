@@ -305,6 +305,114 @@ fn setup_github_token() -> Result<(), SkillfileError> {
 }
 
 // ---------------------------------------------------------------------------
+// GitLab token setup helpers
+// ---------------------------------------------------------------------------
+
+/// Check for an existing GitLab token via env vars, config file, or `glab` CLI.
+fn detect_existing_gitlab_token() -> bool {
+    let has_env = std::env::var("GITLAB_TOKEN")
+        .or_else(|_| std::env::var("GITLAB_PRIVATE_TOKEN"))
+        .is_ok_and(|t| !t.is_empty());
+    if has_env {
+        return true;
+    }
+    if crate::config::read_gitlab_config_token().is_some() {
+        return true;
+    }
+    // Check glab CLI (auth status --show-token outputs to stderr)
+    Command::new("glab")
+        .args(["auth", "status", "--show-token"])
+        .output()
+        .is_ok_and(|o| {
+            o.status.success() && String::from_utf8_lossy(&o.stderr).contains("Token found:")
+        })
+}
+
+fn glab_available() -> bool {
+    Command::new("glab")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn validate_gitlab_token(token: &str) -> bool {
+    let host = skillfile_sources::http::gitlab_host();
+    ureq::Agent::new_with_defaults()
+        .get(&format!("https://{host}/api/v4/user"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("User-Agent", "skillfile/1.0")
+        .call()
+        .is_ok_and(|r| r.status() == 200)
+}
+
+fn handle_paste_gitlab_token() -> Result<(), SkillfileError> {
+    let token: String =
+        cliclack::password("Paste your GitLab personal access token:").interact()?;
+    if validate_gitlab_token(&token) {
+        crate::config::write_gitlab_config_token(&token)?;
+        cliclack::log::success("GitLab token saved to config (0o600)")?;
+    } else {
+        let host = skillfile_sources::http::gitlab_host();
+        cliclack::log::warning(format!(
+            "Token validation failed against {host} — not saved. You can set GITLAB_TOKEN manually.",
+        ))?;
+    }
+    Ok(())
+}
+
+fn handle_glab_cli() -> Result<(), SkillfileError> {
+    cliclack::log::info("Run `glab auth login` in another terminal, then press Enter.")?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    if detect_existing_gitlab_token() {
+        cliclack::log::success("GitLab token found via glab CLI")?;
+    } else {
+        cliclack::log::warning("Still no token detected. You can set GITLAB_TOKEN manually.")?;
+    }
+    Ok(())
+}
+
+/// Interactive GitLab token setup step for `skillfile init`.
+///
+/// Skips when a token is already available. Otherwise presents options for glab
+/// CLI auth, pasting a token, or skipping.
+fn setup_gitlab_token() -> Result<(), SkillfileError> {
+    if detect_existing_gitlab_token() {
+        cliclack::log::success("GitLab token found")?;
+        return Ok(());
+    }
+
+    let show_glab = glab_available();
+    let mut select = cliclack::select("No GitLab token found. How would you like to authenticate?");
+    if show_glab {
+        select = select.item(
+            "glab",
+            "Use glab CLI",
+            "run `glab auth login` in another terminal",
+        );
+    }
+    select = select
+        .item(
+            "paste",
+            "Paste a token",
+            "create at gitlab.com/-/user_settings/personal_access_tokens",
+        )
+        .item("skip", "Skip", "GitLab sources won't work without a token");
+
+    let choice: &str = select.interact()?;
+    match choice {
+        "glab" => handle_glab_cli(),
+        "paste" => handle_paste_gitlab_token(),
+        _ => {
+            cliclack::log::warning(
+                "Skipping GitLab token setup. Set GITLAB_TOKEN to use GitLab sources.",
+            )?;
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point — interactive cliclack flow
 // ---------------------------------------------------------------------------
 
@@ -389,6 +497,7 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     let destination = select_destination()?;
     persist_targets(&manifest_path, destination, &new_targets)?;
     setup_github_token()?;
+    setup_gitlab_token()?;
     update_gitignore(repo_root)?;
 
     let outro = if result.manifest.entries.is_empty() {
