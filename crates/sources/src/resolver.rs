@@ -125,7 +125,7 @@ fn gitlab_api_commit_url(host: &str, owner_repo: &str, ref_: &str) -> String {
     format!("https://{host}/api/v4/projects/{encoded}/repository/commits/{ref_}")
 }
 
-/// Try to resolve a git ref to a commit SHA via GitLab API. Returns `None` on 4xx.
+#[allow(clippy::too_many_arguments)]
 fn try_resolve_gitlab_sha(
     client: &dyn HttpClient,
     owner_repo: &str,
@@ -145,9 +145,7 @@ fn try_resolve_gitlab_sha(
     Ok(data["id"].as_str().map(ToString::to_string))
 }
 
-/// Resolve a branch/tag/SHA ref to a full commit SHA via GitLab API.
-///
-/// When ref is `main` and the repo uses `master`, falls back automatically.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_gitlab_sha(
     client: &dyn HttpClient,
     owner_repo: &str,
@@ -208,9 +206,10 @@ pub struct GitlabFetch<'a> {
     pub host: &'a str,
 }
 
-fn gitlab_file_url(host: &str, owner_repo: &str, ref_: &str, path: &str) -> String {
-    let encoded_project = owner_repo.replace('/', "%2F");
+fn gitlab_file_url(gl: &GitlabFetch<'_>, path: &str) -> String {
+    let encoded_project = gl.owner_repo.replace('/', "%2F");
     let encoded_path = encode_url_path(path).replace('/', "%2F");
+    let (host, ref_) = (gl.host, gl.ref_);
     format!(
         "https://{host}/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={ref_}"
     )
@@ -225,7 +224,7 @@ pub fn fetch_gitlab_file(
     } else {
         path_in_repo
     };
-    let url = gitlab_file_url(gl.host, gl.owner_repo, gl.ref_, effective_path);
+    let url = gitlab_file_url(gl, effective_path);
     http_get(gl.client, &url)
 }
 
@@ -258,7 +257,7 @@ pub(crate) fn list_gitlab_dir_recursive(
         .filter_map(|item| {
             let path = item["path"].as_str()?;
             let relative_path = path.strip_prefix(&prefix)?.to_string();
-            let download_url = gitlab_file_url(gl.host, gl.owner_repo, gl.ref_, path);
+            let download_url = gitlab_file_url(gl, path);
             Some(DirEntry {
                 relative_path,
                 download_url,

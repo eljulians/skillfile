@@ -11,8 +11,8 @@ pub const KNOWN_SOURCES: &[&str] = &["github", "gitlab", "local", "url"];
 #[must_use]
 pub fn content_file(entry: &Entry) -> String {
     match &entry.source {
-        SourceFields::Github { path_in_repo, .. } => github_content_file(entry, path_in_repo),
-        SourceFields::Gitlab { path_in_repo, .. } => github_content_file(entry, path_in_repo),
+        SourceFields::Github { path_in_repo, .. }
+        | SourceFields::Gitlab { path_in_repo, .. } => github_content_file(entry, path_in_repo),
         SourceFields::Local { .. } => String::new(),
         SourceFields::Url { url } => url_content_file(url),
     }
@@ -49,13 +49,8 @@ fn url_content_file(url: &str) -> String {
 #[must_use]
 pub fn is_dir_entry(entry: &Entry) -> bool {
     match &entry.source {
-        SourceFields::Github { path_in_repo, .. } => {
-            path_in_repo != "."
-                && !Path::new(path_in_repo)
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("md"))
-        }
-        SourceFields::Gitlab { path_in_repo, .. } => {
+        SourceFields::Github { path_in_repo, .. }
+        | SourceFields::Gitlab { path_in_repo, .. } => {
             path_in_repo != "."
                 && !Path::new(path_in_repo)
                     .extension()
@@ -77,19 +72,8 @@ pub fn format_parts(entry: &Entry) -> Vec<String> {
             owner_repo,
             path_in_repo,
             ref_,
-        } => {
-            let mut parts = Vec::new();
-            if entry.name != infer_name(path_in_repo) {
-                parts.push(entry.name.clone());
-            }
-            parts.push(owner_repo.clone());
-            parts.push(path_in_repo.clone());
-            if ref_ != DEFAULT_REF {
-                parts.push(ref_.clone());
-            }
-            parts
         }
-        SourceFields::Gitlab {
+        | SourceFields::Gitlab {
             owner_repo,
             path_in_repo,
             ref_,
