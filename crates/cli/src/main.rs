@@ -354,6 +354,10 @@ Examples:
     #[command(name = "__github-auth-test", hide = true)]
     GithubAuthTest,
 
+    #[cfg(debug_assertions)]
+    #[command(name = "__search-path-resolution-test", hide = true)]
+    SearchPathResolutionTest,
+
     // -- Validation (display_order 30-39) -------------------------------------
     /// Check the Skillfile for errors
     #[command(display_order = 30)]
@@ -643,6 +647,10 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
         Command::SearchTuiTest => run_search_tui_test(),
         #[cfg(debug_assertions)]
         Command::GithubAuthTest => run_github_auth_test(),
+        #[cfg(debug_assertions)]
+        Command::SearchPathResolutionTest => {
+            commands::search::run_search_path_resolution_regression()
+        }
         _ => Ok(()), // covered by run_content_commands
     }
 }

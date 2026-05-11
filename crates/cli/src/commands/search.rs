@@ -10,12 +10,12 @@ use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::output::Spinner;
-use skillfile_sources::http::UreqClient;
+use skillfile_sources::http::{HttpClient, UreqClient};
 use skillfile_sources::registry::{
     fetch_agentskill_github_meta, scrape_github_meta_from_page, search_all, search_registry,
     RegistryId, SearchOptions, SearchResponse,
 };
-use skillfile_sources::resolver::list_repo_skill_entries;
+use skillfile_sources::resolver::{fetch_github_file, list_repo_skill_entries, GithubFetch};
 
 use super::add::{cmd_add, entry_from_github, GithubEntryArgs};
 
@@ -190,7 +190,7 @@ fn interactive_select(resp: &SearchResponse, repo_root: &Path) -> Result<(), Ski
         println!("  path: {entry_path}");
         entry_path
     } else {
-        let Some(p) = resolve_skill_path(&owner_repo, &item.name)? else {
+        let Some(p) = resolve_skill_path(&owner_repo, &item.name, entity_type)? else {
             return Ok(());
         };
         p
@@ -233,13 +233,24 @@ fn entry_path_from_github_path(github_path: &str) -> String {
 fn resolve_skill_path(
     owner_repo: &str,
     skill_name: &str,
+    entity_type: &str,
 ) -> Result<Option<String>, SkillfileError> {
     let client = UreqClient::new();
     let spinner = Spinner::new(&format!("Listing files in {owner_repo}"));
-    let md_files = list_repo_skill_entries(&client, owner_repo);
+    let query = SearchPathQuery {
+        owner_repo,
+        skill_name,
+        entity_type,
+    };
+    let (candidates, resolved) = discover_skill_path(&client, &query);
     spinner.finish();
 
-    if md_files.is_empty() {
+    if let Some(path) = resolved {
+        println!("  path: {path}");
+        return Ok(Some(path));
+    }
+
+    if candidates.is_empty() {
         return prompt_result(
             inquire::Text::new("Path in repo:")
                 .with_default(".")
@@ -250,23 +261,54 @@ fn resolve_skill_path(
         );
     }
 
-    if md_files.len() == 1 {
-        println!("  file: {}", md_files[0]);
-        return Ok(Some(md_files[0].clone()));
+    if candidates.len() == 1 {
+        println!("  file: {}", candidates[0]);
+        return Ok(Some(candidates[0].clone()));
     }
 
-    // Score entries against the skill name to narrow down candidates.
-    let ranked = rank_by_name(&md_files, skill_name);
+    prompt_result(inquire::Select::new("Select file:", candidates).prompt())
+}
 
-    // If the top match is exact, auto-select it.
-    if let Some((path, score)) = ranked.first() {
-        if *score == MatchScore::Exact {
-            println!("  path: {path}");
-            return Ok(Some(path.clone()));
+struct SearchPathQuery<'a> {
+    owner_repo: &'a str,
+    skill_name: &'a str,
+    entity_type: &'a str,
+}
+
+fn discover_skill_path(
+    client: &dyn HttpClient,
+    query: &SearchPathQuery<'_>,
+) -> (Vec<String>, Option<String>) {
+    let mut md_files = list_repo_skill_entries(client, query.owner_repo);
+
+    if md_files.is_empty() {
+        let (canonical_files, canonical_path) =
+            try_canonical_resolution(client, query.owner_repo, query.skill_name);
+        if let Some(path) = canonical_path {
+            return (Vec::new(), Some(path));
+        }
+        if !canonical_files.is_empty() {
+            md_files = canonical_files;
+        } else if let Some(path) =
+            probe_common_skill_paths(client, query.owner_repo, query.skill_name)
+        {
+            return (Vec::new(), Some(path));
+        } else {
+            return (Vec::new(), None);
         }
     }
 
-    // Show only files that matched the name. If nothing matched, show all.
+    if md_files.len() == 1 {
+        return (Vec::new(), Some(md_files[0].clone()));
+    }
+
+    let ranked = rank_by_name_for_entity(&md_files, query.skill_name, query.entity_type);
+    if let Some((path, score)) = ranked.first() {
+        if *score == MatchScore::Exact {
+            return (Vec::new(), Some(path.clone()));
+        }
+    }
+
     let candidates: Vec<String> = ranked.iter().map(|(p, _)| p.clone()).collect();
     let list = if candidates.is_empty() {
         md_files
@@ -274,7 +316,7 @@ fn resolve_skill_path(
         candidates
     };
 
-    prompt_result(inquire::Select::new("Select file:", list).prompt())
+    (list, None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -283,25 +325,21 @@ enum MatchScore {
     Contains,
 }
 
-/// Rank entry paths by how well they match the skill name. Returns only
-/// entries that match, sorted best-first.
-///
-/// Entry paths may be directories (`skills/kubernetes-specialist`),
-/// single files (`agents/reviewer.md`), or `.` (root SKILL.md).
-fn rank_by_name(entries: &[String], skill_name: &str) -> Vec<(String, MatchScore)> {
-    let name_lower = skill_name.to_ascii_lowercase();
+fn rank_by_name_for_entity(
+    entries: &[String],
+    skill_name: &str,
+    entity_type: &str,
+) -> Vec<(String, MatchScore)> {
+    let name_key = normalize_skill_key(skill_name);
     let mut scored: Vec<(String, MatchScore)> = entries
         .iter()
         .filter_map(|path| {
-            let path_lower = path.to_ascii_lowercase();
-            // For "skills/kubernetes-specialist" → "kubernetes-specialist"
-            // For "agents/reviewer.md" → "reviewer" (strip .md)
-            let tail = path_lower.rsplit('/').next().unwrap_or(&path_lower);
-            let key = tail.strip_suffix(".md").unwrap_or(tail);
+            let key = entry_name_key(path);
+            let path_key = normalize_skill_key(path);
 
-            if key == name_lower {
+            if key == name_key {
                 Some((path.clone(), MatchScore::Exact))
-            } else if path_lower.contains(&name_lower) {
+            } else if path_key.contains(&name_key) {
                 Some((path.clone(), MatchScore::Contains))
             } else {
                 None
@@ -309,8 +347,210 @@ fn rank_by_name(entries: &[String], skill_name: &str) -> Vec<(String, MatchScore
         })
         .collect();
 
-    scored.sort_by_key(|(_, score)| *score);
+    scored.sort_by_key(|(path, score)| (*score, path_preference(path, entity_type), path.clone()));
     scored
+}
+
+fn path_preference(path: &str, entity_type: &str) -> u8 {
+    let preferred_prefix = match entity_type {
+        "agent" => "agents/",
+        _ => "skills/",
+    };
+    if path.starts_with(preferred_prefix) {
+        0
+    } else if path.starts_with('.') {
+        2
+    } else {
+        1
+    }
+}
+
+fn entry_name_key(path: &str) -> String {
+    let tail = path.rsplit('/').next().unwrap_or(path);
+    let key = tail.strip_suffix(".md").unwrap_or(tail);
+    normalize_skill_key(key)
+}
+
+fn normalize_skill_key(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last_was_sep = false;
+
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !out.is_empty() && !last_was_sep {
+            out.push('-');
+            last_was_sep = true;
+        }
+    }
+
+    if out.ends_with('-') {
+        out.pop();
+    }
+
+    out
+}
+
+fn probe_common_skill_paths(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    skill_name: &str,
+) -> Option<String> {
+    let slug = normalize_skill_key(skill_name);
+    if slug.is_empty() {
+        return None;
+    }
+
+    for ref_ in ["main", "master"] {
+        let gh = GithubFetch {
+            client,
+            owner_repo,
+            ref_,
+        };
+
+        if let Some(candidate) = common_skill_file_candidates(&slug)
+            .into_iter()
+            .find(|candidate| fetch_github_file(&gh, candidate).is_ok())
+        {
+            return Some(entry_path_from_github_path(&candidate));
+        }
+    }
+
+    None
+}
+
+fn common_skill_file_candidates(slug: &str) -> [String; 5] {
+    [
+        format!("skills/{slug}/SKILL.md"),
+        format!("{slug}/SKILL.md"),
+        format!("skills/{slug}.md"),
+        format!("{slug}.md"),
+        "SKILL.md".to_string(),
+    ]
+}
+
+fn canonical_owner_repo(client: &dyn HttpClient, owner_repo: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{owner_repo}");
+    let text = client.get_json(&url).ok()??;
+    let data: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let full_name = data["full_name"].as_str()?;
+    Some(full_name.to_string())
+}
+
+fn try_canonical_resolution(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    skill_name: &str,
+) -> (Vec<String>, Option<String>) {
+    let Some(canonical) = canonical_owner_repo(client, owner_repo) else {
+        return (Vec::new(), None);
+    };
+    let md_files = list_repo_skill_entries(client, &canonical);
+    let path = if md_files.is_empty() {
+        probe_common_skill_paths(client, &canonical, skill_name)
+    } else {
+        None
+    };
+    (md_files, path)
+}
+
+#[cfg(debug_assertions)]
+pub fn run_search_path_resolution_regression() -> Result<(), SkillfileError> {
+    let client = FakeSearchPathClient::new();
+    let query = SearchPathQuery {
+        owner_repo: "paramchoudhary/resumeskills",
+        skill_name: "linkedin profile optimizer",
+        entity_type: "skill",
+    };
+    let (_, resolved) = discover_skill_path(&client, &query);
+    emit_regression_resolution(resolved.as_deref())
+}
+
+#[cfg(debug_assertions)]
+fn emit_regression_resolution(resolved: Option<&str>) -> Result<(), SkillfileError> {
+    match resolved {
+        Some("skills/linkedin-profile-optimizer") => {
+            println!("skills/linkedin-profile-optimizer");
+            Ok(())
+        }
+        Some(other) => Err(SkillfileError::Install(format!(
+            "resolved wrong path: {other}"
+        ))),
+        None => Err(SkillfileError::Install(
+            "failed to auto-resolve search path".into(),
+        )),
+    }
+}
+
+#[cfg(debug_assertions)]
+struct FakeSearchPathClient {
+    json: std::collections::HashMap<String, Option<String>>,
+}
+
+#[cfg(debug_assertions)]
+impl FakeSearchPathClient {
+    fn new() -> Self {
+        Self {
+            json: regression_fixture_json(),
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl HttpClient for FakeSearchPathClient {
+    fn get_bytes(&self, _url: &str) -> Result<Vec<u8>, SkillfileError> {
+        Err(SkillfileError::Network("unexpected raw fetch".into()))
+    }
+
+    fn get_json(&self, url: &str) -> Result<Option<String>, SkillfileError> {
+        Ok(self.json.get(url).cloned().flatten())
+    }
+
+    fn post_json(&self, _url: &str, _body: &str) -> Result<Vec<u8>, SkillfileError> {
+        Err(SkillfileError::Network("unexpected post".into()))
+    }
+}
+
+#[cfg(debug_assertions)]
+fn regression_fixture_json() -> std::collections::HashMap<String, Option<String>> {
+    use std::collections::HashMap;
+
+    let mut json = HashMap::new();
+    json.insert(
+        "https://api.github.com/repos/paramchoudhary/resumeskills/git/trees/main?recursive=1"
+            .to_string(),
+        None,
+    );
+    json.insert(
+        "https://api.github.com/repos/paramchoudhary/resumeskills/git/trees/master?recursive=1"
+            .to_string(),
+        None,
+    );
+    json.insert(
+        "https://api.github.com/repos/paramchoudhary/resumeskills".to_string(),
+        Some(
+            serde_json::json!({
+                "full_name": "Paramchoudhary/ResumeSkills"
+            })
+            .to_string(),
+        ),
+    );
+    json.insert(
+        "https://api.github.com/repos/Paramchoudhary/ResumeSkills/git/trees/main?recursive=1"
+            .to_string(),
+        Some(
+            serde_json::json!({
+                "tree": [
+                    {"type": "blob", "path": ".agents/skills/linkedin-profile-optimizer/SKILL.md"},
+                    {"type": "blob", "path": ".claude/skills/linkedin-profile-optimizer/SKILL.md"},
+                    {"type": "blob", "path": "skills/linkedin-profile-optimizer/SKILL.md"}
+                ]
+            })
+            .to_string(),
+        ),
+    );
+    json
 }
 
 /// Convert an `inquire` prompt result into `Ok(Some(value))` on success,
@@ -413,6 +653,69 @@ mod tests {
     use skillfile_sources::registry::SearchResult;
 
     #[test]
+    fn normalize_skill_key_collapses_separators() {
+        assert_eq!(
+            normalize_skill_key("LinkedIn Profile_Optimizer"),
+            "linkedin-profile-optimizer"
+        );
+    }
+
+    #[test]
+    fn rank_by_name_matches_space_separated_skill_name_to_hyphenated_path() {
+        let entries = vec![
+            "skills/linkedin-profile-optimizer".to_string(),
+            "skills/resume-tailor".to_string(),
+        ];
+
+        let ranked = rank_by_name_for_entity(&entries, "linkedin profile optimizer", "skill");
+
+        assert_eq!(
+            ranked.first(),
+            Some(&(
+                "skills/linkedin-profile-optimizer".to_string(),
+                MatchScore::Exact,
+            ))
+        );
+    }
+
+    #[test]
+    fn rank_by_name_prefers_skills_dir_over_hidden_mirrors_for_skill() {
+        let entries = vec![
+            ".agents/skills/linkedin-profile-optimizer".to_string(),
+            "skills/linkedin-profile-optimizer".to_string(),
+        ];
+
+        let ranked = rank_by_name_for_entity(&entries, "linkedin profile optimizer", "skill");
+
+        assert_eq!(
+            ranked.first(),
+            Some(&(
+                "skills/linkedin-profile-optimizer".to_string(),
+                MatchScore::Exact,
+            ))
+        );
+    }
+
+    #[test]
+    fn common_skill_file_candidates_cover_standard_layouts() {
+        let candidates = common_skill_file_candidates("linkedin-profile-optimizer");
+
+        assert_eq!(candidates[0], "skills/linkedin-profile-optimizer/SKILL.md");
+        assert_eq!(candidates[4], "SKILL.md");
+    }
+
+    #[test]
+    fn canonical_owner_repo_parses_full_name() {
+        let json = serde_json::json!({
+            "full_name": "Paramchoudhary/ResumeSkills"
+        });
+        assert_eq!(
+            json["full_name"].as_str(),
+            Some("Paramchoudhary/ResumeSkills")
+        );
+    }
+
+    #[test]
     fn prompt_result_ok_returns_some() {
         let result: Result<String, inquire::InquireError> = Ok("test".to_string());
         let value = prompt_result(result).unwrap();
@@ -502,7 +805,7 @@ mod tests {
     fn rank_exact_dir_entry() {
         // Directory entry: last segment matches skill name exactly.
         let entries = paths(&["skills/kubernetes-specialist", "skills/docker-helper"]);
-        let ranked = rank_by_name(&entries, "kubernetes-specialist");
+        let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, "skills/kubernetes-specialist");
         assert_eq!(ranked[0].1, MatchScore::Exact);
@@ -512,7 +815,7 @@ mod tests {
     fn rank_exact_single_file() {
         // Single-file entry: stem (without .md) matches skill name.
         let entries = paths(&["skills/kubernetes-specialist.md", "skills/docker-helper.md"]);
-        let ranked = rank_by_name(&entries, "kubernetes-specialist");
+        let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, "skills/kubernetes-specialist.md");
         assert_eq!(ranked[0].1, MatchScore::Exact);
@@ -521,7 +824,7 @@ mod tests {
     #[test]
     fn rank_exact_case_insensitive() {
         let entries = paths(&["skills/Kubernetes-Specialist", "skills/other"]);
-        let ranked = rank_by_name(&entries, "kubernetes-specialist");
+        let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].1, MatchScore::Exact);
     }
@@ -529,7 +832,7 @@ mod tests {
     #[test]
     fn rank_contains_match() {
         let entries = paths(&["skills/advanced-kubernetes-specialist-v2", "skills/docker"]);
-        let ranked = rank_by_name(&entries, "kubernetes-specialist");
+        let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, "skills/advanced-kubernetes-specialist-v2");
         assert_eq!(ranked[0].1, MatchScore::Contains);
@@ -541,7 +844,7 @@ mod tests {
             "skills/extra-kubernetes-specialist-stuff",
             "skills/kubernetes-specialist",
         ]);
-        let ranked = rank_by_name(&entries, "kubernetes-specialist");
+        let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].1, MatchScore::Exact);
         assert_eq!(ranked[0].0, "skills/kubernetes-specialist");
@@ -551,7 +854,7 @@ mod tests {
     #[test]
     fn rank_no_matches_returns_empty() {
         let entries = paths(&["skills/docker", "skills/python", "skills/rust.md"]);
-        let ranked = rank_by_name(&entries, "kubernetes-specialist");
+        let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
         assert!(ranked.is_empty());
     }
 
@@ -559,13 +862,13 @@ mod tests {
     fn rank_dot_entry_never_matches() {
         // "." is the root SKILL.md — should not match a specific name.
         let entries = paths(&["."]);
-        let ranked = rank_by_name(&entries, "some-skill");
+        let ranked = rank_by_name_for_entity(&entries, "some-skill", "skill");
         assert!(ranked.is_empty());
     }
 
     #[test]
     fn rank_empty_entries_returns_empty() {
-        let ranked = rank_by_name(&[], "anything");
+        let ranked = rank_by_name_for_entity(&[], "anything", "skill");
         assert!(ranked.is_empty());
     }
 
@@ -573,7 +876,7 @@ mod tests {
     fn rank_contains_matches_parent_dir() {
         // Name appears in a parent dir segment.
         let entries = paths(&["kubernetes-specialist/references", "unrelated/thing.md"]);
-        let ranked = rank_by_name(&entries, "kubernetes-specialist");
+        let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].1, MatchScore::Contains);
     }
@@ -587,7 +890,7 @@ mod tests {
             "skills/python-pro",
             "skills/code-reviewer.md",
         ]);
-        let ranked = rank_by_name(&entries, "kubernetes-specialist");
+        let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, "skills/kubernetes-specialist");
         assert_eq!(ranked[0].1, MatchScore::Exact);

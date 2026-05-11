@@ -4,6 +4,13 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.6.2 - 11-05-2026
+
+### Fixed
+
+- **`skillfile search` now auto-resolves renamed and hyphenated skill paths more reliably** - choosing a result like `linkedin profile optimizer` from `skills.sh` now correctly maps the display name to the upstream repo path `skills/linkedin-profile-optimizer` instead of dropping into the manual `Path in repo:` prompt.
+- **Search-to-add is more resilient when local GitHub auth is broken** - GitHub path discovery now retries public GitHub requests without auth after `401` or auth-masked `404` responses, so an invalid cached `gh` token no longer breaks adding public skills from search results.
+
 ## v1.6.1 - 05-05-2026
 
 ### Fixed

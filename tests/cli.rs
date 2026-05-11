@@ -118,6 +118,19 @@ fn github_auth_test_detects_config_file_token() {
         .stdout(predicate::str::contains("available"));
 }
 
+#[test]
+fn search_path_resolution_regression_avoids_manual_repo_prompt() {
+    skillfile_cmd()
+        .arg("__search-path-resolution-test")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "skills/linkedin-profile-optimizer",
+        ))
+        .stdout(predicate::str::contains(".agents/skills").not())
+        .stderr(predicate::str::contains("Path in repo").not());
+}
+
 // ---------------------------------------------------------------------------
 // init
 // ---------------------------------------------------------------------------

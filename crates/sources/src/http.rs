@@ -161,6 +161,31 @@ fn read_response_text(body: &mut ureq::Body, url: &str) -> Result<String, Skillf
         .map_err(|e| SkillfileError::Network(format!("failed to read response from {url}: {e}")))
 }
 
+enum HttpAttemptError {
+    Status { code: u16, error: SkillfileError },
+    Other(SkillfileError),
+}
+
+impl HttpAttemptError {
+    fn code(&self) -> Option<u16> {
+        match self {
+            Self::Status { code, .. } => Some(*code),
+            Self::Other(_) => None,
+        }
+    }
+
+    fn into_skillfile(self) -> SkillfileError {
+        match self {
+            Self::Status { error, .. } | Self::Other(error) => error,
+        }
+    }
+}
+
+enum JsonAttempt {
+    Found(String),
+    Missing { code: u16 },
+}
+
 /// Production HTTP client backed by `ureq::Agent`.
 ///
 /// Attaches `User-Agent` to every request. GitHub `Authorization` header
@@ -183,11 +208,19 @@ impl UreqClient {
         }
     }
 
-    fn build_get(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    fn build_get_inner(
+        &self,
+        url: &str,
+        with_auth: bool,
+    ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
         let mut req = self.agent.get(url).header("User-Agent", "skillfile/1.0");
-        if let Some(token) = github_token().for_url(url) {
-            req = req.header("Authorization", &format!("Bearer {token}"));
+        if !with_auth {
+            return req;
         }
+        let Some(token) = github_token().for_url(url) else {
+            return req;
+        };
+        req = req.header("Authorization", &format!("Bearer {token}"));
         req
     }
 
@@ -197,6 +230,66 @@ impl UreqClient {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         req
+    }
+
+    fn get_bytes_inner(&self, url: &str, with_auth: bool) -> Result<Vec<u8>, HttpAttemptError> {
+        let mut response = self
+            .build_get_inner(url, with_auth)
+            .call()
+            .map_err(|e| match &e {
+                ureq::Error::StatusCode(404) => HttpAttemptError::Status {
+                    code: 404,
+                    error: SkillfileError::Network(format!(
+                        "HTTP 404: {url} not found — check that the path exists in the upstream repo"
+                    )),
+                },
+                ureq::Error::StatusCode(code) => HttpAttemptError::Status {
+                    code: *code,
+                    error: SkillfileError::Network(format!("HTTP {code} fetching {url}")),
+                },
+                _ => HttpAttemptError::Other(SkillfileError::Network(format!(
+                    "{e} fetching {url}"
+                ))),
+            })?;
+        response.body_mut().read_to_vec().map_err(|e| {
+            HttpAttemptError::Other(SkillfileError::Network(format!(
+                "failed to read response from {url}: {e}"
+            )))
+        })
+    }
+
+    fn get_json_inner(&self, url: &str, with_auth: bool) -> Result<JsonAttempt, HttpAttemptError> {
+        let result = self
+            .build_get_inner(url, with_auth)
+            .header("Accept", "application/vnd.github.v3+json")
+            .call();
+
+        match result {
+            Ok(mut response) => read_response_text(response.body_mut(), url)
+                .map(JsonAttempt::Found)
+                .map_err(HttpAttemptError::Other),
+            Err(ureq::Error::StatusCode(code)) if code == 404 || code == 422 => {
+                Ok(JsonAttempt::Missing { code })
+            }
+            Err(ureq::Error::StatusCode(403)) => Err(HttpAttemptError::Status {
+                code: 403,
+                error: SkillfileError::Network(format!(
+                    "HTTP 403 fetching {url} — you may be rate-limited. \
+                     Set GITHUB_TOKEN or run `gh auth login` to authenticate."
+                )),
+            }),
+            Err(ureq::Error::StatusCode(code)) => Err(HttpAttemptError::Status {
+                code,
+                error: SkillfileError::Network(format!("HTTP {code} fetching {url}")),
+            }),
+            Err(e) => Err(HttpAttemptError::Other(SkillfileError::Network(format!(
+                "{e} fetching {url}"
+            )))),
+        }
+    }
+
+    fn should_retry_unauth(url: &str, code: u16, had_auth: bool) -> bool {
+        had_auth && is_github_url(url) && matches!(code, 401 | 404)
     }
 }
 
@@ -208,37 +301,40 @@ impl Default for UreqClient {
 
 impl HttpClient for UreqClient {
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SkillfileError> {
-        let mut response = self.build_get(url).call().map_err(|e| match &e {
-            ureq::Error::StatusCode(404) => SkillfileError::Network(format!(
-                "HTTP 404: {url} not found — check that the path exists in the upstream repo"
-            )),
-            ureq::Error::StatusCode(code) => {
-                SkillfileError::Network(format!("HTTP {code} fetching {url}"))
-            }
-            _ => SkillfileError::Network(format!("{e} fetching {url}")),
-        })?;
-        response.body_mut().read_to_vec().map_err(|e| {
-            SkillfileError::Network(format!("failed to read response from {url}: {e}"))
-        })
+        let had_auth = github_token().for_url(url).is_some();
+        let first = self.get_bytes_inner(url, true);
+        let should_retry = first
+            .as_ref()
+            .err()
+            .and_then(HttpAttemptError::code)
+            .is_some_and(|code| Self::should_retry_unauth(url, code, had_auth));
+        if should_retry {
+            return self
+                .get_bytes_inner(url, false)
+                .map_err(HttpAttemptError::into_skillfile);
+        }
+        first.map_err(HttpAttemptError::into_skillfile)
     }
 
     fn get_json(&self, url: &str) -> Result<Option<String>, SkillfileError> {
-        let result = self
-            .build_get(url)
-            .header("Accept", "application/vnd.github.v3+json")
-            .call();
-
-        match result {
-            Ok(mut response) => read_response_text(response.body_mut(), url).map(Some),
-            // 404/422 = ref or repo doesn't exist (tentative lookup, not fatal).
-            // 403 = rate-limited or forbidden; 401 = bad token — surface these.
-            Err(ureq::Error::StatusCode(code)) if code == 404 || code == 422 => Ok(None),
-            Err(ureq::Error::StatusCode(403)) => Err(SkillfileError::Network(format!(
-                "HTTP 403 fetching {url} — you may be rate-limited. \
-                 Set GITHUB_TOKEN or run `gh auth login` to authenticate."
-            ))),
-            Err(e) => Err(SkillfileError::Network(format!("{e} fetching {url}"))),
+        let had_auth = github_token().for_url(url).is_some();
+        let first = self.get_json_inner(url, true);
+        let should_retry = match &first {
+            Ok(JsonAttempt::Missing { code }) => Self::should_retry_unauth(url, *code, had_auth),
+            Err(error) => error
+                .code()
+                .is_some_and(|code| Self::should_retry_unauth(url, code, had_auth)),
+            Ok(JsonAttempt::Found(_)) => false,
+        };
+        if should_retry {
+            return self
+                .get_json_inner(url, false)
+                .map_err(HttpAttemptError::into_skillfile)
+                .map(json_attempt_into_option);
         }
+        first
+            .map_err(HttpAttemptError::into_skillfile)
+            .map(json_attempt_into_option)
     }
 
     fn post_json(&self, url: &str, body: &str) -> Result<Vec<u8>, SkillfileError> {
@@ -275,6 +371,13 @@ impl HttpClient for UreqClient {
         response.body_mut().read_to_vec().map_err(|e| {
             SkillfileError::Network(format!("failed to read response from {url}: {e}"))
         })
+    }
+}
+
+fn json_attempt_into_option(result: JsonAttempt) -> Option<String> {
+    match result {
+        JsonAttempt::Found(text) => Some(text),
+        JsonAttempt::Missing { .. } => None,
     }
 }
 
@@ -396,5 +499,29 @@ mod tests {
     #[test]
     fn http_github_url_is_github() {
         assert!(is_github_url("http://api.github.com/repos/owner/repo"));
+    }
+
+    #[test]
+    fn retry_unauth_on_github_auth_failure_or_masked_not_found() {
+        assert!(UreqClient::should_retry_unauth(
+            "https://api.github.com/repos/owner/repo",
+            401,
+            true
+        ));
+        assert!(UreqClient::should_retry_unauth(
+            "https://raw.githubusercontent.com/owner/repo/main/SKILL.md",
+            404,
+            true
+        ));
+        assert!(!UreqClient::should_retry_unauth(
+            "https://skills.sh/api/search?q=test",
+            404,
+            true
+        ));
+        assert!(!UreqClient::should_retry_unauth(
+            "https://api.github.com/repos/owner/repo",
+            401,
+            false
+        ));
     }
 }
