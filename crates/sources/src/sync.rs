@@ -501,8 +501,9 @@ fn write_gitlab_dir(op: &GitlabFetchOp<'_>) -> Result<String, SkillfileError> {
         fetched.len()
     );
     let encoded_project = owner_repo.replace('/', "%2F");
+    let encoded_path = path_in_repo.replace('/', "%2F");
     Ok(format!(
-        "https://{host}/api/v4/projects/{encoded_project}/repository/tree?ref={sha}&path={path_in_repo}"
+        "https://{host}/api/v4/projects/{encoded_project}/repository/tree?ref={sha}&path={encoded_path}"
     ))
 }
 
@@ -594,15 +595,19 @@ fn write_gitlab_meta(m: &GitlabMeta<'_>) -> Result<(), SkillfileError> {
     Ok(())
 }
 
-/// Fetch content, write it to disk, and record `.meta` for a GitLab entry.
-fn fetch_store_gitlab(op: &StoreOp<'_>) -> Result<String, SkillfileError> {
+struct GitlabStoreOp<'a> {
+    store: &'a StoreOp<'a>,
+    host: &'a str,
+}
+
+fn fetch_store_gitlab(op: &GitlabStoreOp<'_>) -> Result<String, SkillfileError> {
     let StoreOp {
         client,
         entry,
         vdir,
         label,
         sha,
-    } = op;
+    } = op.store;
     let SourceFields::Gitlab {
         owner_repo,
         path_in_repo,
@@ -611,12 +616,12 @@ fn fetch_store_gitlab(op: &StoreOp<'_>) -> Result<String, SkillfileError> {
     else {
         unreachable!()
     };
-    let host = crate::http::gitlab_host();
+    let host = op.host;
     let gl = GitlabRef {
         owner_repo,
         path_in_repo,
         sha,
-        host: &host,
+        host,
     };
     let fetch_op = GitlabFetchOp {
         client: *client,
@@ -632,27 +637,33 @@ fn fetch_store_gitlab(op: &StoreOp<'_>) -> Result<String, SkillfileError> {
         ref_,
         sha,
         raw_url: &raw_url,
-        host: &host,
+        host,
     })?;
     Ok(raw_url)
 }
 
 /// Resolve the SHA for a GitLab entry, returning `None` in dry-run mode.
+struct GitlabShaQuery<'a> {
+    lookup: &'a ShaLookup<'a>,
+    host: &'a str,
+}
+
 fn resolve_gitlab_sha_for_entry(
     client: &dyn HttpClient,
-    q: &ShaLookup<'_>,
+    q: &GitlabShaQuery<'_>,
     params: &SyncParams<'_>,
 ) -> Result<Option<String>, SkillfileError> {
-    if let Some(ls) = q.locked_sha {
+    let l = q.lookup;
+    if let Some(ls) = l.locked_sha {
         progress!(
             "{}: re-fetching (locked sha={}) ...",
-            q.label,
+            l.label,
             short_sha(ls)
         );
         return Ok(Some(ls.to_owned()));
     }
 
-    let cache_key = (q.owner_repo.to_owned(), q.ref_.to_owned());
+    let cache_key = (l.owner_repo.to_owned(), l.ref_.to_owned());
     if let Some(cached) = params.sha_cache.get(&cache_key) {
         return Ok(Some(cached.clone()));
     }
@@ -660,15 +671,14 @@ fn resolve_gitlab_sha_for_entry(
     if params.dry_run {
         progress!(
             "{}: resolving {}@{} ... [dry-run]",
-            q.label,
-            q.owner_repo,
-            q.ref_
+            l.label,
+            l.owner_repo,
+            l.ref_
         );
         return Ok(None);
     }
 
-    let host = crate::http::gitlab_host();
-    let sha = resolve_gitlab_sha(client, q.owner_repo, q.ref_, &host)?;
+    let sha = resolve_gitlab_sha(client, l.owner_repo, l.ref_, q.host)?;
     Ok(Some(sha))
 }
 
@@ -688,6 +698,7 @@ fn sync_gitlab_core(
     else {
         unreachable!()
     };
+    let host = crate::http::gitlab_host();
     let locked_sha = if params.update {
         None
     } else {
@@ -704,12 +715,13 @@ fn sync_gitlab_core(
         }
     }
 
-    let q = ShaLookup {
+    let lookup = ShaLookup {
         owner_repo,
         ref_,
         label: &label,
         locked_sha: locked_sha.as_deref(),
     };
+    let q = GitlabShaQuery { lookup: &lookup, host: &host };
     let Some(sha) = resolve_gitlab_sha_for_entry(client, &q, params)? else {
         return Ok(None); // dry-run
     };
@@ -725,13 +737,14 @@ fn sync_gitlab_core(
         return Ok(Some((key, LockEntry { sha, raw_url })));
     }
 
-    let raw_url = fetch_store_gitlab(&StoreOp {
+    let store_op = StoreOp {
         client,
         entry,
         vdir: &vdir,
         label: &label,
         sha: &sha,
-    })?;
+    };
+    let raw_url = fetch_store_gitlab(&GitlabStoreOp { store: &store_op, host: &host })?;
     Ok(Some((key, LockEntry { sha, raw_url })))
 }
 

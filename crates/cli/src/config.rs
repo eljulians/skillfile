@@ -590,6 +590,27 @@ mod tests {
     }
 
     #[test]
+    fn write_gitlab_config_token_preserves_install_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let targets = vec![InstallTarget {
+            adapter: "claude-code".to_string(),
+            scope: Scope::Global,
+        }];
+        write_user_targets_to(&targets, &path).unwrap();
+
+        let mut config = read_config_from(&path);
+        config.gitlab_token = Some("glpat-preserved".to_string());
+        write_config_to(&config, &path).unwrap();
+
+        let result = read_config_from(&path);
+        assert_eq!(result.gitlab_token.as_deref(), Some("glpat-preserved"));
+        assert_eq!(result.install.len(), 1);
+        assert_eq!(result.install[0].platform, "claude-code");
+    }
+
+    #[test]
     fn gitlab_token_skipped_when_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
