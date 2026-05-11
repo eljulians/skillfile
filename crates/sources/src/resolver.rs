@@ -752,7 +752,7 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn sha_json(sha: &str) -> String {
+    fn github_sha_json(sha: &str) -> String {
         format!(r#"{{"sha": "{sha}"}}"#)
     }
 
@@ -829,7 +829,7 @@ mod tests {
         // try_resolve_sha is private; exercise it through resolve_github_sha.
         let mut client = MockClient::new();
         let url = commit_url("owner/repo", "main");
-        client.add_json(&url, &sha_json("deadbeef1234567890abcdef"));
+        client.add_json(&url, &github_sha_json("deadbeef1234567890abcdef"));
 
         let sha = resolve_github_sha(&client, "owner/repo", "main").unwrap();
         assert_eq!(sha, "deadbeef1234567890abcdef");
@@ -866,7 +866,7 @@ mod tests {
     fn resolve_github_sha_happy_path() {
         let mut client = MockClient::new();
         let url = commit_url("myorg/myrepo", "main");
-        client.add_json(&url, &sha_json("aabbccddeeff00112233445566778899aabbccdd"));
+        client.add_json(&url, &github_sha_json("aabbccddeeff00112233445566778899aabbccdd"));
 
         let sha = resolve_github_sha(&client, "myorg/myrepo", "main").unwrap();
         assert_eq!(sha, "aabbccddeeff00112233445566778899aabbccdd");
@@ -879,7 +879,7 @@ mod tests {
         client.add_json_none(&commit_url("org/repo", "main"));
         client.add_json(
             &commit_url("org/repo", "master"),
-            &sha_json("cafebabe000000000000"),
+            &github_sha_json("cafebabe000000000000"),
         );
 
         let sha = resolve_github_sha(&client, "org/repo", "main").unwrap();
@@ -893,7 +893,7 @@ mod tests {
         client.add_json_none(&commit_url("org/repo", "master"));
         client.add_json(
             &commit_url("org/repo", "main"),
-            &sha_json("1234abcd5678ef90"),
+            &github_sha_json("1234abcd5678ef90"),
         );
 
         let sha = resolve_github_sha(&client, "org/repo", "master").unwrap();

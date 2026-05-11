@@ -12,14 +12,14 @@ pub const KNOWN_SOURCES: &[&str] = &["github", "gitlab", "local", "url"];
 pub fn content_file(entry: &Entry) -> String {
     match &entry.source {
         SourceFields::Github { path_in_repo, .. } | SourceFields::Gitlab { path_in_repo, .. } => {
-            github_content_file(entry, path_in_repo)
+            remote_content_file(entry, path_in_repo)
         }
         SourceFields::Local { .. } => String::new(),
         SourceFields::Url { url } => url_content_file(url),
     }
 }
 
-fn github_content_file(entry: &Entry, path_in_repo: &str) -> String {
+fn remote_content_file(entry: &Entry, path_in_repo: &str) -> String {
     if is_dir_entry(entry) {
         return String::new();
     }

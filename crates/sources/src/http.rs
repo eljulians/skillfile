@@ -150,15 +150,11 @@ fn glab_cli_token() -> Option<String> {
     // glab writes status output to stderr, not stdout
     let text = String::from_utf8_lossy(&output.stderr);
     // Parse token from "✓ Token found: <token>" line
-    for line in text.lines() {
-        if let Some(pos) = line.find("Token found:") {
-            let token = line[pos + "Token found:".len()..].trim();
-            if !token.is_empty() {
-                return Some(token.to_string());
-            }
-        }
-    }
-    None
+    text.lines()
+        .filter_map(|line| line.find("Token found:").map(|pos| &line[pos + "Token found:".len()..]))
+        .map(str::trim)
+        .find(|t| !t.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Returns the GitLab host. Priority: GITLAB_HOST env > config file > "gitlab.com".
@@ -370,7 +366,11 @@ impl UreqClient {
     fn get_json_inner(&self, url: &str, with_auth: bool) -> Result<JsonAttempt, HttpAttemptError> {
         let result = self
             .build_get_inner(url, with_auth)
-            .header("Accept", "application/vnd.github.v3+json")
+            .header("Accept", if is_github_url(url) {
+                "application/vnd.github.v3+json"
+            } else {
+                "application/json"
+            })
             .call();
 
         match result {
@@ -398,7 +398,9 @@ impl UreqClient {
     }
 
     fn should_retry_unauth(url: &str, code: u16, had_auth: bool) -> bool {
-        had_auth && is_github_url(url) && matches!(code, 401 | 404)
+        had_auth
+            && (is_github_url(url) || is_gitlab_url(url, &gitlab_host()))
+            && matches!(code, 401 | 404)
     }
 }
 
@@ -410,7 +412,8 @@ impl Default for UreqClient {
 
 impl HttpClient for UreqClient {
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SkillfileError> {
-        let had_auth = github_token().for_url(url).is_some();
+        let had_auth =
+            github_token().for_url(url).is_some() || gitlab_token().for_url(url).is_some();
         let first = self.get_bytes_inner(url, true);
         let should_retry = first
             .as_ref()
@@ -426,7 +429,8 @@ impl HttpClient for UreqClient {
     }
 
     fn get_json(&self, url: &str) -> Result<Option<String>, SkillfileError> {
-        let had_auth = github_token().for_url(url).is_some();
+        let had_auth =
+            github_token().for_url(url).is_some() || gitlab_token().for_url(url).is_some();
         let first = self.get_json_inner(url, true);
         let should_retry = match &first {
             Ok(JsonAttempt::Missing { code }) => Self::should_retry_unauth(url, *code, had_auth),
@@ -629,6 +633,25 @@ mod tests {
         ));
         assert!(!UreqClient::should_retry_unauth(
             "https://api.github.com/repos/owner/repo",
+            401,
+            false
+        ));
+    }
+
+    #[test]
+    fn retry_unauth_on_gitlab_auth_failure() {
+        assert!(UreqClient::should_retry_unauth(
+            "https://gitlab.com/api/v4/projects/foo%2Fbar",
+            401,
+            true
+        ));
+        assert!(UreqClient::should_retry_unauth(
+            "https://gitlab.com/api/v4/projects/foo%2Fbar",
+            404,
+            true
+        ));
+        assert!(!UreqClient::should_retry_unauth(
+            "https://gitlab.com/api/v4/projects/foo%2Fbar",
             401,
             false
         ));
