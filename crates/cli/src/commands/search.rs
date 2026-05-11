@@ -650,7 +650,53 @@ pub fn print_json(w: &mut dyn Write, resp: &SearchResponse) -> Result<(), Skillf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use skillfile_sources::registry::SearchResult;
+
+    struct SearchPathClient {
+        json: HashMap<String, Option<String>>,
+        bytes: HashMap<String, Vec<u8>>,
+    }
+
+    impl SearchPathClient {
+        fn new() -> Self {
+            Self {
+                json: HashMap::new(),
+                bytes: HashMap::new(),
+            }
+        }
+
+        fn with_json(mut self, url: &str, body: Option<serde_json::Value>) -> Self {
+            self.json
+                .insert(url.to_string(), body.map(|value| value.to_string()));
+            self
+        }
+
+        fn with_bytes(mut self, url: &str, body: &[u8]) -> Self {
+            self.bytes.insert(url.to_string(), body.to_vec());
+            self
+        }
+    }
+
+    impl HttpClient for SearchPathClient {
+        fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SkillfileError> {
+            match self.bytes.get(url) {
+                Some(bytes) => Ok(bytes.clone()),
+                None => Err(SkillfileError::Network(format!(
+                    "unexpected raw fetch in test: {url}"
+                ))),
+            }
+        }
+
+        fn get_json(&self, url: &str) -> Result<Option<String>, SkillfileError> {
+            Ok(self.json.get(url).cloned().flatten())
+        }
+
+        fn post_json(&self, _url: &str, _body: &str) -> Result<Vec<u8>, SkillfileError> {
+            Err(SkillfileError::Network("unexpected post".into()))
+        }
+    }
 
     #[test]
     fn normalize_skill_key_collapses_separators() {
@@ -697,6 +743,21 @@ mod tests {
     }
 
     #[test]
+    fn rank_by_name_prefers_agents_dir_over_hidden_mirrors_for_agent() {
+        let entries = vec![
+            ".claude/agents/code-reviewer.md".to_string(),
+            "agents/code-reviewer.md".to_string(),
+        ];
+
+        let ranked = rank_by_name_for_entity(&entries, "code reviewer", "agent");
+
+        assert_eq!(
+            ranked.first(),
+            Some(&("agents/code-reviewer.md".to_string(), MatchScore::Exact))
+        );
+    }
+
+    #[test]
     fn common_skill_file_candidates_cover_standard_layouts() {
         let candidates = common_skill_file_candidates("linkedin-profile-optimizer");
 
@@ -706,12 +767,131 @@ mod tests {
 
     #[test]
     fn canonical_owner_repo_parses_full_name() {
-        let json = serde_json::json!({
-            "full_name": "Paramchoudhary/ResumeSkills"
-        });
+        let client = SearchPathClient::new().with_json(
+            "https://api.github.com/repos/paramchoudhary/resumeskills",
+            Some(serde_json::json!({
+                "full_name": "Paramchoudhary/ResumeSkills"
+            })),
+        );
+
         assert_eq!(
-            json["full_name"].as_str(),
+            canonical_owner_repo(&client, "paramchoudhary/resumeskills").as_deref(),
             Some("Paramchoudhary/ResumeSkills")
+        );
+    }
+
+    #[test]
+    fn discover_skill_path_uses_canonical_repo_when_original_name_is_stale() {
+        let client = SearchPathClient::new()
+            .with_json(
+                "https://api.github.com/repos/paramchoudhary/resumeskills/git/trees/main?recursive=1",
+                None,
+            )
+            .with_json(
+                "https://api.github.com/repos/paramchoudhary/resumeskills/git/trees/master?recursive=1",
+                None,
+            )
+            .with_json(
+                "https://api.github.com/repos/paramchoudhary/resumeskills",
+                Some(serde_json::json!({
+                    "full_name": "Paramchoudhary/ResumeSkills"
+                })),
+            )
+            .with_json(
+                "https://api.github.com/repos/Paramchoudhary/ResumeSkills/git/trees/main?recursive=1",
+                Some(serde_json::json!({
+                    "tree": [
+                        {"type": "blob", "path": ".agents/skills/linkedin-profile-optimizer/SKILL.md"},
+                        {"type": "blob", "path": "skills/linkedin-profile-optimizer/SKILL.md"}
+                    ]
+                })),
+            );
+        let query = SearchPathQuery {
+            owner_repo: "paramchoudhary/resumeskills",
+            skill_name: "linkedin profile optimizer",
+            entity_type: "skill",
+        };
+
+        let (candidates, resolved) = discover_skill_path(&client, &query);
+
+        assert!(candidates.is_empty());
+        assert_eq!(
+            resolved.as_deref(),
+            Some("skills/linkedin-profile-optimizer")
+        );
+    }
+
+    #[test]
+    fn discover_skill_path_probes_common_layout_when_tree_api_returns_empty() {
+        let client = SearchPathClient::new()
+            .with_json(
+                "https://api.github.com/repos/paramchoudhary/resumeskills/git/trees/main?recursive=1",
+                None,
+            )
+            .with_json(
+                "https://api.github.com/repos/paramchoudhary/resumeskills/git/trees/master?recursive=1",
+                None,
+            )
+            .with_json(
+                "https://api.github.com/repos/paramchoudhary/resumeskills",
+                Some(serde_json::json!({
+                    "full_name": "Paramchoudhary/ResumeSkills"
+                })),
+            )
+            .with_json(
+                "https://api.github.com/repos/Paramchoudhary/ResumeSkills/git/trees/main?recursive=1",
+                None,
+            )
+            .with_json(
+                "https://api.github.com/repos/Paramchoudhary/ResumeSkills/git/trees/master?recursive=1",
+                None,
+            )
+            .with_bytes(
+                "https://raw.githubusercontent.com/paramchoudhary/resumeskills/main/skills/linkedin-profile-optimizer/SKILL.md",
+                b"# skill",
+            );
+        let query = SearchPathQuery {
+            owner_repo: "paramchoudhary/resumeskills",
+            skill_name: "linkedin profile optimizer",
+            entity_type: "skill",
+        };
+
+        let (candidates, resolved) = discover_skill_path(&client, &query);
+
+        assert!(candidates.is_empty());
+        assert_eq!(
+            resolved.as_deref(),
+            Some("skills/linkedin-profile-optimizer")
+        );
+    }
+
+    #[test]
+    fn discover_skill_path_returns_filtered_candidates_without_exact_match() {
+        let client = SearchPathClient::new().with_json(
+            "https://api.github.com/repos/example/repo/git/trees/main?recursive=1",
+            Some(serde_json::json!({
+                "tree": [
+                    {"type": "blob", "path": "skills/linkedin-profile-helper/SKILL.md"},
+                    {"type": "blob", "path": "skills/linkedin-profile-writer/SKILL.md"},
+                    {"type": "blob", "path": "skills/resume-tailor/SKILL.md"}
+                ]
+            })),
+        );
+        let query = SearchPathQuery {
+            owner_repo: "example/repo",
+            skill_name: "linkedin profile",
+            entity_type: "skill",
+        };
+
+        let (candidates, resolved) = discover_skill_path(&client, &query);
+
+        assert!(resolved.is_none());
+        assert_eq!(
+            candidates,
+            vec![
+                "skills/linkedin-profile-helper".to_string(),
+                "skills/linkedin-profile-writer".to_string(),
+            ]
         );
     }
 
@@ -894,6 +1074,20 @@ mod tests {
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, "skills/kubernetes-specialist");
         assert_eq!(ranked[0].1, MatchScore::Exact);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn emit_regression_resolution_errors_on_wrong_path() {
+        let err = emit_regression_resolution(Some("skills/wrong")).unwrap_err();
+        assert!(err.to_string().contains("resolved wrong path"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn emit_regression_resolution_errors_when_path_is_missing() {
+        let err = emit_regression_resolution(None).unwrap_err();
+        assert!(err.to_string().contains("failed to auto-resolve"));
     }
 
     // -----------------------------------------------------------------------
