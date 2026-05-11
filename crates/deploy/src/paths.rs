@@ -93,7 +93,7 @@ pub fn installed_dir_file_sets(
 pub fn source_path(entry: &Entry, repo_root: &Path) -> Option<PathBuf> {
     match &entry.source {
         SourceFields::Local { path } => Some(repo_root.join(path)),
-        SourceFields::Github { .. } | SourceFields::Url { .. } => {
+        SourceFields::Github { .. } | SourceFields::Gitlab { .. } | SourceFields::Url { .. } => {
             source_path_remote(entry, repo_root)
         }
     }

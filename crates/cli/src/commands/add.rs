@@ -101,6 +101,27 @@ pub fn entry_from_github(args: &GithubEntryArgs<'_>) -> Entry {
     }
 }
 
+pub struct GitlabEntryArgs<'a> {
+    pub entity_type: &'a str,
+    pub owner_repo: &'a str,
+    pub path: &'a str,
+    pub ref_: Option<&'a str>,
+    pub name: Option<&'a str>,
+}
+
+pub fn entry_from_gitlab(args: &GitlabEntryArgs<'_>) -> Entry {
+    let inferred = infer_name(args.path);
+    Entry {
+        entity_type: EntityType::parse(args.entity_type).unwrap_or(EntityType::Skill),
+        name: args.name.unwrap_or(&inferred).to_string(),
+        source: SourceFields::Gitlab {
+            owner_repo: args.owner_repo.to_string(),
+            path_in_repo: args.path.to_string(),
+            ref_: args.ref_.unwrap_or(DEFAULT_REF).to_string(),
+        },
+    }
+}
+
 pub fn entry_from_local(entity_type: &str, path: &str, name: Option<&str>) -> Entry {
     let inferred = infer_name(path);
     Entry {
@@ -434,6 +455,11 @@ pub fn cmd_add_interactive(repo_root: &Path) -> Result<(), SkillfileError> {
             "Browse and pick from any repo",
         )
         .item(
+            "gitlab",
+            "GitLab project",
+            "Browse and pick from any GitLab project",
+        )
+        .item(
             "search",
             "Search registries",
             "Find on agentskill.sh, skills.sh",
@@ -444,6 +470,7 @@ pub fn cmd_add_interactive(repo_root: &Path) -> Result<(), SkillfileError> {
 
     match source {
         "github" => wizard_github(repo_root),
+        "gitlab" => wizard_gitlab(repo_root),
         "search" => wizard_search(repo_root),
         "local" => wizard_local(repo_root),
         "url" => wizard_url(repo_root),
@@ -528,6 +555,42 @@ fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
         },
         repo_root,
     )
+}
+
+/// GitLab wizard flow: project path -> entity type -> path -> ref -> add.
+fn wizard_gitlab(repo_root: &Path) -> Result<(), SkillfileError> {
+    let entity_type: &str = cliclack::select("What are you adding?")
+        .item("skill", "Skill", "")
+        .item("agent", "Agent", "")
+        .interact()?;
+
+    let owner_repo: String = cliclack::input("GitLab project path (e.g. group/project)")
+        .placeholder("my-group/my-project")
+        .interact()?;
+
+    let path: String = cliclack::input("Path within the repo")
+        .placeholder("skills/my-skill.md")
+        .interact()?;
+
+    let ref_input: String = cliclack::input("Branch, tag, or SHA")
+        .placeholder("main")
+        .default_input("main")
+        .interact()?;
+    let ref_ = if ref_input.is_empty() || ref_input == "main" {
+        None
+    } else {
+        Some(ref_input.as_str())
+    };
+
+    let entry = entry_from_gitlab(&GitlabEntryArgs {
+        entity_type,
+        owner_repo: &owner_repo,
+        path: &path,
+        ref_,
+        name: None,
+    });
+
+    cmd_add(&entry, repo_root)
 }
 
 fn wizard_search(repo_root: &Path) -> Result<(), SkillfileError> {
@@ -996,6 +1059,66 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("skills/alpha.md"));
         assert!(text.contains("skills/beta.md"));
+    }
+
+    // --- entry_from_gitlab tests ---
+
+    #[test]
+    fn entry_from_gitlab_default_ref() {
+        let entry = entry_from_gitlab(&GitlabEntryArgs {
+            entity_type: "skill",
+            owner_repo: "group/project",
+            path: "skills/my-skill.md",
+            ref_: None,
+            name: None,
+        });
+        assert_eq!(entry.source_type(), "gitlab");
+        assert_eq!(entry.name, "my-skill");
+        let (or, pir, ref_) = entry.source.as_gitlab().unwrap();
+        assert_eq!(or, "group/project");
+        assert_eq!(pir, "skills/my-skill.md");
+        assert_eq!(ref_, DEFAULT_REF);
+    }
+
+    #[test]
+    fn entry_from_gitlab_explicit_ref() {
+        let entry = entry_from_gitlab(&GitlabEntryArgs {
+            entity_type: "agent",
+            owner_repo: "group/subgroup/project",
+            path: "agents/reviewer.md",
+            ref_: Some("v2.0"),
+            name: None,
+        });
+        assert_eq!(entry.entity_type, EntityType::Agent);
+        let (or, _, ref_) = entry.source.as_gitlab().unwrap();
+        assert_eq!(or, "group/subgroup/project");
+        assert_eq!(ref_, "v2.0");
+    }
+
+    #[test]
+    fn entry_from_gitlab_explicit_name() {
+        let entry = entry_from_gitlab(&GitlabEntryArgs {
+            entity_type: "skill",
+            owner_repo: "group/project",
+            path: "skills/foo.md",
+            ref_: None,
+            name: Some("custom-name"),
+        });
+        assert_eq!(entry.name, "custom-name");
+    }
+
+    #[test]
+    fn entry_from_gitlab_dot_path() {
+        let entry = entry_from_gitlab(&GitlabEntryArgs {
+            entity_type: "skill",
+            owner_repo: "group/project",
+            path: ".",
+            ref_: None,
+            name: None,
+        });
+        assert_eq!(entry.name, "content");
+        let (_, pir, _) = entry.source.as_gitlab().unwrap();
+        assert_eq!(pir, ".");
     }
 
     #[test]

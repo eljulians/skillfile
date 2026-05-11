@@ -44,6 +44,15 @@ fn format_source(entry: &Entry) -> Vec<(&'static str, String)> {
             ("Path", path_in_repo.clone()),
             ("Ref", ref_.clone()),
         ],
+        SourceFields::Gitlab {
+            owner_repo,
+            path_in_repo,
+            ref_,
+        } => vec![
+            ("Source", format!("gitlab ({owner_repo})")),
+            ("Path", path_in_repo.clone()),
+            ("Ref", ref_.clone()),
+        ],
         SourceFields::Local { path } => vec![("Source", format!("local ({path})"))],
         SourceFields::Url { url } => vec![("Source", format!("url ({url})"))],
     }

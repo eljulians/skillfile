@@ -136,6 +136,11 @@ pub enum SourceFields {
         path_in_repo: String,
         ref_: String,
     },
+    Gitlab {
+        owner_repo: String,
+        path_in_repo: String,
+        ref_: String,
+    },
     Local {
         path: String,
     },
@@ -150,6 +155,7 @@ impl SourceFields {
     pub fn source_type(&self) -> &str {
         match self {
             SourceFields::Github { .. } => "github",
+            SourceFields::Gitlab { .. } => "gitlab",
             SourceFields::Local { .. } => "local",
             SourceFields::Url { .. } => "url",
         }
@@ -159,6 +165,18 @@ impl SourceFields {
     pub fn as_github(&self) -> Option<(&str, &str, &str)> {
         match self {
             SourceFields::Github {
+                owner_repo,
+                path_in_repo,
+                ref_,
+            } => Some((owner_repo, path_in_repo, ref_)),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_gitlab(&self) -> Option<(&str, &str, &str)> {
+        match self {
+            SourceFields::Gitlab {
                 owner_repo,
                 path_in_repo,
                 ref_,
@@ -522,6 +540,38 @@ mod tests {
         };
         assert_eq!(m.entries.len(), 1);
         assert_eq!(m.install_targets.len(), 1);
+    }
+
+    #[test]
+    fn source_fields_gitlab_accessors() {
+        let gl = SourceFields::Gitlab {
+            owner_repo: "group/project".into(),
+            path_in_repo: "skills/my-skill.md".into(),
+            ref_: "main".into(),
+        };
+        assert_eq!(gl.source_type(), "gitlab");
+        assert_eq!(
+            gl.as_gitlab(),
+            Some(("group/project", "skills/my-skill.md", "main"))
+        );
+        assert_eq!(gl.as_github(), None);
+        assert_eq!(gl.as_local(), None);
+        assert_eq!(gl.as_url(), None);
+    }
+
+    #[test]
+    fn gitlab_entry_source_type() {
+        let e = Entry {
+            entity_type: EntityType::Agent,
+            name: "test".into(),
+            source: SourceFields::Gitlab {
+                owner_repo: "g/p".into(),
+                path_in_repo: "a.md".into(),
+                ref_: "main".into(),
+            },
+        };
+        assert_eq!(e.source_type(), "gitlab");
+        assert_eq!(e.to_string(), "gitlab/agent/test");
     }
 
     #[test]

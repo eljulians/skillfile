@@ -82,6 +82,110 @@ fn discover_github_token() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// GitLab token discovery
+// ---------------------------------------------------------------------------
+
+static GITLAB_TOKEN_CACHE: OnceLock<Option<String>> = OnceLock::new();
+
+static GITLAB_CONFIG_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+
+/// Inject a GitLab token read from the user config file.
+pub fn set_gitlab_config_token(token: Option<String>) {
+    let _ = GITLAB_CONFIG_TOKEN.set(token);
+}
+
+static GITLAB_CONFIG_HOST: OnceLock<Option<String>> = OnceLock::new();
+
+/// Inject a GitLab host read from the user config file.
+pub fn set_gitlab_config_host(host: Option<String>) {
+    let _ = GITLAB_CONFIG_HOST.set(host);
+}
+
+/// Opaque GitLab token handle. Token can only be extracted via `for_url()`
+/// which gates on `is_gitlab_url` — structurally preventing leaks.
+pub struct GitlabToken(Option<&'static str>);
+
+impl GitlabToken {
+    #[must_use]
+    pub fn for_url(&self, url: &str) -> Option<&'static str> {
+        is_gitlab_url(url, &gitlab_host())
+            .then_some(self.0)
+            .flatten()
+    }
+}
+
+/// Discover a GitLab token. Cached after first call.
+#[must_use]
+pub fn gitlab_token() -> GitlabToken {
+    GitlabToken(
+        GITLAB_TOKEN_CACHE
+            .get_or_init(discover_gitlab_token)
+            .as_deref(),
+    )
+}
+
+fn discover_gitlab_token() -> Option<String> {
+    if let Some(token) = env_token("GITLAB_TOKEN") {
+        return Some(token);
+    }
+    if let Some(token) = env_token("GITLAB_PRIVATE_TOKEN") {
+        return Some(token);
+    }
+    if let Some(Some(token)) = GITLAB_CONFIG_TOKEN.get() {
+        if !token.is_empty() {
+            return Some(token.clone());
+        }
+    }
+    glab_cli_token()
+}
+
+fn glab_cli_token() -> Option<String> {
+    let output = Command::new("glab")
+        .args(["auth", "status", "--show-token"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // glab writes status output to stderr, not stdout
+    let text = String::from_utf8_lossy(&output.stderr);
+    // Parse token from "✓ Token found: <token>" line
+    for line in text.lines() {
+        if let Some(pos) = line.find("Token found:") {
+            let token = line[pos + "Token found:".len()..].trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Returns the GitLab host. Priority: GITLAB_HOST env > config file > "gitlab.com".
+pub fn gitlab_host() -> String {
+    if let Some(host) = std::env::var("GITLAB_HOST").ok().filter(|h| !h.is_empty()) {
+        return host;
+    }
+    if let Some(Some(host)) = GITLAB_CONFIG_HOST.get() {
+        if !host.is_empty() {
+            return host.clone();
+        }
+    }
+    "gitlab.com".to_string()
+}
+
+/// Returns `true` if `url` targets the given GitLab host.
+/// Only exact host matches are accepted.
+fn is_gitlab_url(url: &str, expected_host: &str) -> bool {
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("");
+    host == expected_host
+}
+
+// ---------------------------------------------------------------------------
 // HttpClient trait — abstraction over HTTP GET for testability
 // ---------------------------------------------------------------------------
 
@@ -188,12 +292,18 @@ impl UreqClient {
         if let Some(token) = github_token().for_url(url) {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
+        if let Some(token) = gitlab_token().for_url(url) {
+            req = req.header("Authorization", &format!("Bearer {token}"));
+        }
         req
     }
 
     fn build_post(&self, url: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         let mut req = self.agent.post(url).header("User-Agent", "skillfile/1.0");
         if let Some(token) = github_token().for_url(url) {
+            req = req.header("Authorization", &format!("Bearer {token}"));
+        }
+        if let Some(token) = gitlab_token().for_url(url) {
             req = req.header("Authorization", &format!("Bearer {token}"));
         }
         req
@@ -396,5 +506,84 @@ mod tests {
     #[test]
     fn http_github_url_is_github() {
         assert!(is_github_url("http://api.github.com/repos/owner/repo"));
+    }
+
+    // -- GitlabToken newtype tests -----------------------------------------------
+
+    #[test]
+    fn gitlab_token_type_for_url_allows_gitlab_api() {
+        let token = GitlabToken(Some("glpat-secret"));
+        assert_eq!(
+            token.for_url("https://gitlab.com/api/v4/projects/foo/bar"),
+            Some("glpat-secret")
+        );
+    }
+
+    #[test]
+    fn gitlab_token_type_for_url_rejects_github() {
+        let token = GitlabToken(Some("glpat-secret"));
+        assert!(token.for_url("https://api.github.com/repos/o/r").is_none());
+    }
+
+    #[test]
+    fn gitlab_token_type_for_url_returns_none_without_token() {
+        let token = GitlabToken(None);
+        assert!(token
+            .for_url("https://gitlab.com/api/v4/projects/foo")
+            .is_none());
+    }
+
+    #[test]
+    fn gitlab_token_type_for_url_rejects_registries() {
+        let token = GitlabToken(Some("glpat-secret"));
+        assert!(token.for_url("https://agentskill.sh/api/search").is_none());
+        assert!(token.for_url("https://skills.sh/api/search").is_none());
+    }
+
+    // -- is_gitlab_url tests (token leakage prevention) -----------------------
+
+    #[test]
+    fn gitlab_api_url_is_gitlab() {
+        assert!(is_gitlab_url(
+            "https://gitlab.com/api/v4/projects/foo%2Fbar",
+            "gitlab.com"
+        ));
+    }
+
+    #[test]
+    fn gitlab_self_hosted_url_is_gitlab() {
+        assert!(is_gitlab_url(
+            "https://gitlab.mycompany.com/api/v4/projects/foo",
+            "gitlab.mycompany.com"
+        ));
+    }
+
+    #[test]
+    fn github_url_is_not_gitlab() {
+        assert!(!is_gitlab_url(
+            "https://api.github.com/repos/o/r",
+            "gitlab.com"
+        ));
+    }
+
+    #[test]
+    fn spoofed_gitlab_subdomain_is_not_gitlab() {
+        assert!(!is_gitlab_url(
+            "https://gitlab.com.evil.com/api",
+            "gitlab.com"
+        ));
+    }
+
+    #[test]
+    fn empty_url_is_not_gitlab() {
+        assert!(!is_gitlab_url("", "gitlab.com"));
+    }
+
+    #[test]
+    fn http_gitlab_url_is_gitlab() {
+        assert!(is_gitlab_url(
+            "http://gitlab.com/api/v4/projects/foo",
+            "gitlab.com"
+        ));
     }
 }

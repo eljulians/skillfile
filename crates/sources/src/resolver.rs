@@ -116,6 +116,61 @@ pub fn resolve_github_sha(
     )))
 }
 
+// ---------------------------------------------------------------------------
+// GitLab SHA resolution
+// ---------------------------------------------------------------------------
+
+fn gitlab_api_commit_url(host: &str, owner_repo: &str, ref_: &str) -> String {
+    let encoded = owner_repo.replace('/', "%2F");
+    format!("https://{host}/api/v4/projects/{encoded}/repository/commits/{ref_}")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_resolve_gitlab_sha(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    ref_: &str,
+    host: &str,
+) -> Result<Option<String>, SkillfileError> {
+    let url = gitlab_api_commit_url(host, owner_repo, ref_);
+    let Some(text) = client.get_json(&url)? else {
+        return Ok(None);
+    };
+    let data: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        SkillfileError::Network(format!(
+            "invalid JSON in GitLab SHA response for {owner_repo}@{ref_}: {e}"
+        ))
+    })?;
+    // GitLab returns "id" for commit SHA (not "sha" like GitHub)
+    Ok(data["id"].as_str().map(ToString::to_string))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_gitlab_sha(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    ref_: &str,
+    host: &str,
+) -> Result<String, SkillfileError> {
+    if let Some(sha) = try_resolve_gitlab_sha(client, owner_repo, ref_, host)? {
+        return Ok(sha);
+    }
+    // Fall back: main <-> master
+    let fallback = match ref_ {
+        "main" => Some("master"),
+        "master" => Some("main"),
+        _ => None,
+    };
+    if let Some(fb) = fallback {
+        if let Some(sha) = try_resolve_gitlab_sha(client, owner_repo, fb, host)? {
+            return Ok(sha);
+        }
+    }
+    Err(SkillfileError::Network(format!(
+        "could not resolve {owner_repo}@{ref_} on GitLab ({host}) -- check that the project exists and the ref is valid"
+    )))
+}
+
 /// Reference to a GitHub repo at a specific commit, bundling client + coordinates.
 pub struct GithubFetch<'a> {
     pub client: &'a dyn HttpClient,
@@ -137,6 +192,80 @@ pub fn fetch_github_file(
         gh.owner_repo, gh.ref_, effective_path
     );
     http_get(gh.client, &url)
+}
+
+// ---------------------------------------------------------------------------
+// GitLab file fetching & directory listing
+// ---------------------------------------------------------------------------
+
+/// Reference to a GitLab project at a specific commit, bundling client + coordinates.
+pub struct GitlabFetch<'a> {
+    pub client: &'a dyn HttpClient,
+    pub owner_repo: &'a str,
+    pub ref_: &'a str,
+    pub host: &'a str,
+}
+
+fn gitlab_file_url(gl: &GitlabFetch<'_>, path: &str) -> String {
+    let encoded_project = gl.owner_repo.replace('/', "%2F");
+    let encoded_path = encode_url_path(path).replace('/', "%2F");
+    let (host, ref_) = (gl.host, gl.ref_);
+    format!(
+        "https://{host}/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={ref_}"
+    )
+}
+
+pub fn fetch_gitlab_file(
+    gl: &GitlabFetch<'_>,
+    path_in_repo: &str,
+) -> Result<Vec<u8>, SkillfileError> {
+    let effective_path = if path_in_repo == "." {
+        "SKILL.md"
+    } else {
+        path_in_repo
+    };
+    let url = gitlab_file_url(gl, effective_path);
+    http_get(gl.client, &url)
+}
+
+pub(crate) fn list_gitlab_dir_recursive(
+    gl: &GitlabFetch<'_>,
+    base_path: &str,
+) -> Result<Vec<DirEntry>, SkillfileError> {
+    let encoded = gl.owner_repo.replace('/', "%2F");
+    let trimmed = base_path.trim_end_matches('/');
+    // Use GitLab's `path` parameter to scope the tree to the target directory,
+    // avoiding pagination issues on large repos.
+    let encoded_path = encode_url_path(trimmed);
+    let url = format!(
+        "https://{}/api/v4/projects/{}/repository/tree?ref={}&recursive=true&per_page=100&path={}",
+        gl.host, encoded, gl.ref_, encoded_path
+    );
+    let Some(text) = gl.client.get_json(&url)? else {
+        return Ok(Vec::new());
+    };
+    // GitLab returns a flat JSON array, not {"tree": [...]} like GitHub.
+    // With the `path` parameter, returned paths are still repo-absolute.
+    let items: Vec<serde_json::Value> = serde_json::from_str(&text)
+        .map_err(|e| SkillfileError::Network(format!("invalid GitLab tree JSON: {e}")))?;
+
+    let prefix = format!("{trimmed}/");
+
+    let entries = items
+        .iter()
+        .filter(|item| item["type"].as_str() == Some("blob"))
+        .filter_map(|item| {
+            let path = item["path"].as_str()?;
+            let relative_path = path.strip_prefix(&prefix)?.to_string();
+            let download_url = gitlab_file_url(gl, path);
+            Some(DirEntry {
+                relative_path,
+                download_url,
+            })
+        })
+        .collect();
+
+    Ok(entries)
 }
 
 // ---------------------------------------------------------------------------
@@ -1842,5 +1971,289 @@ mod tests {
         assert!(entries.contains(&"skills/browser".to_string()));
         assert!(entries.contains(&"skills/git.md".to_string()));
         assert_eq!(entries.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // GitLab SHA resolution helpers
+    // -----------------------------------------------------------------------
+
+    fn gitlab_commit_url(owner_repo: &str, ref_: &str) -> String {
+        let encoded = owner_repo.replace('/', "%2F");
+        format!("https://gitlab.com/api/v4/projects/{encoded}/repository/commits/{ref_}")
+    }
+
+    fn gitlab_sha_json(sha: &str) -> String {
+        format!(r#"{{"id": "{sha}"}}"#)
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_gitlab_sha
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_gitlab_sha_happy_path() {
+        let mut client = MockClient::new();
+        let url = gitlab_commit_url("my-group/my-project", "main");
+        client.add_json(&url, &gitlab_sha_json("aabbccdd11223344"));
+
+        let sha = resolve_gitlab_sha(&client, "my-group/my-project", "main", "gitlab.com").unwrap();
+        assert_eq!(sha, "aabbccdd11223344");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_with_tag() {
+        let mut client = MockClient::new();
+        let url = gitlab_commit_url("group/repo", "v1.0.0");
+        client.add_json(&url, r#"{"id": "cafebabe12345678"}"#);
+
+        let sha = resolve_gitlab_sha(&client, "group/repo", "v1.0.0", "gitlab.com").unwrap();
+        assert_eq!(sha, "cafebabe12345678");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_not_found() {
+        let mut client = MockClient::new();
+        client.add_json_none(&gitlab_commit_url("group/repo", "nonexistent"));
+
+        let err =
+            resolve_gitlab_sha(&client, "group/repo", "nonexistent", "gitlab.com").unwrap_err();
+        assert!(err.to_string().contains("could not resolve"));
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_main_falls_back_to_master() {
+        let mut client = MockClient::new();
+        client.add_json_none(&gitlab_commit_url("group/repo", "main"));
+        client.add_json(
+            &gitlab_commit_url("group/repo", "master"),
+            &gitlab_sha_json("fallback123"),
+        );
+
+        let sha = resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.com").unwrap();
+        assert_eq!(sha, "fallback123");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_self_hosted() {
+        let mut client = MockClient::new();
+        let encoded = "group%2Frepo";
+        let url =
+            format!("https://gitlab.internal/api/v4/projects/{encoded}/repository/commits/main");
+        client.add_json(&url, &gitlab_sha_json("selfhosted123"));
+
+        let sha = resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.internal").unwrap();
+        assert_eq!(sha, "selfhosted123");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_malformed_json_returns_error() {
+        let mut client = MockClient::new();
+        client.add_json(&gitlab_commit_url("group/repo", "main"), "not json {{{{");
+
+        let err = resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.com").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("invalid JSON in GitLab SHA response"));
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_master_falls_back_to_main() {
+        let mut client = MockClient::new();
+        client.add_json_none(&gitlab_commit_url("group/repo", "master"));
+        client.add_json(
+            &gitlab_commit_url("group/repo", "main"),
+            &gitlab_sha_json("1234abcd"),
+        );
+
+        let sha = resolve_gitlab_sha(&client, "group/repo", "master", "gitlab.com").unwrap();
+        assert_eq!(sha, "1234abcd");
+    }
+
+    #[test]
+    fn resolve_gitlab_sha_fails_when_both_branches_absent() {
+        let mut client = MockClient::new();
+        client.add_json_none(&gitlab_commit_url("group/repo", "main"));
+        client.add_json_none(&gitlab_commit_url("group/repo", "master"));
+
+        let err = resolve_gitlab_sha(&client, "group/repo", "main", "gitlab.com").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("could not resolve group/repo@main"));
+    }
+
+    // -----------------------------------------------------------------------
+    // GitLab fetch helpers
+    // -----------------------------------------------------------------------
+
+    fn gitlab_tree_url(host: &str, owner_repo: &str, ref_: &str, path: &str) -> String {
+        let encoded = owner_repo.replace('/', "%2F");
+        format!("https://{host}/api/v4/projects/{encoded}/repository/tree?ref={ref_}&recursive=true&per_page=100&path={path}")
+    }
+
+    // -----------------------------------------------------------------------
+    // fetch_gitlab_file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fetch_gitlab_file_basic() {
+        let sha = "abc123";
+        let encoded_project = "group%2Fproject";
+        let encoded_path = "skills%2Fgit.md";
+        let url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={sha}"
+        );
+        let mut client = MockClient::new();
+        client.add_bytes(&url, b"# Git skill".to_vec());
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo: "group/project",
+            ref_: sha,
+            host: "gitlab.com",
+        };
+        let result = fetch_gitlab_file(&gl, "skills/git.md").unwrap();
+        assert_eq!(result, b"# Git skill");
+    }
+
+    #[test]
+    fn fetch_gitlab_file_dot_path_becomes_skill_md() {
+        let sha = "def456";
+        let encoded_project = "group%2Fproject";
+        let url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/SKILL.md/raw?ref={sha}"
+        );
+        let mut client = MockClient::new();
+        client.add_bytes(&url, b"# Root skill".to_vec());
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo: "group/project",
+            ref_: sha,
+            host: "gitlab.com",
+        };
+        let result = fetch_gitlab_file(&gl, ".").unwrap();
+        assert_eq!(result, b"# Root skill");
+    }
+
+    #[test]
+    fn fetch_gitlab_file_propagates_error() {
+        let sha = "fff000";
+        let encoded_project = "group%2Fproject";
+        let encoded_path = "missing.md";
+        let url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/{encoded_path}/raw?ref={sha}"
+        );
+        let mut client = MockClient::new();
+        client.add_bytes_err(&url, "HTTP 404: not found");
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo: "group/project",
+            ref_: sha,
+            host: "gitlab.com",
+        };
+        let err = fetch_gitlab_file(&gl, "missing.md").unwrap_err();
+        assert!(err.to_string().contains("HTTP 404: not found"));
+    }
+
+    // -----------------------------------------------------------------------
+    // list_gitlab_dir_recursive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn list_gitlab_dir_recursive_returns_blobs_under_prefix() {
+        let owner_repo = "group/project";
+        let ref_ = "main";
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
+
+        // GitLab tree API returns a flat JSON array (not {"tree": [...]})
+        let json = r#"[
+            {"path": "skills/dir/file1.md", "type": "blob"},
+            {"path": "skills/dir/file2.md", "type": "blob"},
+            {"path": "skills/dir/sub", "type": "tree"},
+            {"path": "skills/other/file.md", "type": "blob"},
+            {"path": "readme.md", "type": "blob"}
+        ]"#;
+
+        let mut client = MockClient::new();
+        client.add_json(&url, json);
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+            host: "gitlab.com",
+        };
+        let entries = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap();
+
+        assert_eq!(entries.len(), 2);
+        let paths: Vec<&str> = entries.iter().map(|e| e.relative_path.as_str()).collect();
+        assert!(paths.contains(&"file1.md"));
+        assert!(paths.contains(&"file2.md"));
+    }
+
+    #[test]
+    fn list_gitlab_dir_recursive_download_urls_use_file_api() {
+        let owner_repo = "mygroup/myrepo";
+        let ref_ = "abc123sha";
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/python");
+
+        let json = r#"[{"path": "skills/python/SKILL.md", "type": "blob"}]"#;
+
+        let mut client = MockClient::new();
+        client.add_json(&url, json);
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+            host: "gitlab.com",
+        };
+        let entries = list_gitlab_dir_recursive(&gl, "skills/python").unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].relative_path, "SKILL.md");
+        // Download URL should use the GitLab Files API format
+        assert!(entries[0].download_url.contains("/api/v4/projects/"));
+        assert!(entries[0].download_url.contains("/repository/files/"));
+        assert!(entries[0].download_url.contains("/raw?ref="));
+    }
+
+    #[test]
+    fn list_gitlab_dir_recursive_empty_returns_empty() {
+        let owner_repo = "group/project";
+        let ref_ = "main";
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
+
+        let mut client = MockClient::new();
+        client.add_json(&url, "[]");
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+            host: "gitlab.com",
+        };
+        let entries = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn list_gitlab_dir_recursive_4xx_returns_empty() {
+        let owner_repo = "group/project";
+        let ref_ = "main";
+        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
+
+        let mut client = MockClient::new();
+        client.add_json_none(&url);
+
+        let gl = GitlabFetch {
+            client: &client,
+            owner_repo,
+            ref_,
+            host: "gitlab.com",
+        };
+        let entries = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap();
+        assert!(entries.is_empty());
     }
 }
