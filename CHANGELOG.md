@@ -4,6 +4,13 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.6.3 - 21-05-2026
+
+### Changed
+
+- **`skillfile add` is easier to scan and filter in the TUI** - directory entries now show a folder icon before the label, the idle status bar explicitly advertises `type to filter`, and active filtering keeps `Enter` / `Esc` guidance visible with `Esc` relabeled to `clear` by @niklasmarderx
+- **Dependency refresh** - bumped `clap_complete` to 4.6.5 and `assert_cmd` to 2.2.2.
+
 ## v1.6.2 - 11-05-2026
 
 ### Fixed
