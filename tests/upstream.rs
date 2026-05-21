@@ -531,6 +531,7 @@ fn add_discovery_scoped_flat_repo() {
             &client,
             "jeffallan/claude-skills",
             "skills/",
+            None,
         );
         if result.is_empty() {
             Err("no entries returned")
@@ -573,6 +574,7 @@ fn add_discovery_scoped_nested_repo() {
             &client,
             "aiskillstore/marketplace",
             "skills/",
+            None,
         );
         if result.is_empty() {
             Err("no entries returned")

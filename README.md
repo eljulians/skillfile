@@ -61,6 +61,7 @@ Run `skillfile add` for a guided wizard, or use the explicit CLI for any source:
 skillfile add                                            # wizard: GitHub, search, local, URL
 skillfile add github skill anthropics/skills            # discover all skills in a repo
 skillfile add github skill anthropics/skills slack-gif-creator  # add one specific skill
+skillfile add github skill nuxt/ui@v4 skills/           # add from a specific branch or tag
 skillfile add local skill skills/my-custom/SKILL.md      # track a local file
 skillfile add url skill https://example.com/skill.md     # add from a URL
 ```
@@ -163,6 +164,7 @@ install  gemini-cli   local
 # GitHub-hosted skills and agents
 github  skill  obra/superpowers  skills/requesting-code-review
 github  agent  reviewer  owner/repo  agents/reviewer.md  v2.0
+github  skill  nuxt/ui@v4  skills/SKILL.md
 
 # Local files
 local  skill  skills/git/commit.md
@@ -242,6 +244,7 @@ The lock file pins entries to exact commit SHAs. The same SHA always produces th
 Review what you install. The risk profile is the same as `git clone`.
 
 ## Development
+
 ```bash
 cargo test --workspace                     # unit + integration + upstream tests
 cargo test --test upstream                 # upstream API health tests (needs GITHUB_TOKEN)
@@ -254,12 +257,14 @@ cargo fmt --check                          # format check
 This project includes a `.pre-commit-config.yaml` that runs `cargo fmt --all` automatically before each commit, so formatting issues never reach CI.
 
 **First-time setup:**
+
 ```bash
 pip install pre-commit    # or: brew install pre-commit
 pre-commit install        # install the git hook (once per clone)
 ```
 
 To run manually:
+
 ```bash
 pre-commit run --all-files
 ```

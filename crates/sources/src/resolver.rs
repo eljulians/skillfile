@@ -61,6 +61,16 @@ fn check_repo_renamed(client: &dyn HttpClient, owner_repo: &str) -> Option<Strin
     }
 }
 
+/// Fetch the `default_branch` field from the GitHub repo API.
+///
+/// Returns `None` if the API call fails or the field is missing.
+fn fetch_default_branch(client: &dyn HttpClient, owner_repo: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{owner_repo}");
+    let text = client.get_json(&url).ok()??;
+    let data: serde_json::Value = serde_json::from_str(&text).ok()?;
+    data["default_branch"].as_str().map(ToString::to_string)
+}
+
 /// Try to resolve a git ref to a commit SHA. Returns `None` on 4xx.
 fn try_resolve_sha(
     client: &dyn HttpClient,
@@ -83,6 +93,8 @@ fn try_resolve_sha(
 /// Resolve a branch/tag/SHA ref to a full commit SHA via GitHub API.
 ///
 /// When ref is `main` and the repo uses `master`, falls back automatically.
+/// When all hardcoded fallbacks fail, queries the repo's `default_branch`
+/// field via the GitHub API as a last resort.
 pub fn resolve_github_sha(
     client: &dyn HttpClient,
     owner_repo: &str,
@@ -100,6 +112,18 @@ pub fn resolve_github_sha(
     if let Some(fb) = fallback {
         if let Some(sha) = try_resolve_sha(client, owner_repo, fb)? {
             return Ok(sha);
+        }
+    }
+    // Last resort: query the repo's actual default_branch from the GitHub API.
+    // This handles repos whose default branch is neither `main` nor `master`
+    // (e.g. `v4`, `develop`, etc.).
+    if ref_ == "main" || ref_ == "master" {
+        if let Some(db) = fetch_default_branch(client, owner_repo) {
+            if db != "main" && db != "master" {
+                if let Some(sha) = try_resolve_sha(client, owner_repo, &db)? {
+                    return Ok(sha);
+                }
+            }
         }
     }
     // Before giving up, check if the repo was renamed. ureq follows 301
@@ -293,13 +317,25 @@ pub fn list_repo_skill_entries(client: &dyn HttpClient, owner_repo: &str) -> Vec
 /// search the entire repo (equivalent to `list_repo_skill_entries`).
 ///
 /// The returned paths are repo-relative (e.g. `skills/browser`, not `browser`).
+///
+/// When `ref_` is `None`, tries `main`, `master`, and the repo's
+/// `default_branch` in order.
 pub fn list_repo_skill_entries_under(
     client: &dyn HttpClient,
     owner_repo: &str,
     base_path: &str,
+    ref_: Option<&str>,
 ) -> Vec<String> {
-    let all_files = list_md_files_with_ref(client, owner_repo, "main")
-        .or_else(|| list_md_files_with_ref(client, owner_repo, "master"));
+    let all_files = if let Some(r) = ref_ {
+        list_md_files_with_ref(client, owner_repo, r)
+    } else {
+        list_md_files_with_ref(client, owner_repo, "main")
+            .or_else(|| list_md_files_with_ref(client, owner_repo, "master"))
+            .or_else(|| {
+                let db = fetch_default_branch(client, owner_repo)?;
+                list_md_files_with_ref(client, owner_repo, &db)
+            })
+    };
 
     let Some(files) = all_files else {
         return Vec::new();
@@ -1789,7 +1825,7 @@ mod tests {
         ]);
         client.add_json(&tree_url("org/repo", "main"), &json);
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/", None);
         assert!(entries.contains(&"skills/browser".to_string()));
         assert!(entries.contains(&"skills/git.md".to_string()));
         assert!(!entries.contains(&"agents/reviewer.md".to_string()));
@@ -1802,7 +1838,7 @@ mod tests {
         let json = tree_json(&[("skills/git.md", "blob"), ("agents/reviewer.md", "blob")]);
         client.add_json(&tree_url("org/repo", "main"), &json);
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", ".");
+        let entries = list_repo_skill_entries_under(&client, "org/repo", ".", None);
         assert!(entries.contains(&"skills/git.md".to_string()));
         assert!(entries.contains(&"agents/reviewer.md".to_string()));
         assert_eq!(entries.len(), 2);
@@ -1814,7 +1850,7 @@ mod tests {
         let json = tree_json(&[("skills/git.md", "blob")]);
         client.add_json(&tree_url("org/repo", "main"), &json);
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", "nonexistent/");
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "nonexistent/", None);
         assert!(entries.is_empty());
     }
 
@@ -1824,7 +1860,7 @@ mod tests {
         client.add_json_err(&tree_url("org/repo", "main"), "timeout");
         client.add_json_err(&tree_url("org/repo", "master"), "timeout");
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/", None);
         assert!(entries.is_empty());
     }
 
@@ -1838,7 +1874,7 @@ mod tests {
         ]);
         client.add_json(&tree_url("org/repo", "main"), &json);
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills");
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills", None);
         assert!(entries.contains(&"skills/browser".to_string()));
         assert!(entries.contains(&"skills/git.md".to_string()));
         assert_eq!(entries.len(), 2);

@@ -78,6 +78,30 @@ fn strip_inline_comment(parts: Vec<String>) -> Vec<String> {
     }
 }
 
+/// Parse `owner/repo[@ref]` into `(owner_repo, ref_)`.
+///
+/// Supports:
+/// - `owner/repo` → `("owner/repo", None)`
+/// - `owner/repo@v4` → `("owner/repo", Some("v4"))`
+/// - `owner/repo@main` → `("owner/repo", Some("main"))`
+fn parse_owner_repo_ref(input: &str) -> (String, Option<String>) {
+    match input.split_once('@') {
+        Some((repo, ref_)) if !repo.is_empty() && !ref_.is_empty() => {
+            (repo.to_string(), Some(ref_.to_string()))
+        }
+        _ => (input.to_string(), None),
+    }
+}
+
+/// Resolve the effective ref from the `@`-syntax parsed ref and an explicit positional ref.
+///
+/// Priority: `owner/repo@ref` > explicit positional ref > `DEFAULT_REF`.
+fn resolve_ref(at_ref: Option<String>, positional_ref: Option<&str>) -> String {
+    at_ref
+        .or_else(|| positional_ref.map(String::from))
+        .unwrap_or_else(|| DEFAULT_REF.to_string())
+}
+
 /// Parse a github entry line. parts[0]=source_type, parts[1]=entity_type, etc.
 fn parse_github_entry(
     parts: &[String],
@@ -94,8 +118,9 @@ fn parse_github_entry(
             ));
             return (None, warnings);
         }
-        let ref_ = parts.get(4).map_or(DEFAULT_REF, String::as_str);
-        (infer_name(&parts[3]), &parts[2], &parts[3], ref_)
+        let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&parts[2]);
+        let ref_ = resolve_ref(parsed_ref, parts.get(4).map(String::as_str));
+        (infer_name(&parts[3]), parsed_repo, &parts[3], ref_)
     } else {
         if parts.len() < 5 {
             warnings.push(format!(
@@ -106,22 +131,23 @@ fn parse_github_entry(
         if !parts[3].contains('/') {
             warnings.push(format!(
                 "warning: line {lineno}: invalid owner/repo '{}' \
-                 — expected 'owner/repo' format",
+                 — expected 'owner/repo' or 'owner/repo@ref' format",
                 parts[3],
             ));
             return (None, warnings);
         }
-        let ref_ = parts.get(5).map_or(DEFAULT_REF, String::as_str);
-        (parts[2].clone(), &parts[3], &parts[4], ref_)
+        let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&parts[3]);
+        let ref_ = resolve_ref(parsed_ref, parts.get(5).map(String::as_str));
+        (parts[2].clone(), parsed_repo, &parts[4], ref_)
     };
 
     let entry = Entry {
         entity_type,
         name,
         source: SourceFields::Github {
-            owner_repo: owner_repo.clone(),
+            owner_repo,
             path_in_repo: path_in_repo.clone(),
-            ref_: ref_.to_owned(),
+            ref_,
         },
     };
     (Some(entry), warnings)
@@ -549,6 +575,74 @@ mod tests {
         );
         let r = parse_manifest(&p).unwrap();
         assert_eq!(r.manifest.entries[0].ref_(), "main");
+    }
+
+    // -------------------------------------------------------------------
+    // @-syntax ref (owner/repo@ref)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn github_entry_at_ref_inferred_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(dir.path(), "github  skill  nuxt/ui@v4  path/to/SKILL.md");
+        let r = parse_manifest(&p).unwrap();
+        assert_eq!(r.manifest.entries.len(), 1);
+        let e = &r.manifest.entries[0];
+        assert_eq!(e.name, "SKILL");
+        assert_eq!(e.owner_repo(), "nuxt/ui");
+        assert_eq!(e.ref_(), "v4");
+    }
+
+    #[test]
+    fn github_entry_at_ref_explicit_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(
+            dir.path(),
+            "github  skill  my-skill  nuxt/ui@v4  path/to/SKILL.md",
+        );
+        let r = parse_manifest(&p).unwrap();
+        assert_eq!(r.manifest.entries.len(), 1);
+        let e = &r.manifest.entries[0];
+        assert_eq!(e.name, "my-skill");
+        assert_eq!(e.owner_repo(), "nuxt/ui");
+        assert_eq!(e.ref_(), "v4");
+    }
+
+    #[test]
+    fn github_entry_at_ref_with_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(
+            dir.path(),
+            "github  skill  owner/repo@main  path/to/SKILL.md",
+        );
+        let r = parse_manifest(&p).unwrap();
+        assert_eq!(r.manifest.entries[0].owner_repo(), "owner/repo");
+        assert_eq!(r.manifest.entries[0].ref_(), "main");
+    }
+
+    #[test]
+    fn github_entry_at_ref_with_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(
+            dir.path(),
+            "github  skill  owner/repo@abc123def456  path/to/SKILL.md",
+        );
+        let r = parse_manifest(&p).unwrap();
+        assert_eq!(r.manifest.entries[0].owner_repo(), "owner/repo");
+        assert_eq!(r.manifest.entries[0].ref_(), "abc123def456");
+    }
+
+    #[test]
+    fn github_entry_at_ref_takes_priority_over_positional() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(
+            dir.path(),
+            "github  skill  nuxt/ui@v4  path/to/SKILL.md  v3",
+        );
+        let r = parse_manifest(&p).unwrap();
+        let e = &r.manifest.entries[0];
+        assert_eq!(e.owner_repo(), "nuxt/ui");
+        assert_eq!(e.ref_(), "v4");
     }
 
     // -------------------------------------------------------------------

@@ -13,6 +13,16 @@ use skillfile_deploy::install::{
 use skillfile_sources::strategy::format_parts;
 use skillfile_sources::sync::{sync_entry, vendor_dir_for, SyncContext};
 
+/// Parse `owner/repo[@ref]` into `(owner_repo, ref_)`.
+fn parse_owner_repo_ref(input: &str) -> (String, Option<String>) {
+    match input.split_once('@') {
+        Some((repo, ref_)) if !repo.is_empty() && !ref_.is_empty() => {
+            (repo.to_string(), Some(ref_.to_string()))
+        }
+        _ => (input.to_string(), None),
+    }
+}
+
 fn format_line(entry: &Entry) -> String {
     let mut parts = vec![
         entry.source_type().to_string(),
@@ -145,7 +155,8 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
         args.entity_type, args.owner_repo
     ));
     let client = skillfile_sources::http::UreqClient::new();
-    let entries = list_repo_skill_entries_under(&client, args.owner_repo, args.base_path);
+    let entries =
+        list_repo_skill_entries_under(&client, args.owner_repo, args.base_path, args.ref_);
     spinner.finish();
 
     if entries.is_empty() {
@@ -467,7 +478,7 @@ fn validate_github_repo(owner_repo: &str) -> Result<(), SkillfileError> {
 fn discover_top_level_dirs(owner_repo: &str) -> Vec<String> {
     use skillfile_sources::resolver::list_repo_skill_entries_under;
     let client = skillfile_sources::http::UreqClient::new();
-    let entries = list_repo_skill_entries_under(&client, owner_repo, ".");
+    let entries = list_repo_skill_entries_under(&client, owner_repo, ".", None);
     let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for entry in &entries {
         if let Some(first_seg) = entry.split('/').next() {
@@ -481,20 +492,22 @@ fn discover_top_level_dirs(owner_repo: &str) -> Vec<String> {
 fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
     use skillfile_core::output::Spinner;
 
-    let owner_repo: String = cliclack::input("GitHub repository (owner/repo)")
-        .placeholder("e.g. anthropics/skills")
+    let owner_repo_input: String = cliclack::input("GitHub repository (owner/repo)")
+        .placeholder("e.g. anthropics/skills or nuxt/ui@v4")
         .validate(|v: &String| {
             if v.contains('/') && v.len() > 2 {
                 Ok(())
             } else {
-                Err("Expected format: owner/repo")
+                Err("Expected format: owner/repo or owner/repo@ref")
             }
         })
         .interact()?;
 
+    let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&owner_repo_input);
+
     // Validate repo exists before asking more questions.
-    let spinner = Spinner::new(&format!("Checking {owner_repo}..."));
-    let valid = validate_github_repo(&owner_repo);
+    let spinner = Spinner::new(&format!("Checking {parsed_repo}..."));
+    let valid = validate_github_repo(&parsed_repo);
     spinner.finish();
     valid?;
 
@@ -504,7 +517,7 @@ fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
 
     // Discover top-level dirs for the path hint.
     let spinner = Spinner::new("Scanning repository...");
-    let top_dirs = discover_top_level_dirs(&owner_repo);
+    let top_dirs = discover_top_level_dirs(&parsed_repo);
     spinner.finish();
 
     let path_hint = if top_dirs.is_empty() {
@@ -521,9 +534,9 @@ fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
     cmd_add_bulk(
         &BulkAddArgs {
             entity_type,
-            owner_repo: &owner_repo,
+            owner_repo: &parsed_repo,
             base_path: &base_path,
-            ref_: None,
+            ref_: parsed_ref.as_deref(),
             no_interactive: false,
         },
         repo_root,

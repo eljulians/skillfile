@@ -470,8 +470,8 @@ enum AddSource {
         /// Entity type: skill or agent
         #[arg(value_name = "TYPE", value_parser = parse_entity_type)]
         entity_type: String,
-        /// GitHub repository (e.g. owner/repo)
-        #[arg(value_name = "OWNER/REPO")]
+        /// GitHub repository (e.g. owner/repo or owner/repo@ref)
+        #[arg(value_name = "OWNER/REPO[@REF]")]
         owner_repo: String,
         /// Path within the repo (omit to discover all entries)
         #[arg(value_name = "PATH")]
@@ -521,6 +521,21 @@ fn is_discovery_path(path: &str) -> bool {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
+/// Parse `owner/repo[@ref]` into `(owner_repo, ref_)`.
+///
+/// Supports:
+/// - `owner/repo` → `("owner/repo", None)`
+/// - `owner/repo@v4` → `("owner/repo", Some("v4"))`
+/// - `owner/repo@main` → `("owner/repo", Some("main"))`
+fn parse_owner_repo_ref(input: &str) -> (String, Option<String>) {
+    match input.split_once('@') {
+        Some((repo, ref_)) if !repo.is_empty() && !ref_.is_empty() => {
+            (repo.to_string(), Some(ref_.to_string()))
+        }
+        _ => (input.to_string(), None),
+    }
+}
+
 fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), SkillfileError> {
     let entry = match source {
         AddSource::Github {
@@ -532,12 +547,14 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             no_interactive,
         } if is_discovery_path(path.as_deref().unwrap_or(".")) => {
             let base_path = path.as_deref().unwrap_or(".");
+            let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&owner_repo);
+            let effective_ref = ref_.or(parsed_ref);
             return commands::add::cmd_add_bulk(
                 &commands::add::BulkAddArgs {
                     entity_type: &entity_type,
-                    owner_repo: &owner_repo,
+                    owner_repo: &parsed_repo,
                     base_path,
-                    ref_: ref_.as_deref(),
+                    ref_: effective_ref.as_deref(),
                     no_interactive,
                 },
                 repo_root,
@@ -550,13 +567,17 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             ref_,
             name,
             no_interactive: _,
-        } => commands::add::entry_from_github(&commands::add::GithubEntryArgs {
-            entity_type: &entity_type,
-            owner_repo: &owner_repo,
-            path: path.as_deref().unwrap_or("."),
-            ref_: ref_.as_deref(),
-            name: name.as_deref(),
-        }),
+        } => {
+            let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&owner_repo);
+            let effective_ref = ref_.or(parsed_ref);
+            commands::add::entry_from_github(&commands::add::GithubEntryArgs {
+                entity_type: &entity_type,
+                owner_repo: &parsed_repo,
+                path: path.as_deref().unwrap_or("."),
+                ref_: effective_ref.as_deref(),
+                name: name.as_deref(),
+            })
+        }
         AddSource::Local {
             entity_type,
             path,
