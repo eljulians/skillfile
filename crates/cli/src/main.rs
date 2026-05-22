@@ -10,6 +10,9 @@ use std::process;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use skillfile_core::error::SkillfileError;
+use skillfile_core::parser::{
+    parse_owner_repo_ref, resolve_explicit_owner_repo_ref, resolve_owner_repo_ref,
+};
 use skillfile_deploy::adapter::known_adapters;
 
 /// Read entry names from the Skillfile in the current directory for shell completion.
@@ -521,21 +524,6 @@ fn is_discovery_path(path: &str) -> bool {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
-/// Parse `owner/repo[@ref]` into `(owner_repo, ref_)`.
-///
-/// Supports:
-/// - `owner/repo` → `("owner/repo", None)`
-/// - `owner/repo@v4` → `("owner/repo", Some("v4"))`
-/// - `owner/repo@main` → `("owner/repo", Some("main"))`
-fn parse_owner_repo_ref(input: &str) -> (String, Option<String>) {
-    match input.split_once('@') {
-        Some((repo, ref_)) if !repo.is_empty() && !ref_.is_empty() => {
-            (repo.to_string(), Some(ref_.to_string()))
-        }
-        _ => (input.to_string(), None),
-    }
-}
-
 fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), SkillfileError> {
     let entry = match source {
         AddSource::Github {
@@ -548,13 +536,13 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
         } if is_discovery_path(path.as_deref().unwrap_or(".")) => {
             let base_path = path.as_deref().unwrap_or(".");
             let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&owner_repo);
-            let effective_ref = ref_.or(parsed_ref);
+            let explicit_ref = resolve_explicit_owner_repo_ref(parsed_ref, ref_.as_deref());
             return commands::add::cmd_add_bulk(
                 &commands::add::BulkAddArgs {
                     entity_type: &entity_type,
                     owner_repo: &parsed_repo,
                     base_path,
-                    ref_: effective_ref.as_deref(),
+                    ref_: explicit_ref.as_deref(),
                     no_interactive,
                 },
                 repo_root,
@@ -569,12 +557,12 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             no_interactive: _,
         } => {
             let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&owner_repo);
-            let effective_ref = ref_.or(parsed_ref);
+            let effective_ref = resolve_owner_repo_ref(parsed_ref, ref_.as_deref());
             commands::add::entry_from_github(&commands::add::GithubEntryArgs {
                 entity_type: &entity_type,
                 owner_repo: &parsed_repo,
                 path: path.as_deref().unwrap_or("."),
-                ref_: effective_ref.as_deref(),
+                ref_: Some(effective_ref.as_str()),
                 name: name.as_deref(),
             })
         }

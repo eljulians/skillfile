@@ -5,23 +5,13 @@ use super::format::sorted_manifest_text;
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{read_lock, write_lock};
 use skillfile_core::models::{EntityType, Entry, Manifest, SourceFields, DEFAULT_REF};
-use skillfile_core::parser::{infer_name, parse_manifest, MANIFEST_NAME};
+use skillfile_core::parser::{infer_name, parse_manifest, parse_owner_repo_ref, MANIFEST_NAME};
 use skillfile_deploy::install::{
     capture_install_snapshot, install_entry_with_outcome, InstallOutcome, InstallSkipReason,
     InstallSnapshot,
 };
 use skillfile_sources::strategy::format_parts;
 use skillfile_sources::sync::{sync_entry, vendor_dir_for, SyncContext};
-
-/// Parse `owner/repo[@ref]` into `(owner_repo, ref_)`.
-fn parse_owner_repo_ref(input: &str) -> (String, Option<String>) {
-    match input.split_once('@') {
-        Some((repo, ref_)) if !repo.is_empty() && !ref_.is_empty() => {
-            (repo.to_string(), Some(ref_.to_string()))
-        }
-        _ => (input.to_string(), None),
-    }
-}
 
 fn format_line(entry: &Entry) -> String {
     let mut parts = vec![
@@ -145,7 +135,7 @@ pub struct BulkAddArgs<'a> {
 /// and add each selected entry via [`cmd_add`].
 pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), SkillfileError> {
     use skillfile_core::output::Spinner;
-    use skillfile_sources::resolver::list_repo_skill_entries_under;
+    use skillfile_sources::resolver::{list_repo_skill_entries_under_query, RepoEntryQuery};
 
     // Validate repo exists before spending time on Tree API discovery.
     validate_github_repo(args.owner_repo)?;
@@ -155,8 +145,14 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
         args.entity_type, args.owner_repo
     ));
     let client = skillfile_sources::http::UreqClient::new();
-    let entries =
-        list_repo_skill_entries_under(&client, args.owner_repo, args.base_path, args.ref_);
+    let entries = list_repo_skill_entries_under_query(
+        &client,
+        &RepoEntryQuery {
+            owner_repo: args.owner_repo,
+            base_path: args.base_path,
+            ref_: args.ref_,
+        },
+    );
     spinner.finish();
 
     if entries.is_empty() {
@@ -478,7 +474,7 @@ fn validate_github_repo(owner_repo: &str) -> Result<(), SkillfileError> {
 fn discover_top_level_dirs(owner_repo: &str) -> Vec<String> {
     use skillfile_sources::resolver::list_repo_skill_entries_under;
     let client = skillfile_sources::http::UreqClient::new();
-    let entries = list_repo_skill_entries_under(&client, owner_repo, ".", None);
+    let entries = list_repo_skill_entries_under(&client, owner_repo, ".");
     let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for entry in &entries {
         if let Some(first_seg) = entry.split('/').next() {

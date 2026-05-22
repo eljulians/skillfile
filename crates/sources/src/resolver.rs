@@ -71,6 +71,22 @@ fn fetch_default_branch(client: &dyn HttpClient, owner_repo: &str) -> Option<Str
     data["default_branch"].as_str().map(ToString::to_string)
 }
 
+fn non_legacy_default_branch(client: &dyn HttpClient, owner_repo: &str) -> Option<String> {
+    let branch = fetch_default_branch(client, owner_repo)?;
+    if branch == "main" || branch == "master" {
+        return None;
+    }
+    Some(branch)
+}
+
+fn fallback_branch(ref_: &str) -> Option<&'static str> {
+    match ref_ {
+        "main" => Some("master"),
+        "master" => Some("main"),
+        _ => None,
+    }
+}
+
 /// Try to resolve a git ref to a commit SHA. Returns `None` on 4xx.
 fn try_resolve_sha(
     client: &dyn HttpClient,
@@ -90,6 +106,16 @@ fn try_resolve_sha(
     Ok(data["sha"].as_str().map(ToString::to_string))
 }
 
+fn resolve_default_branch_sha(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+) -> Result<Option<String>, SkillfileError> {
+    let Some(default_branch) = non_legacy_default_branch(client, owner_repo) else {
+        return Ok(None);
+    };
+    try_resolve_sha(client, owner_repo, &default_branch)
+}
+
 /// Resolve a branch/tag/SHA ref to a full commit SHA via GitHub API.
 ///
 /// When ref is `main` and the repo uses `master`, falls back automatically.
@@ -103,27 +129,12 @@ pub fn resolve_github_sha(
     if let Some(sha) = try_resolve_sha(client, owner_repo, ref_)? {
         return Ok(sha);
     }
-    // Fall back: main <-> master
-    let fallback = match ref_ {
-        "main" => Some("master"),
-        "master" => Some("main"),
-        _ => None,
-    };
-    if let Some(fb) = fallback {
+    if let Some(fb) = fallback_branch(ref_) {
         if let Some(sha) = try_resolve_sha(client, owner_repo, fb)? {
             return Ok(sha);
         }
-    }
-    // Last resort: query the repo's actual default_branch from the GitHub API.
-    // This handles repos whose default branch is neither `main` nor `master`
-    // (e.g. `v4`, `develop`, etc.).
-    if ref_ == "main" || ref_ == "master" {
-        if let Some(db) = fetch_default_branch(client, owner_repo) {
-            if db != "main" && db != "master" {
-                if let Some(sha) = try_resolve_sha(client, owner_repo, &db)? {
-                    return Ok(sha);
-                }
-            }
+        if let Some(sha) = resolve_default_branch_sha(client, owner_repo)? {
+            return Ok(sha);
         }
     }
     // Before giving up, check if the repo was renamed. ureq follows 301
@@ -296,19 +307,40 @@ fn collapse_by_heuristic(unclaimed: &[&str]) -> Vec<String> {
     entries
 }
 
+fn list_default_md_files(client: &dyn HttpClient, owner_repo: &str) -> Option<Vec<String>> {
+    list_md_files_with_ref(client, owner_repo, "main")
+        .or_else(|| list_md_files_with_ref(client, owner_repo, "master"))
+        .or_else(|| {
+            let default_branch = non_legacy_default_branch(client, owner_repo)?;
+            list_md_files_with_ref(client, owner_repo, &default_branch)
+        })
+}
+
 /// Discover skill entry paths in a GitHub repo.
 ///
 /// Returns Skillfile-ready paths: `.` for root SKILL.md, directory paths for
 /// multi-file skills, and individual `.md` paths for single-file skills.
 /// Excludes repo metadata (README, CHANGELOG, etc.).
 ///
-/// Tries the Tree API with "main", falls back to "master". Returns an empty
-/// vec on any failure (graceful degradation for interactive flows).
+/// Tries the Tree API with `main`, `master`, then the repo's `default_branch`.
+/// Returns an empty vec on any failure (graceful degradation for interactive flows).
 pub fn list_repo_skill_entries(client: &dyn HttpClient, owner_repo: &str) -> Vec<String> {
-    list_md_files_with_ref(client, owner_repo, "main")
-        .or_else(|| list_md_files_with_ref(client, owner_repo, "master"))
+    list_default_md_files(client, owner_repo)
         .map(|files| collapse_to_entries(&files))
         .unwrap_or_default()
+}
+
+pub struct RepoEntryQuery<'a> {
+    pub owner_repo: &'a str,
+    pub base_path: &'a str,
+    pub ref_: Option<&'a str>,
+}
+
+fn list_repo_md_files(client: &dyn HttpClient, query: &RepoEntryQuery<'_>) -> Option<Vec<String>> {
+    if let Some(ref_) = query.ref_ {
+        return list_md_files_with_ref(client, query.owner_repo, ref_);
+    }
+    list_default_md_files(client, query.owner_repo)
 }
 
 /// Discover skill entry paths under a specific directory in a GitHub repo.
@@ -317,35 +349,39 @@ pub fn list_repo_skill_entries(client: &dyn HttpClient, owner_repo: &str) -> Vec
 /// search the entire repo (equivalent to `list_repo_skill_entries`).
 ///
 /// The returned paths are repo-relative (e.g. `skills/browser`, not `browser`).
-///
-/// When `ref_` is `None`, tries `main`, `master`, and the repo's
-/// `default_branch` in order.
 pub fn list_repo_skill_entries_under(
     client: &dyn HttpClient,
     owner_repo: &str,
     base_path: &str,
-    ref_: Option<&str>,
 ) -> Vec<String> {
-    let all_files = if let Some(r) = ref_ {
-        list_md_files_with_ref(client, owner_repo, r)
-    } else {
-        list_md_files_with_ref(client, owner_repo, "main")
-            .or_else(|| list_md_files_with_ref(client, owner_repo, "master"))
-            .or_else(|| {
-                let db = fetch_default_branch(client, owner_repo)?;
-                list_md_files_with_ref(client, owner_repo, &db)
-            })
-    };
+    list_repo_skill_entries_under_query(
+        client,
+        &RepoEntryQuery {
+            owner_repo,
+            base_path,
+            ref_: None,
+        },
+    )
+}
+
+/// Like [`list_repo_skill_entries_under`] but allows an explicit branch, tag,
+/// or SHA override for discovery. When `ref_` is `None`, it tries `main`,
+/// `master`, then the repo's `default_branch`.
+pub fn list_repo_skill_entries_under_query(
+    client: &dyn HttpClient,
+    query: &RepoEntryQuery<'_>,
+) -> Vec<String> {
+    let all_files = list_repo_md_files(client, query);
 
     let Some(files) = all_files else {
         return Vec::new();
     };
 
-    if base_path == "." {
+    if query.base_path == "." {
         return collapse_to_entries(&files);
     }
 
-    let prefix = base_path.trim_end_matches('/');
+    let prefix = query.base_path.trim_end_matches('/');
     let filtered: Vec<String> = files
         .into_iter()
         .filter(|p| p.starts_with(prefix) && p.as_bytes().get(prefix.len()).copied() == Some(b'/'))
@@ -805,6 +841,18 @@ mod tests {
 
         let sha = resolve_github_sha(&client, "org/repo", "master").unwrap();
         assert_eq!(sha, "1234abcd5678ef90");
+    }
+
+    #[test]
+    fn resolve_github_sha_falls_back_to_default_branch() {
+        let mut client = MockClient::new();
+        client.add_json_none(&commit_url("org/repo", "main"));
+        client.add_json_none(&commit_url("org/repo", "master"));
+        client.add_json(&repo_url("org/repo"), r#"{"default_branch": "v4"}"#);
+        client.add_json(&commit_url("org/repo", "v4"), &sha_json("feedface12345678"));
+
+        let sha = resolve_github_sha(&client, "org/repo", "main").unwrap();
+        assert_eq!(sha, "feedface12345678");
     }
 
     #[test]
@@ -1662,6 +1710,19 @@ mod tests {
     }
 
     #[test]
+    fn skill_entries_fall_back_to_default_branch() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("skills/nuxt-ui/SKILL.md", "blob")]);
+        client.add_json_none(&tree_url("org/repo", "main"));
+        client.add_json_none(&tree_url("org/repo", "master"));
+        client.add_json(&repo_url("org/repo"), r#"{"default_branch": "v4"}"#);
+        client.add_json(&tree_url("org/repo", "v4"), &json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert_eq!(entries, vec!["skills/nuxt-ui".to_string()]);
+    }
+
+    #[test]
     fn skill_entries_main_succeeds_does_not_try_master() {
         let mut client = MockClient::new();
         let json = tree_json(&[("SKILL.md", "blob")]);
@@ -1825,7 +1886,7 @@ mod tests {
         ]);
         client.add_json(&tree_url("org/repo", "main"), &json);
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/", None);
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
         assert!(entries.contains(&"skills/browser".to_string()));
         assert!(entries.contains(&"skills/git.md".to_string()));
         assert!(!entries.contains(&"agents/reviewer.md".to_string()));
@@ -1838,7 +1899,7 @@ mod tests {
         let json = tree_json(&[("skills/git.md", "blob"), ("agents/reviewer.md", "blob")]);
         client.add_json(&tree_url("org/repo", "main"), &json);
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", ".", None);
+        let entries = list_repo_skill_entries_under(&client, "org/repo", ".");
         assert!(entries.contains(&"skills/git.md".to_string()));
         assert!(entries.contains(&"agents/reviewer.md".to_string()));
         assert_eq!(entries.len(), 2);
@@ -1850,7 +1911,7 @@ mod tests {
         let json = tree_json(&[("skills/git.md", "blob")]);
         client.add_json(&tree_url("org/repo", "main"), &json);
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", "nonexistent/", None);
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "nonexistent/");
         assert!(entries.is_empty());
     }
 
@@ -1860,7 +1921,7 @@ mod tests {
         client.add_json_err(&tree_url("org/repo", "main"), "timeout");
         client.add_json_err(&tree_url("org/repo", "master"), "timeout");
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/", None);
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
         assert!(entries.is_empty());
     }
 
@@ -1874,9 +1935,41 @@ mod tests {
         ]);
         client.add_json(&tree_url("org/repo", "main"), &json);
 
-        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills", None);
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills");
         assert!(entries.contains(&"skills/browser".to_string()));
         assert!(entries.contains(&"skills/git.md".to_string()));
         assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn skill_entries_under_fall_back_to_default_branch() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("skills/nuxt-ui/SKILL.md", "blob")]);
+        client.add_json_none(&tree_url("org/repo", "main"));
+        client.add_json_none(&tree_url("org/repo", "master"));
+        client.add_json(&repo_url("org/repo"), r#"{"default_branch": "v4"}"#);
+        client.add_json(&tree_url("org/repo", "v4"), &json);
+
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
+        assert_eq!(entries, vec!["skills/nuxt-ui".to_string()]);
+    }
+
+    #[test]
+    fn skill_entries_under_query_uses_explicit_ref() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("skills/nuxt-ui/SKILL.md", "blob")]);
+        client.add_json(&tree_url("org/repo", "v4"), &json);
+        client.add_json_err(&tree_url("org/repo", "main"), "should not be called");
+        client.add_json(&repo_url("org/repo"), r#"{"default_branch": "develop"}"#);
+
+        let entries = list_repo_skill_entries_under_query(
+            &client,
+            &RepoEntryQuery {
+                owner_repo: "org/repo",
+                base_path: "skills/",
+                ref_: Some("v4"),
+            },
+        );
+        assert_eq!(entries, vec!["skills/nuxt-ui".to_string()]);
     }
 }

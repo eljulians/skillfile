@@ -84,7 +84,8 @@ fn strip_inline_comment(parts: Vec<String>) -> Vec<String> {
 /// - `owner/repo` → `("owner/repo", None)`
 /// - `owner/repo@v4` → `("owner/repo", Some("v4"))`
 /// - `owner/repo@main` → `("owner/repo", Some("main"))`
-fn parse_owner_repo_ref(input: &str) -> (String, Option<String>) {
+#[must_use]
+pub fn parse_owner_repo_ref(input: &str) -> (String, Option<String>) {
     match input.split_once('@') {
         Some((repo, ref_)) if !repo.is_empty() && !ref_.is_empty() => {
             (repo.to_string(), Some(ref_.to_string()))
@@ -96,9 +97,20 @@ fn parse_owner_repo_ref(input: &str) -> (String, Option<String>) {
 /// Resolve the effective ref from the `@`-syntax parsed ref and an explicit positional ref.
 ///
 /// Priority: `owner/repo@ref` > explicit positional ref > `DEFAULT_REF`.
-fn resolve_ref(at_ref: Option<String>, positional_ref: Option<&str>) -> String {
-    at_ref
-        .or_else(|| positional_ref.map(String::from))
+#[must_use]
+pub fn resolve_explicit_owner_repo_ref(
+    at_ref: Option<String>,
+    positional_ref: Option<&str>,
+) -> Option<String> {
+    at_ref.or_else(|| positional_ref.map(String::from))
+}
+
+/// Resolve the effective ref from the `@`-syntax parsed ref and an explicit positional ref.
+///
+/// Priority: `owner/repo@ref` > explicit positional ref > `DEFAULT_REF`.
+#[must_use]
+pub fn resolve_owner_repo_ref(at_ref: Option<String>, positional_ref: Option<&str>) -> String {
+    resolve_explicit_owner_repo_ref(at_ref, positional_ref)
         .unwrap_or_else(|| DEFAULT_REF.to_string())
 }
 
@@ -119,7 +131,7 @@ fn parse_github_entry(
             return (None, warnings);
         }
         let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&parts[2]);
-        let ref_ = resolve_ref(parsed_ref, parts.get(4).map(String::as_str));
+        let ref_ = resolve_owner_repo_ref(parsed_ref, parts.get(4).map(String::as_str));
         (infer_name(&parts[3]), parsed_repo, &parts[3], ref_)
     } else {
         if parts.len() < 5 {
@@ -137,7 +149,7 @@ fn parse_github_entry(
             return (None, warnings);
         }
         let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&parts[3]);
-        let ref_ = resolve_ref(parsed_ref, parts.get(5).map(String::as_str));
+        let ref_ = resolve_owner_repo_ref(parsed_ref, parts.get(5).map(String::as_str));
         (parts[2].clone(), parsed_repo, &parts[4], ref_)
     };
 

@@ -164,7 +164,7 @@ install  gemini-cli   local
 # GitHub-hosted skills and agents
 github  skill  obra/superpowers  skills/requesting-code-review
 github  agent  reviewer  owner/repo  agents/reviewer.md  v2.0
-github  skill  nuxt/ui@v4  skills/SKILL.md
+github  skill  nuxt/ui@v4  skills/nuxt-ui
 
 # Local files
 local  skill  skills/git/commit.md

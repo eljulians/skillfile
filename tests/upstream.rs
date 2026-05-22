@@ -531,7 +531,6 @@ fn add_discovery_scoped_flat_repo() {
             &client,
             "jeffallan/claude-skills",
             "skills/",
-            None,
         );
         if result.is_empty() {
             Err("no entries returned")
@@ -574,7 +573,6 @@ fn add_discovery_scoped_nested_repo() {
             &client,
             "aiskillstore/marketplace",
             "skills/",
-            None,
         );
         if result.is_empty() {
             Err("no entries returned")
@@ -612,6 +610,44 @@ fn add_discovery_scoped_nested_repo() {
     //      "skills/author/parent" → "skills/author/parent/references" would be a bug
     //      (but we can't distinguish without checking SKILL.md — so we just verify
     //       that nesting exists at all, which the depth check above does).
+}
+
+/// Explicit-ref discovery should use the requested branch/tag instead of
+/// whatever the repo's default branch happens to be.
+#[test]
+#[serial]
+fn add_discovery_scoped_explicit_ref_repo() {
+    if !require_github_token() {
+        return;
+    }
+    let client = skillfile_sources::http::UreqClient::new();
+    let entries: Vec<String> = retry(retry_delays(), || {
+        let result = skillfile_sources::resolver::list_repo_skill_entries_under_query(
+            &client,
+            &skillfile_sources::resolver::RepoEntryQuery {
+                owner_repo: "nuxt/ui",
+                base_path: "skills/",
+                ref_: Some("v4"),
+            },
+        );
+        if result.is_empty() {
+            Err("no entries returned")
+        } else {
+            Ok(result)
+        }
+    })
+    .expect("API call failed after retries");
+
+    assert!(
+        entries.contains(&"skills/nuxt-ui".to_string()),
+        "expected branch-scoped discovery to include skills/nuxt-ui, got: {entries:?}"
+    );
+    for entry in &entries {
+        assert!(
+            entry.starts_with("skills/"),
+            "scoped entry should start with 'skills/': {entry}"
+        );
+    }
 }
 
 /// Regression: agentskill.sh search results without explicit GitHub
