@@ -114,6 +114,22 @@ pub fn resolve_owner_repo_ref(at_ref: Option<String>, positional_ref: Option<&st
         .unwrap_or_else(|| DEFAULT_REF.to_string())
 }
 
+fn parse_github_owner_repo(
+    raw_owner_repo: &str,
+    lineno: usize,
+    warnings: &mut Vec<String>,
+) -> Option<(String, Option<String>)> {
+    let (owner_repo, at_ref) = parse_owner_repo_ref(raw_owner_repo);
+    if owner_repo.contains('/') {
+        return Some((owner_repo, at_ref));
+    }
+    warnings.push(format!(
+        "warning: line {lineno}: invalid owner/repo '{raw_owner_repo}' \
+         — expected 'owner/repo' or 'owner/repo@ref' format"
+    ));
+    None
+}
+
 /// Parse a github entry line. parts[0]=source_type, parts[1]=entity_type, etc.
 fn parse_github_entry(
     parts: &[String],
@@ -130,7 +146,11 @@ fn parse_github_entry(
             ));
             return (None, warnings);
         }
-        let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&parts[2]);
+        let Some((parsed_repo, parsed_ref)) =
+            parse_github_owner_repo(&parts[2], lineno, &mut warnings)
+        else {
+            return (None, warnings);
+        };
         let ref_ = resolve_owner_repo_ref(parsed_ref, parts.get(4).map(String::as_str));
         (infer_name(&parts[3]), parsed_repo, &parts[3], ref_)
     } else {
@@ -140,15 +160,11 @@ fn parse_github_entry(
             ));
             return (None, warnings);
         }
-        if !parts[3].contains('/') {
-            warnings.push(format!(
-                "warning: line {lineno}: invalid owner/repo '{}' \
-                 — expected 'owner/repo' or 'owner/repo@ref' format",
-                parts[3],
-            ));
+        let Some((parsed_repo, parsed_ref)) =
+            parse_github_owner_repo(&parts[3], lineno, &mut warnings)
+        else {
             return (None, warnings);
-        }
-        let (parsed_repo, parsed_ref) = parse_owner_repo_ref(&parts[3]);
+        };
         let ref_ = resolve_owner_repo_ref(parsed_ref, parts.get(5).map(String::as_str));
         (parts[2].clone(), parsed_repo, &parts[4], ref_)
     };
@@ -657,6 +673,33 @@ mod tests {
         assert_eq!(e.ref_(), "v4");
     }
 
+    #[test]
+    fn github_entry_at_ref_requires_owner_repo_before_ref_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(dir.path(), "github  skill  us@tal/repo  path/to/SKILL.md");
+        let r = parse_manifest(&p).unwrap();
+        assert!(r.manifest.entries.is_empty());
+        assert!(r
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("invalid owner/repo 'us@tal/repo'")));
+    }
+
+    #[test]
+    fn github_entry_at_ref_requires_owner_repo_before_ref_separator_with_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(
+            dir.path(),
+            "github  skill  my-skill  us@tal/repo  path/to/SKILL.md",
+        );
+        let r = parse_manifest(&p).unwrap();
+        assert!(r.manifest.entries.is_empty());
+        assert!(r
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("invalid owner/repo 'us@tal/repo'")));
+    }
+
     // -------------------------------------------------------------------
     // Install targets
     // -------------------------------------------------------------------
@@ -958,6 +1001,24 @@ mod tests {
             "entry with invalid owner/repo should be skipped"
         );
         assert!(r.warnings.iter().any(|w| w.contains("owner/repo")));
+    }
+
+    #[test]
+    fn github_invalid_owner_repo_after_lossy_utf8_decode_skipped_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(MANIFEST_NAME);
+        fs::write(
+            &p,
+            [
+                240, 174, 174, 174, 240, 174, 174, 170, 240, 105, 116, 104, 117, 97, 10, 103, 105,
+                116, 104, 117, 98, 12, 97, 103, 101, 110, 116, 12, 117, 115, 64, 116, 97, 108, 170,
+                170, 115, 47, 108, 1, 57, 12, 108, 12, 59, 239, 191, 10,
+            ],
+        )
+        .unwrap();
+        let r = parse_manifest(&p).unwrap();
+        assert!(r.manifest.entries.is_empty());
+        assert!(r.warnings.iter().any(|w| w.contains("invalid owner/repo")));
     }
 
     // -------------------------------------------------------------------
