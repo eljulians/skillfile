@@ -364,7 +364,8 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
             Span::styled("Enter", Style::default().fg(Color::Cyan)),
             Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            Span::styled(" cancel  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("type to filter", Style::default().fg(Color::DarkGray)),
         ]
     } else {
         vec![
@@ -373,6 +374,11 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
                 format!("{}_", app.filter),
                 Style::default().fg(Color::Yellow),
             ),
+            Span::styled("  ", Style::default()),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::styled(" clear", Style::default().fg(Color::DarkGray)),
         ]
     };
 
@@ -415,17 +421,23 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
                 ("\u{25cb} ", Color::DarkGray) // ○
             };
 
-            let mut spans = vec![
-                Span::styled(icon, Style::default().fg(icon_color)),
-                Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
-            ];
-
-            if is_dir_entry(path) {
-                spans.push(Span::styled(
-                    "  \u{1f4c1}",
+            let dir_prefix = if is_dir_entry(path) {
+                Some(Span::styled(
+                    "\u{1f4c1} ",
                     Style::default().fg(Color::Yellow),
-                ));
+                ))
+            } else {
+                None
+            };
+
+            let mut spans = vec![Span::styled(icon, Style::default().fg(icon_color))];
+            if let Some(prefix) = dir_prefix {
+                spans.push(prefix);
             }
+            spans.push(Span::styled(
+                label,
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
 
             // Show parent path as a dim hint
             let hint = parent_hint(path);

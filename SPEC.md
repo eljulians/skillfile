@@ -71,16 +71,16 @@ local  <entity-type>  [name]  <path>
 ### GitHub
 
 ```
-github  <entity-type>  [name]  <owner/repo>  <path-in-repo>  [ref]
+github  <entity-type>  [name]  <owner/repo[@ref]>  <path-in-repo>  [ref]
 ```
 
 | Field | Description |
 |---|---|
 | `entity-type` | `skill` or `agent` |
 | `name` | Optional logical name. If omitted, inferred from the filename stem of `path-in-repo`. |
-| `owner/repo` | GitHub repository identifier (e.g. `VoltAgent/awesome-claude-code-subagents`) |
+| `owner/repo[@ref]` | GitHub repository identifier, optionally with `@ref` suffix to specify branch, tag, or SHA (e.g. `nuxt/ui@v4`, `anthropics/skills@main`). The `@ref` syntax takes priority over the positional `[ref]` field. |
 | `path-in-repo` | Path to the `.md` file within the repo. Use `.` if SKILL.md is at the repo root. |
-| `ref` | Branch, tag, or commit SHA. Defaults to `main` if omitted. |
+| `ref` | Branch, tag, or commit SHA. Defaults to `main` if omitted. Ignored when `@ref` is present in `owner/repo`. |
 
 ### URL
 

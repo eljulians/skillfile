@@ -61,6 +61,32 @@ fn check_repo_renamed(client: &dyn HttpClient, owner_repo: &str) -> Option<Strin
     }
 }
 
+/// Fetch the `default_branch` field from the GitHub repo API.
+///
+/// Returns `None` if the API call fails or the field is missing.
+fn fetch_default_branch(client: &dyn HttpClient, owner_repo: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{owner_repo}");
+    let text = client.get_json(&url).ok()??;
+    let data: serde_json::Value = serde_json::from_str(&text).ok()?;
+    data["default_branch"].as_str().map(ToString::to_string)
+}
+
+fn non_legacy_default_branch(client: &dyn HttpClient, owner_repo: &str) -> Option<String> {
+    let branch = fetch_default_branch(client, owner_repo)?;
+    if branch == "main" || branch == "master" {
+        return None;
+    }
+    Some(branch)
+}
+
+fn fallback_branch(ref_: &str) -> Option<&'static str> {
+    match ref_ {
+        "main" => Some("master"),
+        "master" => Some("main"),
+        _ => None,
+    }
+}
+
 /// Try to resolve a git ref to a commit SHA. Returns `None` on 4xx.
 fn try_resolve_sha(
     client: &dyn HttpClient,
@@ -80,9 +106,21 @@ fn try_resolve_sha(
     Ok(data["sha"].as_str().map(ToString::to_string))
 }
 
+fn resolve_default_branch_sha(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+) -> Result<Option<String>, SkillfileError> {
+    let Some(default_branch) = non_legacy_default_branch(client, owner_repo) else {
+        return Ok(None);
+    };
+    try_resolve_sha(client, owner_repo, &default_branch)
+}
+
 /// Resolve a branch/tag/SHA ref to a full commit SHA via GitHub API.
 ///
 /// When ref is `main` and the repo uses `master`, falls back automatically.
+/// When all hardcoded fallbacks fail, queries the repo's `default_branch`
+/// field via the GitHub API as a last resort.
 pub fn resolve_github_sha(
     client: &dyn HttpClient,
     owner_repo: &str,
@@ -91,14 +129,11 @@ pub fn resolve_github_sha(
     if let Some(sha) = try_resolve_sha(client, owner_repo, ref_)? {
         return Ok(sha);
     }
-    // Fall back: main <-> master
-    let fallback = match ref_ {
-        "main" => Some("master"),
-        "master" => Some("main"),
-        _ => None,
-    };
-    if let Some(fb) = fallback {
+    if let Some(fb) = fallback_branch(ref_) {
         if let Some(sha) = try_resolve_sha(client, owner_repo, fb)? {
+            return Ok(sha);
+        }
+        if let Some(sha) = resolve_default_branch_sha(client, owner_repo)? {
             return Ok(sha);
         }
     }
@@ -401,19 +436,40 @@ fn collapse_by_heuristic(unclaimed: &[&str]) -> Vec<String> {
     entries
 }
 
+fn list_default_md_files(client: &dyn HttpClient, owner_repo: &str) -> Option<Vec<String>> {
+    list_md_files_with_ref(client, owner_repo, "main")
+        .or_else(|| list_md_files_with_ref(client, owner_repo, "master"))
+        .or_else(|| {
+            let default_branch = non_legacy_default_branch(client, owner_repo)?;
+            list_md_files_with_ref(client, owner_repo, &default_branch)
+        })
+}
+
 /// Discover skill entry paths in a GitHub repo.
 ///
 /// Returns Skillfile-ready paths: `.` for root SKILL.md, directory paths for
 /// multi-file skills, and individual `.md` paths for single-file skills.
 /// Excludes repo metadata (README, CHANGELOG, etc.).
 ///
-/// Tries the Tree API with "main", falls back to "master". Returns an empty
-/// vec on any failure (graceful degradation for interactive flows).
+/// Tries the Tree API with `main`, `master`, then the repo's `default_branch`.
+/// Returns an empty vec on any failure (graceful degradation for interactive flows).
 pub fn list_repo_skill_entries(client: &dyn HttpClient, owner_repo: &str) -> Vec<String> {
-    list_md_files_with_ref(client, owner_repo, "main")
-        .or_else(|| list_md_files_with_ref(client, owner_repo, "master"))
+    list_default_md_files(client, owner_repo)
         .map(|files| collapse_to_entries(&files))
         .unwrap_or_default()
+}
+
+pub struct RepoEntryQuery<'a> {
+    pub owner_repo: &'a str,
+    pub base_path: &'a str,
+    pub ref_: Option<&'a str>,
+}
+
+fn list_repo_md_files(client: &dyn HttpClient, query: &RepoEntryQuery<'_>) -> Option<Vec<String>> {
+    if let Some(ref_) = query.ref_ {
+        return list_md_files_with_ref(client, query.owner_repo, ref_);
+    }
+    list_default_md_files(client, query.owner_repo)
 }
 
 /// Discover skill entry paths under a specific directory in a GitHub repo.
@@ -427,18 +483,34 @@ pub fn list_repo_skill_entries_under(
     owner_repo: &str,
     base_path: &str,
 ) -> Vec<String> {
-    let all_files = list_md_files_with_ref(client, owner_repo, "main")
-        .or_else(|| list_md_files_with_ref(client, owner_repo, "master"));
+    list_repo_skill_entries_under_query(
+        client,
+        &RepoEntryQuery {
+            owner_repo,
+            base_path,
+            ref_: None,
+        },
+    )
+}
+
+/// Like [`list_repo_skill_entries_under`] but allows an explicit branch, tag,
+/// or SHA override for discovery. When `ref_` is `None`, it tries `main`,
+/// `master`, then the repo's `default_branch`.
+pub fn list_repo_skill_entries_under_query(
+    client: &dyn HttpClient,
+    query: &RepoEntryQuery<'_>,
+) -> Vec<String> {
+    let all_files = list_repo_md_files(client, query);
 
     let Some(files) = all_files else {
         return Vec::new();
     };
 
-    if base_path == "." {
+    if query.base_path == "." {
         return collapse_to_entries(&files);
     }
 
-    let prefix = base_path.trim_end_matches('/');
+    let prefix = query.base_path.trim_end_matches('/');
     let filtered: Vec<String> = files
         .into_iter()
         .filter(|p| p.starts_with(prefix) && p.as_bytes().get(prefix.len()).copied() == Some(b'/'))
@@ -866,7 +938,10 @@ mod tests {
     fn resolve_github_sha_happy_path() {
         let mut client = MockClient::new();
         let url = commit_url("myorg/myrepo", "main");
-        client.add_json(&url, &github_sha_json("aabbccddeeff00112233445566778899aabbccdd"));
+        client.add_json(
+            &url,
+            &github_sha_json("aabbccddeeff00112233445566778899aabbccdd"),
+        );
 
         let sha = resolve_github_sha(&client, "myorg/myrepo", "main").unwrap();
         assert_eq!(sha, "aabbccddeeff00112233445566778899aabbccdd");
@@ -898,6 +973,21 @@ mod tests {
 
         let sha = resolve_github_sha(&client, "org/repo", "master").unwrap();
         assert_eq!(sha, "1234abcd5678ef90");
+    }
+
+    #[test]
+    fn resolve_github_sha_falls_back_to_default_branch() {
+        let mut client = MockClient::new();
+        client.add_json_none(&commit_url("org/repo", "main"));
+        client.add_json_none(&commit_url("org/repo", "master"));
+        client.add_json(&repo_url("org/repo"), r#"{"default_branch": "v4"}"#);
+        client.add_json(
+            &commit_url("org/repo", "v4"),
+            &github_sha_json("feedface12345678"),
+        );
+
+        let sha = resolve_github_sha(&client, "org/repo", "main").unwrap();
+        assert_eq!(sha, "feedface12345678");
     }
 
     #[test]
@@ -1755,6 +1845,19 @@ mod tests {
     }
 
     #[test]
+    fn skill_entries_fall_back_to_default_branch() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("skills/nuxt-ui/SKILL.md", "blob")]);
+        client.add_json_none(&tree_url("org/repo", "main"));
+        client.add_json_none(&tree_url("org/repo", "master"));
+        client.add_json(&repo_url("org/repo"), r#"{"default_branch": "v4"}"#);
+        client.add_json(&tree_url("org/repo", "v4"), &json);
+
+        let entries = list_repo_skill_entries(&client, "org/repo");
+        assert_eq!(entries, vec!["skills/nuxt-ui".to_string()]);
+    }
+
+    #[test]
     fn skill_entries_main_succeeds_does_not_try_master() {
         let mut client = MockClient::new();
         let json = tree_json(&[("SKILL.md", "blob")]);
@@ -1973,6 +2076,38 @@ mod tests {
         assert_eq!(entries.len(), 2);
     }
 
+    #[test]
+    fn skill_entries_under_fall_back_to_default_branch() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("skills/nuxt-ui/SKILL.md", "blob")]);
+        client.add_json_none(&tree_url("org/repo", "main"));
+        client.add_json_none(&tree_url("org/repo", "master"));
+        client.add_json(&repo_url("org/repo"), r#"{"default_branch": "v4"}"#);
+        client.add_json(&tree_url("org/repo", "v4"), &json);
+
+        let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
+        assert_eq!(entries, vec!["skills/nuxt-ui".to_string()]);
+    }
+
+    #[test]
+    fn skill_entries_under_query_uses_explicit_ref() {
+        let mut client = MockClient::new();
+        let json = tree_json(&[("skills/nuxt-ui/SKILL.md", "blob")]);
+        client.add_json(&tree_url("org/repo", "v4"), &json);
+        client.add_json_err(&tree_url("org/repo", "main"), "should not be called");
+        client.add_json(&repo_url("org/repo"), r#"{"default_branch": "develop"}"#);
+
+        let entries = list_repo_skill_entries_under_query(
+            &client,
+            &RepoEntryQuery {
+                owner_repo: "org/repo",
+                base_path: "skills/",
+                ref_: Some("v4"),
+            },
+        );
+        assert_eq!(entries, vec!["skills/nuxt-ui".to_string()]);
+    }
+
     // -----------------------------------------------------------------------
     // GitLab SHA resolution helpers
     // -----------------------------------------------------------------------
@@ -2085,9 +2220,11 @@ mod tests {
     // GitLab fetch helpers
     // -----------------------------------------------------------------------
 
-    fn gitlab_tree_url(host: &str, owner_repo: &str, ref_: &str, path: &str) -> String {
+    fn gitlab_tree_url(owner_repo: &str, ref_: &str, path: &str) -> String {
         let encoded = owner_repo.replace('/', "%2F");
-        format!("https://{host}/api/v4/projects/{encoded}/repository/tree?ref={ref_}&recursive=true&per_page=100&path={path}")
+        format!(
+            "https://gitlab.com/api/v4/projects/{encoded}/repository/tree?ref={ref_}&recursive=true&per_page=100&path={path}"
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -2164,7 +2301,7 @@ mod tests {
     fn list_gitlab_dir_recursive_returns_blobs_under_prefix() {
         let owner_repo = "group/project";
         let ref_ = "main";
-        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
+        let url = gitlab_tree_url(owner_repo, ref_, "skills/dir");
 
         // GitLab tree API returns a flat JSON array (not {"tree": [...]})
         let json = r#"[
@@ -2196,7 +2333,7 @@ mod tests {
     fn list_gitlab_dir_recursive_download_urls_use_file_api() {
         let owner_repo = "mygroup/myrepo";
         let ref_ = "abc123sha";
-        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/python");
+        let url = gitlab_tree_url(owner_repo, ref_, "skills/python");
 
         let json = r#"[{"path": "skills/python/SKILL.md", "type": "blob"}]"#;
 
@@ -2213,7 +2350,6 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].relative_path, "SKILL.md");
-        // Download URL should use the GitLab Files API format
         assert!(entries[0].download_url.contains("/api/v4/projects/"));
         assert!(entries[0].download_url.contains("/repository/files/"));
         assert!(entries[0].download_url.contains("/raw?ref="));
@@ -2223,7 +2359,7 @@ mod tests {
     fn list_gitlab_dir_recursive_empty_returns_empty() {
         let owner_repo = "group/project";
         let ref_ = "main";
-        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
+        let url = gitlab_tree_url(owner_repo, ref_, "skills/dir");
 
         let mut client = MockClient::new();
         client.add_json(&url, "[]");
@@ -2242,7 +2378,7 @@ mod tests {
     fn list_gitlab_dir_recursive_4xx_returns_empty() {
         let owner_repo = "group/project";
         let ref_ = "main";
-        let url = gitlab_tree_url("gitlab.com", owner_repo, ref_, "skills/dir");
+        let url = gitlab_tree_url(owner_repo, ref_, "skills/dir");
 
         let mut client = MockClient::new();
         client.add_json_none(&url);

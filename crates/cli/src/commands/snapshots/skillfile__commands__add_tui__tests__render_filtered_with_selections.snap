@@ -2,9 +2,9 @@
 source: crates/cli/src/commands/add_tui.rs
 expression: "render_to_text(|f| draw(f, &mut app))"
 ---
- filter: code_  ✓ 2 selected  1/5
+ filter: code_  Enter confirm  Esc clear  ✓ 2 selected  1/5
 ┌ owner/repo ──────────────────┐┌ Preview Tab/PgDn/C-d ────────────────────────┐
-│▶ ○ code-review  📁   skills/  ││skills/code-review                            │
+│▶ ○ 📁  code-review  skills/   ││skills/code-review                            │
 │                              ││                                              │
 │                              ││○ Loading preview...                          │
 │                              ││                                              │

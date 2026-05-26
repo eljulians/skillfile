@@ -4,6 +4,24 @@ All notable changes to skillfile are documented here.
 
 ---
 
+## v1.6.4 - 26-05-2026
+
+### Added
+
+- **Inline GitHub refs for GitHub entries** - you can now use `owner/repo@ref` in both `skillfile add github` and committed `Skillfile` entries to target a specific branch, tag, or commit SHA without splitting the ref into a separate field. When both forms are present, the inline `@ref` takes priority by @kuainx
+
+### Changed
+
+- **GitHub discovery is more flexible on nonstandard default branches** - when a repo does not use `main` or `master`, skillfile now falls back to the repo's actual `default_branch` for discovery and SHA resolution. This makes repos that default to names like `v4` or `develop` work without extra manual input by @kuainx
+- **Dependency refresh** - bumped `rexpect` to 0.7.1.
+
+## v1.6.3 - 21-05-2026
+
+### Changed
+
+- **`skillfile add` is easier to scan and filter in the TUI** - directory entries now show a folder icon before the label, the idle status bar explicitly advertises `type to filter`, and active filtering keeps `Enter` / `Esc` guidance visible with `Esc` relabeled to `clear` by @niklasmarderx
+- **Dependency refresh** - bumped `clap_complete` to 4.6.5 and `assert_cmd` to 2.2.2.
+
 ## v1.6.2 - 11-05-2026
 
 ### Fixed

@@ -11,11 +11,11 @@ fn section_headers(entity_type: &str) -> Vec<&'static str> {
     match entity_type {
         "agent" => vec![
             "# --- Agents ---",
-            "# github  agent  [name]  <owner/repo>  <path-or-dir>  [ref]",
+            "# github  agent  [name]  <owner/repo[@ref]>  <path-or-dir>  [ref]",
         ],
         "skill" => vec![
             "# --- Skills ---",
-            "# github  skill  [name]  <owner/repo>  <path-or-dir>  [ref]",
+            "# github  skill  [name]  <owner/repo[@ref]>  <path-or-dir>  [ref]",
         ],
         _ => vec![],
     }
@@ -279,8 +279,8 @@ mod tests {
             &manifest,
             "github  agent  owner/repo  agent.md\ngithub  skill  owner/repo  skill.md\n",
         );
-        assert!(text.contains("# github  agent  [name]  <owner/repo>  <path-or-dir>  [ref]"));
-        assert!(text.contains("# github  skill  [name]  <owner/repo>  <path-or-dir>  [ref]"));
+        assert!(text.contains("# github  agent  [name]  <owner/repo[@ref]>  <path-or-dir>  [ref]"));
+        assert!(text.contains("# github  skill  [name]  <owner/repo[@ref]>  <path-or-dir>  [ref]"));
     }
 
     #[test]

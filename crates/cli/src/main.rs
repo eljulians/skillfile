@@ -10,6 +10,9 @@ use std::process;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use skillfile_core::error::SkillfileError;
+use skillfile_core::parser::{
+    parse_owner_repo_ref, resolve_explicit_owner_repo_ref, resolve_owner_repo_ref,
+};
 use skillfile_deploy::adapter::known_adapters;
 
 /// Read entry names from the Skillfile in the current directory for shell completion.
@@ -470,8 +473,8 @@ enum AddSource {
         /// Entity type: skill or agent
         #[arg(value_name = "TYPE", value_parser = parse_entity_type)]
         entity_type: String,
-        /// GitHub repository (e.g. owner/repo)
-        #[arg(value_name = "OWNER/REPO")]
+        /// GitHub repository (e.g. owner/repo or owner/repo@ref)
+        #[arg(value_name = "OWNER/REPO[@REF]")]
         owner_repo: String,
         /// Path within the repo (omit to discover all entries)
         #[arg(value_name = "PATH")]
@@ -539,6 +542,53 @@ fn is_discovery_path(path: &str) -> bool {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
+type AddEntryParts<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
+type BulkAddParts<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, bool);
+
+fn github_entry_from_parts(
+    (entity_type, owner_repo, path, ref_, name): AddEntryParts<'_>,
+) -> skillfile_core::models::Entry {
+    let (parsed_repo, parsed_ref) = parse_owner_repo_ref(owner_repo);
+    let effective_ref = resolve_owner_repo_ref(parsed_ref, ref_);
+    commands::add::entry_from_github(&commands::add::GithubEntryArgs {
+        entity_type,
+        owner_repo: &parsed_repo,
+        path,
+        ref_: Some(effective_ref.as_str()),
+        name,
+    })
+}
+
+fn gitlab_entry_from_parts(
+    (entity_type, owner_repo, path, ref_, name): AddEntryParts<'_>,
+) -> skillfile_core::models::Entry {
+    commands::add::entry_from_gitlab(&commands::add::GitlabEntryArgs {
+        entity_type,
+        owner_repo,
+        path,
+        ref_,
+        name,
+    })
+}
+
+fn add_github_bulk(
+    (entity_type, owner_repo, base_path, ref_, no_interactive): BulkAddParts<'_>,
+    repo_root: &std::path::Path,
+) -> Result<(), SkillfileError> {
+    let (parsed_repo, parsed_ref) = parse_owner_repo_ref(owner_repo);
+    let explicit_ref = resolve_explicit_owner_repo_ref(parsed_ref, ref_);
+    commands::add::cmd_add_bulk(
+        &commands::add::BulkAddArgs {
+            entity_type,
+            owner_repo: &parsed_repo,
+            base_path,
+            ref_: explicit_ref.as_deref(),
+            no_interactive,
+        },
+        repo_root,
+    )
+}
+
 fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), SkillfileError> {
     let entry = match source {
         AddSource::Github {
@@ -549,15 +599,14 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             name: _,
             no_interactive,
         } if is_discovery_path(path.as_deref().unwrap_or(".")) => {
-            let base_path = path.as_deref().unwrap_or(".");
-            return commands::add::cmd_add_bulk(
-                &commands::add::BulkAddArgs {
-                    entity_type: &entity_type,
-                    owner_repo: &owner_repo,
-                    base_path,
-                    ref_: ref_.as_deref(),
+            return add_github_bulk(
+                (
+                    &entity_type,
+                    &owner_repo,
+                    path.as_deref().unwrap_or("."),
+                    ref_.as_deref(),
                     no_interactive,
-                },
+                ),
                 repo_root,
             );
         }
@@ -568,26 +617,26 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             ref_,
             name,
             no_interactive: _,
-        } => commands::add::entry_from_github(&commands::add::GithubEntryArgs {
-            entity_type: &entity_type,
-            owner_repo: &owner_repo,
-            path: path.as_deref().unwrap_or("."),
-            ref_: ref_.as_deref(),
-            name: name.as_deref(),
-        }),
+        } => github_entry_from_parts((
+            &entity_type,
+            &owner_repo,
+            path.as_deref().unwrap_or("."),
+            ref_.as_deref(),
+            name.as_deref(),
+        )),
         AddSource::Gitlab {
             entity_type,
             owner_repo,
             path,
             ref_,
             name,
-        } => commands::add::entry_from_gitlab(&commands::add::GitlabEntryArgs {
-            entity_type: &entity_type,
-            owner_repo: &owner_repo,
-            path: path.as_deref().unwrap_or("."),
-            ref_: ref_.as_deref(),
-            name: name.as_deref(),
-        }),
+        } => gitlab_entry_from_parts((
+            &entity_type,
+            &owner_repo,
+            path.as_deref().unwrap_or("."),
+            ref_.as_deref(),
+            name.as_deref(),
+        )),
         AddSource::Local {
             entity_type,
             path,

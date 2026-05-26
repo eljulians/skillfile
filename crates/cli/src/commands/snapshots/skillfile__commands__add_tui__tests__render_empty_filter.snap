@@ -2,7 +2,7 @@
 source: crates/cli/src/commands/add_tui.rs
 expression: "render_to_text(|f| draw(f, &mut app))"
 ---
- filter: zzz_nonexistent_  0/5
+ filter: zzz_nonexistent_  Enter confirm  Esc clear  0/5
 ┌ owner/repo ──────────────────┐┌ Preview Tab/PgDn/C-d ────────────────────────┐
 │                              ││No entries match the filter.                  │
 │                              ││                                              │

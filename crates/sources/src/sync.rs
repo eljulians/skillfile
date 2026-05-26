@@ -721,7 +721,10 @@ fn sync_gitlab_core(
         label: &label,
         locked_sha: locked_sha.as_deref(),
     };
-    let q = GitlabShaQuery { lookup: &lookup, host: &host };
+    let q = GitlabShaQuery {
+        lookup: &lookup,
+        host: &host,
+    };
     let Some(sha) = resolve_gitlab_sha_for_entry(client, &q, params)? else {
         return Ok(None); // dry-run
     };
@@ -744,7 +747,10 @@ fn sync_gitlab_core(
         label: &label,
         sha: &sha,
     };
-    let raw_url = fetch_store_gitlab(&GitlabStoreOp { store: &store_op, host: &host })?;
+    let raw_url = fetch_store_gitlab(&GitlabStoreOp {
+        store: &store_op,
+        host: &host,
+    })?;
     Ok(Some((key, LockEntry { sha, raw_url })))
 }
 

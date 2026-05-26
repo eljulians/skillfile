@@ -671,6 +671,50 @@ fn add_github_normal_path_no_bulk() {
     );
 }
 
+#[test]
+fn add_github_at_ref_takes_priority_over_positional_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    let output = sf(dir.path())
+        .env(
+            "SKILLFILE_CONFIG_PATH",
+            dir.path().join("missing-config.toml"),
+        )
+        .args([
+            "add",
+            "github",
+            "skill",
+            "owner/repo@v4",
+            "skills/SKILL.md",
+            "v3",
+        ])
+        .timeout(std::time::Duration::from_secs(10))
+        .output()
+        .expect("failed to execute");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "@ref add should succeed without install targets: {stderr}"
+    );
+    assert!(
+        stdout.contains("Added: github  skill  owner/repo  skills/SKILL.md  v4"),
+        "@ref should override positional ref in CLI output, got: {stdout}"
+    );
+
+    let skillfile = std::fs::read_to_string(dir.path().join("Skillfile")).unwrap();
+    assert!(
+        skillfile.contains("github  skill  owner/repo  skills/SKILL.md  v4"),
+        "@ref should override positional ref in Skillfile, got:\n{skillfile}"
+    );
+    assert!(
+        !skillfile.contains("github  skill  owner/repo  skills/SKILL.md  v3"),
+        "positional ref should not win when @ref is present, got:\n{skillfile}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // add wizard: CLI routing
 // ---------------------------------------------------------------------------

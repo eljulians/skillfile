@@ -2,13 +2,13 @@
 source: crates/cli/src/commands/add_tui.rs
 expression: "render_to_text(|f| draw(f, &mut app))"
 ---
- Space toggle  a all  Tab/PgDn scroll  Enter confirm  Esc cancel  5/5
+ Space toggle  a all  Tab/PgDn scroll  Enter confirm  Esc cancel  type to filter
 ┌ owner/repo ──────────────────┐┌ Preview Tab/PgDn/C-d ────────────────────────┐
-│▶ ○ browser  📁   skills/      ││skills/browser                                │
-│  ○ code-review  📁   skills/  ││                                              │
-│  ○ commit  📁   skills/       ││URL:                                          │
+│▶ ○ 📁  browser  skills/       ││skills/browser                                │
+│  ○ 📁  code-review  skills/   ││                                              │
+│  ○ 📁  commit  skills/        ││URL:                                          │
 │  ○ SKILL.md  skills/debugging││https://github.com/owner/repo/tree/main/skills│
-│  ○ testing  📁   skills/      ││/browser                                      │
+│  ○ 📁  testing  skills/       ││/browser                                      │
 │                              ││                                              │
 │                              ││Name:        Browser Automation               │
 │                              ││Description: Automate browsing                │

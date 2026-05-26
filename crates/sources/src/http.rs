@@ -151,7 +151,10 @@ fn glab_cli_token() -> Option<String> {
     let text = String::from_utf8_lossy(&output.stderr);
     // Parse token from "✓ Token found: <token>" line
     text.lines()
-        .filter_map(|line| line.find("Token found:").map(|pos| &line[pos + "Token found:".len()..]))
+        .filter_map(|line| {
+            line.find("Token found:")
+                .map(|pos| &line[pos + "Token found:".len()..])
+        })
         .map(str::trim)
         .find(|t| !t.is_empty())
         .map(ToString::to_string)
@@ -366,11 +369,14 @@ impl UreqClient {
     fn get_json_inner(&self, url: &str, with_auth: bool) -> Result<JsonAttempt, HttpAttemptError> {
         let result = self
             .build_get_inner(url, with_auth)
-            .header("Accept", if is_github_url(url) {
-                "application/vnd.github.v3+json"
-            } else {
-                "application/json"
-            })
+            .header(
+                "Accept",
+                if is_github_url(url) {
+                    "application/vnd.github.v3+json"
+                } else {
+                    "application/json"
+                },
+            )
             .call();
 
         match result {
