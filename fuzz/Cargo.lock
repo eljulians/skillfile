@@ -314,7 +314,7 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "skillfile-core"
-version = "1.3.0"
+version = "1.6.4"
 dependencies = [
  "serde",
  "serde_json",

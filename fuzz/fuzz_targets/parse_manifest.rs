@@ -12,6 +12,31 @@ fn is_valid_name(name: &str) -> bool {
             .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_')
 }
 
+fn assert_repo_source_invariants(
+    source_type: &str,
+    entry_name: &str,
+    owner_repo: &str,
+    path_in_repo: &str,
+    ref_: &str,
+) {
+    assert!(
+        !owner_repo.is_empty(),
+        "{source_type} entry '{entry_name}' has empty owner_repo",
+    );
+    assert!(
+        !path_in_repo.is_empty(),
+        "{source_type} entry '{entry_name}' has empty path_in_repo",
+    );
+    assert!(
+        !ref_.is_empty(),
+        "{source_type} entry '{entry_name}' has empty ref_",
+    );
+    assert!(
+        owner_repo.contains('/'),
+        "{source_type} entry '{entry_name}' owner_repo '{owner_repo}' missing '/'",
+    );
+}
+
 fuzz_target!(|data: &[u8]| {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Skillfile");
@@ -47,29 +72,24 @@ fuzz_target!(|data: &[u8]| {
                 owner_repo,
                 path_in_repo,
                 ref_,
-            } => {
-                assert!(
-                    !owner_repo.is_empty(),
-                    "github entry '{}' has empty owner_repo",
-                    entry.name,
-                );
-                assert!(
-                    !path_in_repo.is_empty(),
-                    "github entry '{}' has empty path_in_repo",
-                    entry.name,
-                );
-                assert!(
-                    !ref_.is_empty(),
-                    "github entry '{}' has empty ref_",
-                    entry.name,
-                );
-                assert!(
-                    owner_repo.contains('/'),
-                    "github entry '{}' owner_repo '{}' missing '/'",
-                    entry.name,
-                    owner_repo,
-                );
-            }
+            } => assert_repo_source_invariants(
+                "github",
+                &entry.name,
+                owner_repo,
+                path_in_repo,
+                ref_,
+            ),
+            SourceFields::Gitlab {
+                owner_repo,
+                path_in_repo,
+                ref_,
+            } => assert_repo_source_invariants(
+                "gitlab",
+                &entry.name,
+                owner_repo,
+                path_in_repo,
+                ref_,
+            ),
             SourceFields::Local { path } => {
                 assert!(
                     !path.is_empty(),
