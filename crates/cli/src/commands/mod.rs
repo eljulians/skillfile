@@ -5,6 +5,7 @@ pub mod format;
 pub mod info;
 pub mod init;
 mod installed_variants;
+pub mod list;
 mod multi_target;
 pub mod pin;
 pub mod remove;

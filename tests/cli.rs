@@ -179,6 +179,89 @@ fn validate_golden_path() {
 }
 
 #[test]
+fn list_groups_entries_by_entity_type() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         github  skill  browser  anthropics/skills  skills/browser/SKILL.md  main\n\
+         local  skill  commit  skills/commit.md\n\
+         github  agent  reviewer  anthropics/skills  agents/reviewer.md  v1\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).arg("list").output().unwrap();
+    let stdout = normalize_separators(std::str::from_utf8(&output.stdout).unwrap());
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(output.status.success(), "list should succeed: {stderr}");
+    assert!(
+        stdout.contains("Skills (2):"),
+        "missing skills group:\n{stdout}"
+    );
+    assert!(stdout.contains("browser"));
+    assert!(stdout.contains("github"));
+    assert!(stdout.contains("anthropics/skills:skills/browser/SKILL.md"));
+    assert!(stdout.contains("commit"));
+    assert!(stdout.contains("local"));
+    assert!(stdout.contains("skills/commit.md"));
+    assert!(
+        stdout.contains("Agents (1):"),
+        "missing agents group:\n{stdout}"
+    );
+    assert!(stdout.contains("reviewer"));
+    assert!(stdout.contains("v1"));
+    assert!(stdout.contains("Install targets: claude-code (local)"));
+}
+
+#[test]
+fn list_names_only_filters_skills() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "local  skill  browser  skills/browser.md\n\
+         local  agent  reviewer  agents/reviewer.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path())
+        .args(["list", "--names-only", "--skills"])
+        .output()
+        .unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(output.status.success(), "list should succeed: {stderr}");
+    assert_eq!(stdout, "browser\n");
+}
+
+#[test]
+fn list_json_outputs_entries_and_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  codex  global\n\
+         url  skill  rust-dev  https://example.com/rust.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).args(["list", "--json"]).output().unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(output.status.success(), "list should succeed: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout).unwrap();
+    assert_eq!(json["entries"][0]["name"], "rust-dev");
+    assert_eq!(json["entries"][0]["entity_type"], "skill");
+    assert_eq!(json["entries"][0]["source_type"], "url");
+    assert_eq!(
+        json["entries"][0]["location"],
+        "https://example.com/rust.md"
+    );
+    assert_eq!(json["install_targets"][0], "codex (global)");
+}
+
+#[test]
 fn validate_junie_platform() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

@@ -283,8 +283,34 @@ Examples:
         check_upstream: bool,
     },
 
-    /// Show detailed information about a single entry
+    /// List declared skills and agents
     #[command(display_order = 24)]
+    #[command(long_about = "\
+List entries declared in the Skillfile without reading lock/cache state or
+making network calls. Shows name, source type, source location, ref, and
+configured install targets.
+
+Examples:
+  skillfile list
+  skillfile list --names-only --skills
+  skillfile list --json")]
+    List {
+        /// Output machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Print only entry names
+        #[arg(long)]
+        names_only: bool,
+        /// Show only skills
+        #[arg(long)]
+        skills: bool,
+        /// Show only agents
+        #[arg(long)]
+        agents: bool,
+    },
+
+    /// Show detailed information about a single entry
+    #[command(display_order = 25)]
     #[command(long_about = "\
 Display all known information about a single entry: source, lock state,
 pin state, modified state, installed paths across all targets, and cache path.
@@ -672,6 +698,20 @@ fn run_content_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileE
     match cmd {
         Command::Completions { shell } => write_completion_registration(shell),
         Command::Validate => commands::validate::cmd_validate(repo_root),
+        Command::List {
+            json,
+            names_only,
+            skills,
+            agents,
+        } => commands::list::cmd_list(
+            repo_root,
+            &commands::list::ListOptions {
+                json,
+                names_only,
+                skills,
+                agents,
+            },
+        ),
         Command::Info { name } => commands::info::cmd_info(&name, repo_root),
         Command::Format { dry_run } => commands::format::cmd_format(repo_root, dry_run),
         Command::Pin { name, dry_run } => commands::pin::cmd_pin(&name, repo_root, dry_run),
