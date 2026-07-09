@@ -117,7 +117,7 @@ GitLab:
 
 - `GITLAB_TOKEN`
 - `GITLAB_PRIVATE_TOKEN`
-- `GITLAB_HOST` for self-hosted instances
+- `GITLAB_HOST` for self-hosted instances - a bare hostname such as `gitlab.example.com` (a `https://` prefix or trailing slash is accepted and normalized away)
 
 `skillfile init` can also save token settings in user config.
 

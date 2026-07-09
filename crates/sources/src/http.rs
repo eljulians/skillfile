@@ -160,14 +160,37 @@ fn glab_cli_token() -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// Normalizes a configured GitLab host into a bare hostname (optionally with a
+/// port and path prefix) suitable for splicing into `https://{host}/api/v4/...`.
+///
+/// `GITLAB_HOST` is a user-facing value and is easy to get wrong: glab's own
+/// docs write it with a scheme (`https://gitlab.example.com`), and a trailing
+/// slash is a natural mistake. Left unmodified, a scheme produces a
+/// double-scheme URL (`https://https://...`) that fails every request, and a
+/// trailing slash makes `is_gitlab_url` host comparison never match, silently
+/// dropping the auth token. Normalizing here fixes both at the single source.
+fn normalize_gitlab_host(host: &str) -> String {
+    let trimmed = host.trim();
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    without_scheme.trim_end_matches('/').to_string()
+}
+
 /// Returns the GitLab host. Priority: GITLAB_HOST env > config file > "gitlab.com".
 pub fn gitlab_host() -> String {
-    if let Some(host) = std::env::var("GITLAB_HOST").ok().filter(|h| !h.is_empty()) {
+    if let Some(host) = std::env::var("GITLAB_HOST")
+        .ok()
+        .map(|h| normalize_gitlab_host(&h))
+        .filter(|h| !h.is_empty())
+    {
         return host;
     }
     if let Some(Some(host)) = GITLAB_CONFIG_HOST.get() {
+        let host = normalize_gitlab_host(host);
         if !host.is_empty() {
-            return host.clone();
+            return host;
         }
     }
     "gitlab.com".to_string()
@@ -740,5 +763,84 @@ mod tests {
             "http://gitlab.com/api/v4/projects/foo",
             "gitlab.com"
         ));
+    }
+
+    // -- normalize_gitlab_host tests -----------------------------------------
+    //
+    // GITLAB_HOST is user-facing and easily mis-formatted; normalization must
+    // reduce a bare host, an https/http-prefixed host, and a trailing-slash
+    // host to the same canonical value so URL construction and the
+    // `is_gitlab_url` auth gate agree.
+
+    #[test]
+    fn normalize_gitlab_host_leaves_bare_host_unchanged() {
+        assert_eq!(
+            normalize_gitlab_host("gitlab.example.com"),
+            "gitlab.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_gitlab_host_strips_https_scheme() {
+        assert_eq!(
+            normalize_gitlab_host("https://gitlab.example.com"),
+            "gitlab.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_gitlab_host_strips_http_scheme() {
+        assert_eq!(
+            normalize_gitlab_host("http://gitlab.example.com"),
+            "gitlab.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_gitlab_host_strips_trailing_slashes() {
+        assert_eq!(
+            normalize_gitlab_host("gitlab.example.com/"),
+            "gitlab.example.com"
+        );
+        assert_eq!(
+            normalize_gitlab_host("gitlab.example.com///"),
+            "gitlab.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_gitlab_host_strips_scheme_and_trailing_slash() {
+        assert_eq!(
+            normalize_gitlab_host("https://gitlab.example.com/"),
+            "gitlab.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_gitlab_host_trims_whitespace() {
+        assert_eq!(
+            normalize_gitlab_host("  https://gitlab.example.com/  "),
+            "gitlab.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_gitlab_host_variants_all_agree() {
+        let canonical = "gitlab.example.com";
+        for input in [
+            "gitlab.example.com",
+            "https://gitlab.example.com",
+            "http://gitlab.example.com",
+            "gitlab.example.com/",
+            "https://gitlab.example.com/",
+        ] {
+            let host = normalize_gitlab_host(input);
+            assert_eq!(host, canonical, "input {input:?} did not normalize");
+            // The normalized host must satisfy the auth gate for a built URL.
+            assert!(
+                is_gitlab_url(&format!("https://{host}/api/v4/projects/foo"), &host),
+                "is_gitlab_url failed for input {input:?}"
+            );
+        }
     }
 }
