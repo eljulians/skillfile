@@ -13,6 +13,8 @@ use skillfile_deploy::paths::{installed_dir_file_sets, installed_paths};
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry, meta_sha};
 use skillfile_sources::sync::vendor_dir_for;
 
+use crate::commands::forward_slash;
+
 struct DirCheckCtx<'a> {
     entry: &'a Entry,
     vdir: &'a Path,
@@ -21,11 +23,7 @@ struct DirCheckCtx<'a> {
 }
 
 fn is_cache_file_modified(cache_file: &Path, ctx: &DirCheckCtx<'_>) -> Result<bool, ()> {
-    let filename = cache_file
-        .strip_prefix(ctx.vdir)
-        .map_err(|_| ())?
-        .to_string_lossy()
-        .to_string();
+    let filename = forward_slash(cache_file.strip_prefix(ctx.vdir).map_err(|_| ())?);
     let inst_path = match ctx.installed.get(&filename) {
         Some(p) if p.exists() => p,
         _ => return Ok(false),

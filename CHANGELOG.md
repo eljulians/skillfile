@@ -8,6 +8,7 @@ All notable changes to skillfile are documented here.
 
 ### Fixed
 
+- **Directory cache keys are normalized across platforms** - `skillfile status`, `skillfile pin`, and `skillfile diff` now compare nested directory-entry files with forward-slash keys even when the local platform reports Windows-style separators, so changed nested files are not silently skipped on Windows.
 - **`GITLAB_HOST` is now normalized before use** - a value written with a scheme (`https://gitlab.example.com`, the format glab's own docs use) no longer produces a broken double-scheme URL, and a trailing slash (`gitlab.example.com/`) no longer silently drops the auth token by breaking host matching. The scheme prefix and trailing slashes are stripped, so `https://gitlab.example.com/` and `gitlab.example.com` behave identically.
 
 ## v1.7.2 - 08-07-2026
