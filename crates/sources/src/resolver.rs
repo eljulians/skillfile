@@ -68,19 +68,37 @@ fn check_repo_renamed(client: &dyn HttpClient, owner_repo: &str) -> Option<Strin
 /// Fetch the `default_branch` field from the GitHub repo API.
 ///
 /// Returns `None` if the API call fails or the field is missing.
-fn fetch_default_branch(client: &dyn HttpClient, owner_repo: &str) -> Option<String> {
+fn try_fetch_default_branch(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+) -> Result<Option<String>, SkillfileError> {
     let url = format!("https://api.github.com/repos/{owner_repo}");
-    let text = client.get_json(&url).ok()??;
-    let data: serde_json::Value = serde_json::from_str(&text).ok()?;
-    data["default_branch"].as_str().map(ToString::to_string)
+    let Some(text) = client.get_json(&url)? else {
+        return Ok(None);
+    };
+    let data: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        SkillfileError::Network(format!("invalid repository response for {owner_repo}: {e}"))
+    })?;
+    Ok(data["default_branch"].as_str().map(ToString::to_string))
+}
+
+fn try_non_legacy_default_branch(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+) -> Result<Option<String>, SkillfileError> {
+    let Some(branch) = try_fetch_default_branch(client, owner_repo)? else {
+        return Ok(None);
+    };
+    if branch == "main" || branch == "master" {
+        return Ok(None);
+    }
+    Ok(Some(branch))
 }
 
 fn non_legacy_default_branch(client: &dyn HttpClient, owner_repo: &str) -> Option<String> {
-    let branch = fetch_default_branch(client, owner_repo)?;
-    if branch == "main" || branch == "master" {
-        return None;
-    }
-    Some(branch)
+    try_non_legacy_default_branch(client, owner_repo)
+        .ok()
+        .flatten()
 }
 
 fn fallback_branch(ref_: &str) -> Option<&'static str> {
@@ -604,6 +622,22 @@ fn list_default_md_files(client: &dyn HttpClient, owner_repo: &str) -> Option<Ve
         })
 }
 
+fn try_list_default_md_files(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+) -> Result<Option<Vec<String>>, SkillfileError> {
+    if let Some(files) = try_list_md_files_with_ref(client, owner_repo, "main")? {
+        return Ok(Some(files));
+    }
+    if let Some(files) = try_list_md_files_with_ref(client, owner_repo, "master")? {
+        return Ok(Some(files));
+    }
+    let Some(default_branch) = try_non_legacy_default_branch(client, owner_repo)? else {
+        return Ok(None);
+    };
+    try_list_md_files_with_ref(client, owner_repo, &default_branch)
+}
+
 /// Discover skill entry paths in a GitHub repo.
 ///
 /// Returns Skillfile-ready paths: `.` for root SKILL.md, directory paths for
@@ -616,6 +650,17 @@ pub fn list_repo_skill_entries(client: &dyn HttpClient, owner_repo: &str) -> Vec
     list_default_md_files(client, owner_repo)
         .map(|files| collapse_to_entries(&files))
         .unwrap_or_default()
+}
+
+/// Discover skill entry paths while preserving network and response errors.
+/// Missing repositories and refs still produce an empty result.
+pub fn try_list_repo_skill_entries(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+) -> Result<Vec<String>, SkillfileError> {
+    Ok(try_list_default_md_files(client, owner_repo)?
+        .map(|files| collapse_to_entries(&files))
+        .unwrap_or_default())
 }
 
 pub struct RepoEntryQuery<'a> {
@@ -684,9 +729,25 @@ fn list_md_files_with_ref(
     owner_repo: &str,
     ref_: &str,
 ) -> Option<Vec<String>> {
+    try_list_md_files_with_ref(client, owner_repo, ref_)
+        .ok()
+        .flatten()
+}
+
+fn try_list_md_files_with_ref(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+    ref_: &str,
+) -> Result<Option<Vec<String>>, SkillfileError> {
     let url = format!("https://api.github.com/repos/{owner_repo}/git/trees/{ref_}?recursive=1");
-    let text = client.get_json(&url).ok()??;
-    let data: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let Some(text) = client.get_json(&url)? else {
+        return Ok(None);
+    };
+    let data: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        SkillfileError::Network(format!(
+            "invalid tree response for {owner_repo}@{ref_}: {e}"
+        ))
+    })?;
     let empty = Vec::new();
     let tree = data["tree"].as_array().unwrap_or(&empty);
 
@@ -707,7 +768,7 @@ fn list_md_files_with_ref(
         })
         .collect();
 
-    Some(files)
+    Ok(Some(files))
 }
 
 #[derive(Debug, Clone)]
@@ -2108,6 +2169,31 @@ mod tests {
         client.add_json_err(&tree_url("org/repo", "main"), "connection refused");
         client.add_json_err(&tree_url("org/repo", "master"), "connection refused");
         assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+    }
+
+    #[test]
+    fn try_skill_entries_propagates_rate_limit_error() {
+        let mut client = MockClient::new();
+        client.add_json_err(
+            &tree_url("org/repo", "main"),
+            "HTTP 403 fetching tree - you may be rate-limited",
+        );
+
+        let error = try_list_repo_skill_entries(&client, "org/repo").unwrap_err();
+
+        assert!(error.to_string().contains("rate-limited"), "{error}");
+    }
+
+    #[test]
+    fn try_skill_entries_keeps_missing_repo_as_empty() {
+        let mut client = MockClient::new();
+        client.add_json_none(&tree_url("org/repo", "main"));
+        client.add_json_none(&tree_url("org/repo", "master"));
+        client.add_json_none(&repo_url("org/repo"));
+
+        assert!(try_list_repo_skill_entries(&client, "org/repo")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

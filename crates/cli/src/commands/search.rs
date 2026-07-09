@@ -15,7 +15,7 @@ use skillfile_sources::registry::{
     fetch_agentskill_github_meta, scrape_github_meta_from_page, search_all, search_registry,
     RegistryId, SearchOptions, SearchResponse,
 };
-use skillfile_sources::resolver::{fetch_github_file, list_repo_skill_entries, GithubFetch};
+use skillfile_sources::resolver::{fetch_github_file, try_list_repo_skill_entries, GithubFetch};
 
 use super::add::{cmd_add, entry_from_github, GithubEntryArgs};
 
@@ -242,8 +242,9 @@ fn resolve_skill_path(
         skill_name,
         entity_type,
     };
-    let (candidates, resolved) = discover_skill_path(&client, &query);
+    let discovery = discover_skill_path(&client, &query);
     spinner.finish();
+    let (candidates, resolved) = discovery?;
 
     if let Some(path) = resolved {
         println!("  path: {path}");
@@ -278,34 +279,34 @@ struct SearchPathQuery<'a> {
 fn discover_skill_path(
     client: &dyn HttpClient,
     query: &SearchPathQuery<'_>,
-) -> (Vec<String>, Option<String>) {
-    let mut md_files = list_repo_skill_entries(client, query.owner_repo);
+) -> Result<(Vec<String>, Option<String>), SkillfileError> {
+    let mut md_files = try_list_repo_skill_entries(client, query.owner_repo)?;
 
     if md_files.is_empty() {
         let (canonical_files, canonical_path) =
-            try_canonical_resolution(client, query.owner_repo, query.skill_name);
+            try_canonical_resolution(client, query.owner_repo, query.skill_name)?;
         if let Some(path) = canonical_path {
-            return (Vec::new(), Some(path));
+            return Ok((Vec::new(), Some(path)));
         }
         if !canonical_files.is_empty() {
             md_files = canonical_files;
         } else if let Some(path) =
             probe_common_skill_paths(client, query.owner_repo, query.skill_name)
         {
-            return (Vec::new(), Some(path));
+            return Ok((Vec::new(), Some(path)));
         } else {
-            return (Vec::new(), None);
+            return Ok((Vec::new(), None));
         }
     }
 
     if md_files.len() == 1 {
-        return (Vec::new(), Some(md_files[0].clone()));
+        return Ok((Vec::new(), Some(md_files[0].clone())));
     }
 
     let ranked = rank_by_name_for_entity(&md_files, query.skill_name, query.entity_type);
     if let Some((path, score)) = ranked.first() {
         if *score == MatchScore::Exact {
-            return (Vec::new(), Some(path.clone()));
+            return Ok((Vec::new(), Some(path.clone())));
         }
     }
 
@@ -316,7 +317,7 @@ fn discover_skill_path(
         candidates
     };
 
-    (list, None)
+    Ok((list, None))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -430,29 +431,35 @@ fn common_skill_file_candidates(slug: &str) -> [String; 5] {
     ]
 }
 
-fn canonical_owner_repo(client: &dyn HttpClient, owner_repo: &str) -> Option<String> {
+fn canonical_owner_repo(
+    client: &dyn HttpClient,
+    owner_repo: &str,
+) -> Result<Option<String>, SkillfileError> {
     let url = format!("https://api.github.com/repos/{owner_repo}");
-    let text = client.get_json(&url).ok()??;
-    let data: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let full_name = data["full_name"].as_str()?;
-    Some(full_name.to_string())
+    let Some(text) = client.get_json(&url)? else {
+        return Ok(None);
+    };
+    let data: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        SkillfileError::Network(format!("invalid repository response for {owner_repo}: {e}"))
+    })?;
+    Ok(data["full_name"].as_str().map(ToString::to_string))
 }
 
 fn try_canonical_resolution(
     client: &dyn HttpClient,
     owner_repo: &str,
     skill_name: &str,
-) -> (Vec<String>, Option<String>) {
-    let Some(canonical) = canonical_owner_repo(client, owner_repo) else {
-        return (Vec::new(), None);
+) -> Result<(Vec<String>, Option<String>), SkillfileError> {
+    let Some(canonical) = canonical_owner_repo(client, owner_repo)? else {
+        return Ok((Vec::new(), None));
     };
-    let md_files = list_repo_skill_entries(client, &canonical);
+    let md_files = try_list_repo_skill_entries(client, &canonical)?;
     let path = if md_files.is_empty() {
         probe_common_skill_paths(client, &canonical, skill_name)
     } else {
         None
     };
-    (md_files, path)
+    Ok((md_files, path))
 }
 
 #[cfg(debug_assertions)]
@@ -463,7 +470,7 @@ pub fn run_search_path_resolution_regression() -> Result<(), SkillfileError> {
         skill_name: "linkedin profile optimizer",
         entity_type: "skill",
     };
-    let (_, resolved) = discover_skill_path(&client, &query);
+    let (_, resolved) = discover_skill_path(&client, &query)?;
     emit_regression_resolution(resolved.as_deref())
 }
 
@@ -655,7 +662,7 @@ mod tests {
     use skillfile_sources::registry::SearchResult;
 
     struct SearchPathClient {
-        json: HashMap<String, Option<String>>,
+        json: HashMap<String, Result<Option<String>, String>>,
         bytes: HashMap<String, Vec<u8>>,
     }
 
@@ -669,12 +676,17 @@ mod tests {
 
         fn with_json(mut self, url: &str, body: Option<serde_json::Value>) -> Self {
             self.json
-                .insert(url.to_string(), body.map(|value| value.to_string()));
+                .insert(url.to_string(), Ok(body.map(|value| value.to_string())));
             self
         }
 
         fn with_bytes(mut self, url: &str, body: &[u8]) -> Self {
             self.bytes.insert(url.to_string(), body.to_vec());
+            self
+        }
+
+        fn with_json_error(mut self, url: &str, message: &str) -> Self {
+            self.json.insert(url.to_string(), Err(message.to_string()));
             self
         }
     }
@@ -690,7 +702,11 @@ mod tests {
         }
 
         fn get_json(&self, url: &str) -> Result<Option<String>, SkillfileError> {
-            Ok(self.json.get(url).cloned().flatten())
+            self.json
+                .get(url)
+                .cloned()
+                .unwrap_or(Ok(None))
+                .map_err(SkillfileError::Network)
         }
 
         fn post_json(&self, _url: &str, _body: &str) -> Result<Vec<u8>, SkillfileError> {
@@ -775,9 +791,64 @@ mod tests {
         );
 
         assert_eq!(
-            canonical_owner_repo(&client, "paramchoudhary/resumeskills").as_deref(),
+            canonical_owner_repo(&client, "paramchoudhary/resumeskills")
+                .unwrap()
+                .as_deref(),
             Some("Paramchoudhary/ResumeSkills")
         );
+    }
+
+    #[test]
+    fn canonical_owner_repo_propagates_rate_limit_error() {
+        let client = SearchPathClient::new().with_json_error(
+            "https://api.github.com/repos/example/repo",
+            "HTTP 403 fetching repository - you may be rate-limited",
+        );
+
+        let error = canonical_owner_repo(&client, "example/repo").unwrap_err();
+
+        assert!(error.to_string().contains("rate-limited"), "{error}");
+    }
+
+    #[test]
+    fn discover_skill_path_propagates_rate_limit_error() {
+        let client = SearchPathClient::new().with_json_error(
+            "https://api.github.com/repos/example/repo/git/trees/main?recursive=1",
+            "HTTP 403 fetching tree - you may be rate-limited",
+        );
+        let query = SearchPathQuery {
+            owner_repo: "example/repo",
+            skill_name: "example",
+            entity_type: "skill",
+        };
+
+        let error = discover_skill_path(&client, &query).unwrap_err();
+
+        assert!(error.to_string().contains("rate-limited"), "{error}");
+    }
+
+    #[test]
+    fn discover_skill_path_keeps_missing_repo_as_manual_fallback() {
+        let client = SearchPathClient::new()
+            .with_json(
+                "https://api.github.com/repos/example/missing/git/trees/main?recursive=1",
+                None,
+            )
+            .with_json(
+                "https://api.github.com/repos/example/missing/git/trees/master?recursive=1",
+                None,
+            )
+            .with_json("https://api.github.com/repos/example/missing", None);
+        let query = SearchPathQuery {
+            owner_repo: "example/missing",
+            skill_name: "example",
+            entity_type: "skill",
+        };
+
+        let (candidates, resolved) = discover_skill_path(&client, &query).unwrap();
+
+        assert!(candidates.is_empty());
+        assert!(resolved.is_none());
     }
 
     #[test]
@@ -812,7 +883,7 @@ mod tests {
             entity_type: "skill",
         };
 
-        let (candidates, resolved) = discover_skill_path(&client, &query);
+        let (candidates, resolved) = discover_skill_path(&client, &query).unwrap();
 
         assert!(candidates.is_empty());
         assert_eq!(
@@ -856,7 +927,7 @@ mod tests {
             entity_type: "skill",
         };
 
-        let (candidates, resolved) = discover_skill_path(&client, &query);
+        let (candidates, resolved) = discover_skill_path(&client, &query).unwrap();
 
         assert!(candidates.is_empty());
         assert_eq!(
@@ -883,7 +954,7 @@ mod tests {
             entity_type: "skill",
         };
 
-        let (candidates, resolved) = discover_skill_path(&client, &query);
+        let (candidates, resolved) = discover_skill_path(&client, &query).unwrap();
 
         assert!(resolved.is_none());
         assert_eq!(
