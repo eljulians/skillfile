@@ -263,9 +263,10 @@ pub fn fetch_github_file(
     } else {
         path_in_repo
     };
+    let encoded_path = encode_url_path(&effective_path);
     let url = format!(
         "https://raw.githubusercontent.com/{}/{}/{}",
-        gh.owner_repo, gh.ref_, effective_path
+        gh.owner_repo, gh.ref_, encoded_path
     );
     http_get(gh.client, &url)
 }
