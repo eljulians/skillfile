@@ -11,6 +11,7 @@ use skillfile_core::progress;
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
+use crate::commands::forward_slash;
 use crate::commands::installed_variants::{installed_dir_variants, installed_single_file_variants};
 use crate::commands::multi_target::{
     format_single_file_diff, modified_dir_variants, modified_single_file_variants, SingleFileDiff,
@@ -99,11 +100,7 @@ fn diff_local_dir(entry: &Entry, sha: &str, repo_root: &Path) -> Result<(), Skil
         .into_iter()
         .filter(|cache_file| cache_file.file_name().is_some_and(|name| name != ".meta"))
         .filter_map(|cache_file| {
-            let filename = cache_file
-                .strip_prefix(&vdir)
-                .ok()
-                .and_then(|path| path.to_str())
-                .map(str::to_string)?;
+            let filename = cache_file.strip_prefix(&vdir).ok().map(forward_slash)?;
             Some((filename, cache_file))
         })
         .collect();

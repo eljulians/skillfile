@@ -9,6 +9,7 @@ use skillfile_deploy::install::install_entry;
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
+use crate::commands::forward_slash;
 use crate::commands::installed_variants::{installed_dir_variants, installed_single_file_variants};
 use crate::commands::multi_target::{
     divergent_targets_message, modified_dir_variants, modified_single_file_variants,
@@ -67,11 +68,7 @@ fn load_cache_files(vdir: &Path) -> BTreeMap<String, std::path::PathBuf> {
         .into_iter()
         .filter(|cache_file| cache_file.file_name().is_some_and(|name| name != ".meta"))
         .filter_map(|cache_file| {
-            let filename = cache_file
-                .strip_prefix(vdir)
-                .ok()
-                .and_then(|path| path.to_str())
-                .map(str::to_string)?;
+            let filename = cache_file.strip_prefix(vdir).ok().map(forward_slash)?;
             Some((filename, cache_file))
         })
         .collect()

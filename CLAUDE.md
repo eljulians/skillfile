@@ -119,4 +119,5 @@ Out of scope unless the project direction changes:
 - Check `SPEC.md` before changing manifest syntax or user-facing semantics.
 - Keep crate boundaries intact; avoid making downstream crates a dependency of upstream crates.
 - Update `README.md`, `SPEC.md`, or `CHANGELOG.md` when behavior visible to users changes.
+- When adding `CHANGELOG.md` entries for external contributions, end the entry with `by @handle` and no trailing full stop after the mention.
 - Keep this file limited to repository-wide engineering guidance; individual contributor workflows should live outside the repository.
