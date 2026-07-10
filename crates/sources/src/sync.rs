@@ -271,6 +271,17 @@ fn root_skill_marker_path(entries: &[DirEntry]) -> Option<&str> {
         .map(|entry| entry.relative_path.as_str())
 }
 
+fn required_root_skill_marker_path<'a>(
+    entries: &'a [DirEntry],
+    owner_repo: &str,
+) -> Result<&'a str, SkillfileError> {
+    root_skill_marker_path(entries).ok_or_else(|| {
+        SkillfileError::Network(format!(
+            "root skill repo '{owner_repo}' is missing SKILL.md at the repo root"
+        ))
+    })
+}
+
 fn root_dir_has_auxiliary_files(entries: &[DirEntry]) -> bool {
     entries
         .iter()
@@ -1438,7 +1449,16 @@ pub fn fetch_file_at_sha(
                 owner_repo,
                 ref_: sha,
             };
-            crate::resolver::fetch_github_file(&ghf, path_in_repo)?
+            let root_marker_path;
+            let effective_path = if path_in_repo == "." {
+                let dir_entries = list_github_dir_recursive(&ghf, ".")?;
+                root_marker_path =
+                    required_root_skill_marker_path(&dir_entries, owner_repo)?.to_string();
+                root_marker_path.as_str()
+            } else {
+                path_in_repo
+            };
+            crate::resolver::fetch_github_file(&ghf, effective_path)?
         }
         SourceFields::Gitlab {
             owner_repo,
@@ -1451,7 +1471,16 @@ pub fn fetch_file_at_sha(
                 ref_: sha,
                 host: &crate::http::gitlab_host(),
             };
-            crate::resolver::fetch_gitlab_file(&glf, path_in_repo)?
+            let root_marker_path;
+            let effective_path = if path_in_repo == "." {
+                let dir_entries = list_gitlab_dir_recursive(&glf, ".")?;
+                root_marker_path =
+                    required_root_skill_marker_path(&dir_entries, owner_repo)?.to_string();
+                root_marker_path.as_str()
+            } else {
+                path_in_repo
+            };
+            crate::resolver::fetch_gitlab_file(&glf, effective_path)?
         }
         _ => {
             return Err(SkillfileError::Network(
@@ -2733,12 +2762,40 @@ mod tests {
                 ref_: "main".into(),
             },
         };
+        let tree_url =
+            format!("https://api.github.com/repos/owner/repo/git/trees/{sha}?recursive=1");
+        let tree_json = serde_json::json!({
+            "tree": [{ "type": "blob", "path": "SKILL.md" }]
+        })
+        .to_string();
         let raw_url = format!("https://raw.githubusercontent.com/owner/repo/{sha}/SKILL.md");
-        let client = MockClient::new().with_bytes(raw_url, b"# Root skill content".to_vec());
+        let client = MockClient::new()
+            .with_json(tree_url, Some(tree_json))
+            .with_bytes(raw_url, b"# Root skill content".to_vec());
 
         let result = fetch_file_at_sha(&client, &entry, sha);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "# Root skill content");
+    }
+
+    #[test]
+    fn fetch_file_at_sha_github_dot_path_uses_observed_marker_case() {
+        let sha = "abcdef1234567890abcdef1234567890abcdef12";
+        let entry = skill_entry("root", ".");
+        let tree_url =
+            format!("https://api.github.com/repos/owner/repo/git/trees/{sha}?recursive=1");
+        let tree_json = serde_json::json!({
+            "tree": [{ "type": "blob", "path": "skill.md" }]
+        })
+        .to_string();
+        let raw_url = format!("https://raw.githubusercontent.com/owner/repo/{sha}/skill.md");
+        let client = MockClient::new()
+            .with_json(tree_url, Some(tree_json))
+            .with_bytes(raw_url, b"# Lowercase root skill".to_vec());
+
+        let result = fetch_file_at_sha(&client, &entry, sha);
+        assert!(result.is_ok(), "fetch_file_at_sha failed: {result:?}");
+        assert_eq!(result.unwrap(), "# Lowercase root skill");
     }
 
     #[test]
@@ -2945,6 +3002,27 @@ mod tests {
         let result = fetch_file_at_sha(&client, &entry, sha);
         assert!(result.is_ok(), "fetch_file_at_sha failed: {result:?}");
         assert_eq!(result.unwrap(), "# My Skill\nHello world.");
+    }
+
+    #[test]
+    fn fetch_file_at_sha_gitlab_dot_path_uses_observed_marker_case() {
+        let sha = "abcdef1234567890abcdef1234567890abcdef12";
+        let entry = gitlab_skill_entry("root", ".");
+        let encoded_project = "group%2Fproject";
+        let tree_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/tree?ref={sha}&recursive=true&per_page=100&page=1"
+        );
+        let tree_json = serde_json::json!([{ "type": "blob", "path": "skill.md" }]).to_string();
+        let raw_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded_project}/repository/files/skill.md/raw?ref={sha}"
+        );
+        let client = MockClient::new()
+            .with_json(tree_url, Some(tree_json))
+            .with_bytes(raw_url, b"# Lowercase root skill".to_vec());
+
+        let result = fetch_file_at_sha(&client, &entry, sha);
+        assert!(result.is_ok(), "fetch_file_at_sha failed: {result:?}");
+        assert_eq!(result.unwrap(), "# Lowercase root skill");
     }
 
     #[test]
