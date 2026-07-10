@@ -1529,8 +1529,9 @@ mod tests {
 
     use super::{
         content_exists, fetch_dir_at_sha, fetch_file_at_sha, replace_cache_transactionally,
-        resolve_shas_parallel, run_parallel_sync, sync_entry, vendor_dir_for, ForgeType,
-        RemoteRefKey, ResolveCtx, SyncContext, SyncJob, VENDOR_DIR,
+        resolve_shas_parallel, run_parallel_sync, sync_entry, vendor_dir_for, write_github_file,
+        write_gitlab_file, FetchOp, ForgeType, GithubRef, GitlabFetchOp, GitlabRef, RemoteRefKey,
+        ResolveCtx, SyncContext, SyncJob, VENDOR_DIR,
     };
 
     #[test]
@@ -2014,6 +2015,61 @@ mod tests {
 
         let lock_entry = ctx.locked.get("github/skill/root").unwrap();
         assert_eq!(lock_entry.raw_url, raw_url);
+    }
+
+    #[test]
+    fn write_github_root_file_wraps_listing_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = MockClient::new();
+        let gh = GithubRef {
+            owner_repo: "owner/repo",
+            path_in_repo: ".",
+            sha: "deadbeef",
+        };
+        let op = FetchOp {
+            client: &client,
+            gh: &gh,
+            vdir: dir.path(),
+            display_vdir: dir.path(),
+            label: "root",
+        };
+
+        let error = write_github_file(&op).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("failed to inspect root skill repo 'owner/repo'"));
+    }
+
+    #[test]
+    fn write_github_root_file_requires_skill_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree_url = "https://api.github.com/repos/owner/repo/git/trees/deadbeef?recursive=1";
+        let client = MockClient::new().with_json(
+            tree_url,
+            Some(
+                serde_json::json!({
+                    "tree": [{ "type": "blob", "path": "notes.txt" }]
+                })
+                .to_string(),
+            ),
+        );
+        let gh = GithubRef {
+            owner_repo: "owner/repo",
+            path_in_repo: ".",
+            sha: "deadbeef",
+        };
+        let op = FetchOp {
+            client: &client,
+            gh: &gh,
+            vdir: dir.path(),
+            display_vdir: dir.path(),
+            label: "root",
+        };
+
+        let error = write_github_file(&op).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("root skill repo 'owner/repo' is missing SKILL.md"));
     }
 
     #[test]
@@ -3076,6 +3132,58 @@ mod tests {
 
         let lock_entry = ctx.locked.get("gitlab/skill/root").unwrap();
         assert_eq!(lock_entry.raw_url, raw_url);
+    }
+
+    #[test]
+    fn write_gitlab_root_file_wraps_listing_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = MockClient::new();
+        let gl = GitlabRef {
+            owner_repo: "group/project",
+            path_in_repo: ".",
+            sha: "deadbeef",
+            host: "gitlab.com",
+        };
+        let op = GitlabFetchOp {
+            client: &client,
+            gl: &gl,
+            vdir: dir.path(),
+            display_vdir: dir.path(),
+            label: "root",
+        };
+
+        let error = write_gitlab_file(&op).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("failed to inspect root skill repo 'group/project'"));
+    }
+
+    #[test]
+    fn write_gitlab_root_file_requires_skill_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree_url = "https://gitlab.com/api/v4/projects/group%2Fproject/repository/tree?ref=deadbeef&recursive=true&per_page=100&page=1";
+        let client = MockClient::new().with_json(
+            tree_url,
+            Some(serde_json::json!([{"path": "notes.txt", "type": "blob"}]).to_string()),
+        );
+        let gl = GitlabRef {
+            owner_repo: "group/project",
+            path_in_repo: ".",
+            sha: "deadbeef",
+            host: "gitlab.com",
+        };
+        let op = GitlabFetchOp {
+            client: &client,
+            gl: &gl,
+            vdir: dir.path(),
+            display_vdir: dir.path(),
+            label: "root",
+        };
+
+        let error = write_gitlab_file(&op).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("root skill repo 'group/project' is missing SKILL.md"));
     }
 
     #[test]
