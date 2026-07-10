@@ -261,9 +261,14 @@ enum RootRepoLayout {
 }
 
 fn has_root_skill_marker(entries: &[DirEntry]) -> bool {
+    root_skill_marker_path(entries).is_some()
+}
+
+fn root_skill_marker_path(entries: &[DirEntry]) -> Option<&str> {
     entries
         .iter()
-        .any(|entry| entry.relative_path.eq_ignore_ascii_case("SKILL.md"))
+        .find(|entry| entry.relative_path.eq_ignore_ascii_case("SKILL.md"))
+        .map(|entry| entry.relative_path.as_str())
 }
 
 fn root_dir_has_auxiliary_files(entries: &[DirEntry]) -> bool {
@@ -401,16 +406,33 @@ fn write_github_file(op: &FetchOp<'_>) -> Result<String, SkillfileError> {
         owner_repo,
         ref_: sha,
     };
-    let content = fetch_github_file(&ghf, path_in_repo)?;
+    let root_marker_path;
     let effective_path = if *path_in_repo == "." {
-        "SKILL.md"
+        let dir_entries = list_github_dir_recursive(&ghf, ".").map_err(|err| {
+            SkillfileError::Install(format!(
+                "failed to inspect root skill repo '{owner_repo}': {err}"
+            ))
+        })?;
+        root_marker_path = root_skill_marker_path(&dir_entries)
+            .ok_or_else(|| {
+                SkillfileError::Install(format!(
+                    "root skill repo '{owner_repo}' is missing SKILL.md at the repo root"
+                ))
+            })?
+            .to_string();
+        root_marker_path.as_str()
     } else {
         path_in_repo
     };
-    let filename = std::path::Path::new(effective_path)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("content.md");
+    let content = fetch_github_file(&ghf, effective_path)?;
+    let filename = if *path_in_repo == "." {
+        "SKILL.md"
+    } else {
+        std::path::Path::new(effective_path)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("content.md")
+    };
     let dest = vdir.join(filename);
     std::fs::write(&dest, &content)?;
     progress!(
@@ -803,16 +825,33 @@ fn write_gitlab_file(op: &GitlabFetchOp<'_>) -> Result<String, SkillfileError> {
         ref_: sha,
         host,
     };
-    let content = fetch_gitlab_file(&glf, path_in_repo)?;
+    let root_marker_path;
     let effective_path = if *path_in_repo == "." {
-        "SKILL.md"
+        let dir_entries = list_gitlab_dir_recursive(&glf, ".").map_err(|err| {
+            SkillfileError::Install(format!(
+                "failed to inspect root skill repo '{owner_repo}': {err}"
+            ))
+        })?;
+        root_marker_path = root_skill_marker_path(&dir_entries)
+            .ok_or_else(|| {
+                SkillfileError::Install(format!(
+                    "root skill repo '{owner_repo}' is missing SKILL.md at the repo root"
+                ))
+            })?
+            .to_string();
+        root_marker_path.as_str()
     } else {
         path_in_repo
     };
-    let filename = std::path::Path::new(effective_path)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("content.md");
+    let content = fetch_gitlab_file(&glf, effective_path)?;
+    let filename = if *path_in_repo == "." {
+        "SKILL.md"
+    } else {
+        std::path::Path::new(effective_path)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("content.md")
+    };
     let dest = vdir.join(filename);
     std::fs::write(&dest, &content)?;
     progress!(
@@ -1942,6 +1981,42 @@ mod tests {
     }
 
     #[test]
+    fn sync_entry_github_root_lowercase_skill_md_fetches_observed_path() {
+        let sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let dir = tempfile::tempdir().unwrap();
+        let entry = skill_entry("root", ".");
+
+        let sha_url = "https://api.github.com/repos/owner/repo/commits/main".to_string();
+        let sha_json = serde_json::json!({ "sha": sha }).to_string();
+        let tree_url =
+            format!("https://api.github.com/repos/owner/repo/git/trees/{sha}?recursive=1");
+        let tree_json = serde_json::json!({
+            "tree": [
+                { "type": "blob", "path": "skill.md" }
+            ]
+        })
+        .to_string();
+        let raw_url = format!("https://raw.githubusercontent.com/owner/repo/{sha}/skill.md");
+
+        let client = MockClient::new()
+            .with_json(sha_url, Some(sha_json))
+            .with_json(tree_url, Some(tree_json))
+            .with_bytes(raw_url.clone(), b"# Lowercase root skill".to_vec());
+
+        let mut ctx = make_sync_ctx(dir.path());
+        sync_entry(&client, &entry, &mut ctx).unwrap();
+
+        let vdir = vendor_dir_for(&entry, dir.path());
+        assert_eq!(
+            std::fs::read_to_string(vdir.join("SKILL.md")).unwrap(),
+            "# Lowercase root skill"
+        );
+
+        let lock_entry = ctx.locked.get("github/skill/root").unwrap();
+        assert_eq!(lock_entry.raw_url, raw_url);
+    }
+
+    #[test]
     fn sync_entry_github_missing_directory_does_not_commit_empty_cache() {
         let sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
         let dir = tempfile::tempdir().unwrap();
@@ -2957,6 +3032,50 @@ mod tests {
         let meta_text = std::fs::read_to_string(vdir.join(".meta")).unwrap();
         let meta: serde_json::Value = serde_json::from_str(&meta_text).unwrap();
         assert_eq!(meta["source_type"], "gitlab");
+    }
+
+    #[test]
+    fn sync_entry_gitlab_root_lowercase_skill_md_fetches_observed_path() {
+        let sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let dir = tempfile::tempdir().unwrap();
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "root".into(),
+            source: SourceFields::Gitlab {
+                owner_repo: "group/project".into(),
+                path_in_repo: ".".into(),
+                ref_: "main".into(),
+            },
+        };
+
+        let encoded = "group%2Fproject";
+        let sha_url =
+            format!("https://gitlab.com/api/v4/projects/{encoded}/repository/commits/main");
+        let sha_json = serde_json::json!({ "id": sha }).to_string();
+        let tree_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded}/repository/tree?ref={sha}&recursive=true&per_page=100&page=1"
+        );
+        let tree_json = serde_json::json!([{"path": "skill.md", "type": "blob"}]).to_string();
+        let raw_url = format!(
+            "https://gitlab.com/api/v4/projects/{encoded}/repository/files/skill.md/raw?ref={sha}"
+        );
+
+        let client = MockClient::new()
+            .with_json(sha_url, Some(sha_json))
+            .with_json(tree_url, Some(tree_json))
+            .with_bytes(raw_url.clone(), b"# Lowercase root skill".to_vec());
+
+        let mut ctx = make_sync_ctx(dir.path());
+        sync_entry(&client, &entry, &mut ctx).unwrap();
+
+        let vdir = vendor_dir_for(&entry, dir.path());
+        assert_eq!(
+            std::fs::read_to_string(vdir.join("SKILL.md")).unwrap(),
+            "# Lowercase root skill"
+        );
+
+        let lock_entry = ctx.locked.get("gitlab/skill/root").unwrap();
+        assert_eq!(lock_entry.raw_url, raw_url);
     }
 
     #[test]
