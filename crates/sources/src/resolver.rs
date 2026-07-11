@@ -2789,4 +2789,15 @@ mod tests {
             .iter()
             .any(|entry| entry.relative_path == "final.md"));
     }
+    #[test]
+    fn test_encode_url_path_with_space() {
+        let result = encode_url_path("my skill.md");
+        assert_eq!(result, "my%20skill.md");
+    }
+
+    #[test]
+    fn test_encode_url_path_with_hash() {
+        let result = encode_url_path("my#skill.md");
+        assert_eq!(result, "my%23skill.md");
+    }
 }
