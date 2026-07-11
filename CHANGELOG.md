@@ -6,6 +6,10 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **Directory-entry keys now stay consistent during updates and patch application** - `skillfile install --update` preserves edits to nested files when cache paths use platform-native separators, and directory patches use the same portable keys as installed file maps by @ychampion
+
 ## v1.7.3 - 10-07-2026
 
 ### Fixed

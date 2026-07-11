@@ -13,7 +13,8 @@ use skillfile_core::models::{
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_core::patch::{
     apply_patch_pure, dir_patch_path, generate_patch, has_patch, patch_path, patches_root,
-    read_patch, remove_dir_patch, remove_patch, walkdir, write_dir_patch, write_patch,
+    read_patch, relative_file_key, remove_dir_patch, remove_patch, walkdir, write_dir_patch,
+    write_patch,
 };
 use skillfile_core::progress;
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry, is_dir_entry};
@@ -97,10 +98,8 @@ fn apply_dir_patches(
         .collect();
 
     for patch_file in patch_files {
-        let Some(rel) = patch_file
-            .strip_prefix(&patches_dir)
-            .ok()
-            .and_then(|p| p.to_str())
+        let Some(rel) = relative_file_key(&patches_dir, &patch_file)
+            .as_deref()
             .and_then(|s| s.strip_suffix(".patch"))
             .map(str::to_string)
         else {
@@ -126,8 +125,12 @@ fn apply_dir_patches(
         let new_patch = generate_patch(&cache_text, &patched, &rel);
         if new_patch.is_empty() {
             std::fs::remove_file(&patch_file)?;
-        } else {
-            write_dir_patch(&dir_patch_path(ctx.entry, &rel, ctx.repo_root), &new_patch)?;
+            continue;
+        }
+        let canonical_patch = dir_patch_path(ctx.entry, &rel, ctx.repo_root);
+        write_dir_patch(&canonical_patch, &new_patch)?;
+        if patch_file != canonical_patch {
+            std::fs::remove_file(&patch_file)?;
         }
     }
     Ok(())
@@ -326,11 +329,7 @@ fn load_cache_files(vdir: &Path) -> BTreeMap<String, PathBuf> {
         .into_iter()
         .filter(|cache_file| cache_file.file_name().is_none_or(|name| name != ".meta"))
         .filter_map(|cache_file| {
-            let filename = cache_file
-                .strip_prefix(vdir)
-                .ok()
-                .and_then(|path| path.to_str())
-                .map(str::to_string)?;
+            let filename = relative_file_key(vdir, &cache_file)?;
             Some((filename, cache_file))
         })
         .collect()
@@ -723,10 +722,6 @@ fn restore_path_snapshot(snapshot: &PathSnapshot) -> std::io::Result<()> {
     copy_path(snapshot_path, &snapshot.live_path)
 }
 
-fn forward_slash(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
 struct InstallValidationCtx<'a> {
     entry: &'a Entry,
     target: &'a InstallTarget,
@@ -752,9 +747,9 @@ fn flat_expected_paths(source: &Path, target_dir: &Path) -> HashMap<String, Path
         .into_iter()
         .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
         .filter_map(|path| {
-            let rel = path.strip_prefix(source).ok()?;
             let name = path.file_name()?;
-            Some((forward_slash(rel), target_dir.join(name)))
+            let key = relative_file_key(source, &path)?;
+            Some((key, target_dir.join(name)))
         })
         .collect()
 }
@@ -765,7 +760,8 @@ fn nested_expected_paths(source: &Path, dest_root: &Path) -> HashMap<String, Pat
         .filter(|path| path.file_name().is_none_or(|name| name != ".meta"))
         .filter_map(|path| {
             let rel = path.strip_prefix(source).ok()?;
-            Some((forward_slash(rel), dest_root.join(rel)))
+            let key = relative_file_key(source, &path)?;
+            Some((key, dest_root.join(rel)))
         })
         .collect()
 }
@@ -2798,6 +2794,47 @@ mod tests {
     }
 
     #[test]
+    fn auto_pin_dir_entry_normalizes_cache_file_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "lang-pro";
+
+        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
+        locked.insert(
+            format!("github/skill/{name}"),
+            LockEntry {
+                sha: "deadbeefdeadbeefdeadbeef".into(),
+                raw_url: format!("https://example.com/{name}"),
+            },
+        );
+        write_lock_fixture(dir.path(), &locked);
+
+        let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
+        let cache_file = vdir.join(r"nested\file.md");
+        std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
+        std::fs::write(&cache_file, "# Original\n").unwrap();
+
+        let installed_file = dir
+            .path()
+            .join(format!(".claude/skills/{name}/nested/file.md"));
+        std::fs::create_dir_all(installed_file.parent().unwrap()).unwrap();
+        std::fs::write(&installed_file, "# Modified\n").unwrap();
+
+        let entry = make_dir_skill_entry(name);
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![make_target("claude-code", Scope::Local)],
+        };
+
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
+
+        let patch = dir_patch_fixture_path(dir.path(), &entry, "nested/file.md");
+        assert!(
+            patch.exists(),
+            "auto-pin must match cache and installed files through canonical keys"
+        );
+    }
+
+    #[test]
     fn auto_pin_dir_entry_uses_second_target_when_first_is_clean() {
         let dir = tempfile::tempdir().unwrap();
         let name = "lang-pro";
@@ -3021,6 +3058,59 @@ mod tests {
             expected_rebased_to_new_cache,
             "rebased patch applied to new_cache must reproduce installed_content"
         );
+    }
+
+    #[test]
+    fn apply_dir_patches_normalizes_patch_file_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = make_dir_skill_entry("lang-pro");
+        let patch_text = concat!(
+            "--- a/nested/file.md\n",
+            "+++ b/nested/file.md\n",
+            "@@ -1 +1 @@\n",
+            "-# Original\n",
+            "+# Modified\n",
+        );
+
+        let patches_dir = dir.path().join(".skillfile/patches/skills/lang-pro");
+        let platform_keyed_patch = patches_dir.join(r"nested\file.md.patch");
+        std::fs::create_dir_all(platform_keyed_patch.parent().unwrap()).unwrap();
+        std::fs::write(&platform_keyed_patch, patch_text).unwrap();
+
+        let installed_file = dir.path().join(".claude/skills/lang-pro/nested/file.md");
+        std::fs::create_dir_all(installed_file.parent().unwrap()).unwrap();
+        std::fs::write(&installed_file, "# Original\n").unwrap();
+
+        let source_dir = dir.path().join(".skillfile/cache/skills/lang-pro");
+        let source_file = source_dir.join("nested/file.md");
+        std::fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+        std::fs::write(&source_file, "# Original\n").unwrap();
+
+        let installed_files =
+            HashMap::from([("nested/file.md".to_string(), installed_file.clone())]);
+
+        apply_dir_patches(
+            &PatchCtx {
+                entry: &entry,
+                repo_root: dir.path(),
+            },
+            &installed_files,
+            &source_dir,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&installed_file).unwrap(),
+            "# Modified\n"
+        );
+        let canonical_patch = dir_patch_fixture_path(dir.path(), &entry, "nested/file.md");
+        assert!(canonical_patch.exists());
+        if platform_keyed_patch != canonical_patch {
+            assert!(
+                !platform_keyed_patch.exists(),
+                "rebasing must not leave a second non-canonical patch path"
+            );
+        }
     }
 
     #[test]

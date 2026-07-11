@@ -7,13 +7,12 @@ use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{short_sha, EntityType, Entry, LockEntry, Manifest, SourceFields};
 use skillfile_core::parser::MANIFEST_NAME;
 use skillfile_core::patch::{
-    apply_patch_pure, dir_patch_path, has_dir_patch, has_patch, read_patch, walkdir,
+    apply_patch_pure, dir_patch_path, has_dir_patch, has_patch, read_patch, relative_file_key,
+    walkdir,
 };
 use skillfile_deploy::paths::{installed_dir_file_sets, installed_paths};
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry, meta_sha};
 use skillfile_sources::sync::vendor_dir_for;
-
-use crate::commands::forward_slash;
 
 struct DirCheckCtx<'a> {
     entry: &'a Entry,
@@ -23,7 +22,7 @@ struct DirCheckCtx<'a> {
 }
 
 fn is_cache_file_modified(cache_file: &Path, ctx: &DirCheckCtx<'_>) -> Result<bool, ()> {
-    let filename = forward_slash(cache_file.strip_prefix(ctx.vdir).map_err(|_| ())?);
+    let filename = relative_file_key(ctx.vdir, cache_file).ok_or(())?;
     let inst_path = match ctx.installed.get(&filename) {
         Some(p) if p.exists() => p,
         _ => return Ok(false),

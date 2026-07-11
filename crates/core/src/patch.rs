@@ -9,6 +9,17 @@ pub const PATCHES_DIR: &str = ".skillfile/patches";
 // Path helpers
 // ---------------------------------------------------------------------------
 
+/// Build the portable key used for a file within a directory entry.
+///
+/// Keys always use forward slashes so cache, installed, and patch maps agree
+/// across platforms.
+#[must_use]
+pub fn relative_file_key(base: &Path, path: &Path) -> Option<String> {
+    path.strip_prefix(base)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
+
 #[must_use]
 pub fn patches_root(repo_root: &Path) -> PathBuf {
     repo_root.join(PATCHES_DIR)
@@ -459,6 +470,32 @@ mod tests {
                 ref_: "main".into(),
             },
         }
+    }
+
+    #[test]
+    fn relative_file_key_keeps_forward_slashes() {
+        let base = Path::new("cache");
+        assert_eq!(
+            relative_file_key(base, &base.join("nested/file.md")),
+            Some("nested/file.md".to_string())
+        );
+    }
+
+    #[test]
+    fn relative_file_key_normalizes_backslashes() {
+        let base = Path::new("cache");
+        assert_eq!(
+            relative_file_key(base, &base.join(r"nested\file.md")),
+            Some("nested/file.md".to_string())
+        );
+    }
+
+    #[test]
+    fn relative_file_key_rejects_paths_outside_base() {
+        assert_eq!(
+            relative_file_key(Path::new("cache"), Path::new("other/file.md")),
+            None
+        );
     }
 
     // --- generate_patch ---

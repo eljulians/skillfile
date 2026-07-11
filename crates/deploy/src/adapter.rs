@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use skillfile_core::models::{EntityType, Entry, InstallOptions, Scope};
-use skillfile_core::patch::walkdir;
+use skillfile_core::patch::{relative_file_key, walkdir};
 use skillfile_core::progress;
 use skillfile_sources::strategy::is_dir_entry;
 
@@ -264,14 +264,6 @@ fn remove_orphan_flat_file(entry_name: &str, target_dir: &Path) {
     }
 }
 
-/// Convert a [`Path`] to a forward-slash string for use as patch/deploy keys.
-///
-/// On Unix this is a no-op. On Windows, `\` separators become `/` so that
-/// patch keys are portable across platforms.
-fn forward_slash(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
 fn collect_dir_deploy_result(source: &Path, dest: &Path) -> DeployResult {
     let mut result = HashMap::new();
     for file in walkdir(source) {
@@ -281,7 +273,10 @@ fn collect_dir_deploy_result(source: &Path, dest: &Path) -> DeployResult {
         let Ok(rel) = file.strip_prefix(source) else {
             continue;
         };
-        result.insert(forward_slash(rel), dest.join(rel));
+        let Some(key) = relative_file_key(source, &file) else {
+            continue;
+        };
+        result.insert(key, dest.join(rel));
     }
     result
 }
@@ -306,10 +301,10 @@ fn collect_flat_installed_checked(vdir: &Path, target_dir: &Path) -> HashMap<Str
 fn collect_walkdir_relative(base: &Path) -> HashMap<String, PathBuf> {
     let mut result = HashMap::new();
     for file in walkdir(base) {
-        let Ok(rel) = file.strip_prefix(base) else {
+        let Some(key) = relative_file_key(base, &file) else {
             continue;
         };
-        result.insert(forward_slash(rel), file);
+        result.insert(key, file);
     }
     result
 }
@@ -323,13 +318,14 @@ fn collect_flat_installed(vdir: &Path, target_dir: &Path) -> HashMap<String, Pat
         {
             continue;
         }
-        let Ok(rel) = file.strip_prefix(vdir) else {
+        let dest = target_dir.join(file.file_name().unwrap_or_default());
+        if !dest.exists() {
+            continue;
+        }
+        let Some(key) = relative_file_key(vdir, &file) else {
             continue;
         };
-        let dest = target_dir.join(file.file_name().unwrap_or_default());
-        if dest.exists() {
-            result.insert(forward_slash(rel), dest);
-        }
+        result.insert(key, dest);
     }
     result
 }
@@ -372,8 +368,8 @@ fn deploy_flat(source_dir: &Path, target_dir: &Path, opts: &InstallOptions) -> D
         ) {
             continue;
         }
-        if let Ok(rel) = src.strip_prefix(source_dir) {
-            result.insert(forward_slash(rel), dest);
+        if let Some(key) = relative_file_key(source_dir, src) {
+            result.insert(key, dest);
         }
     }
     result
@@ -498,8 +494,8 @@ fn copy_missing_dir(
         if entry.file_name() == ".meta" {
             continue;
         }
-        if let Ok(relative) = source_path.strip_prefix(source_root) {
-            installed.insert(forward_slash(relative), target_path);
+        if let Some(key) = relative_file_key(source_root, &source_path) {
+            installed.insert(key, target_path);
         }
     }
     Ok(installed)
@@ -1670,18 +1666,6 @@ mod tests {
         let files = a.installed_dir_files(&entry, &local(dir.path()));
         assert!(files.contains_key("backend.md"));
         assert!(!files.contains_key("frontend.md"));
-    }
-
-    #[test]
-    fn forward_slash_converts_backslashes() {
-        assert_eq!(forward_slash(Path::new("a/b/c")), "a/b/c");
-        assert_eq!(forward_slash(Path::new("simple.md")), "simple.md");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn forward_slash_converts_windows_separators() {
-        assert_eq!(forward_slash(Path::new(r"a\b\c.md")), "a/b/c.md");
     }
 
     #[test]
