@@ -195,23 +195,31 @@ fn list_groups_entries_by_entity_type() {
     let stderr = std::str::from_utf8(&output.stderr).unwrap();
 
     assert!(output.status.success(), "list should succeed: {stderr}");
+    assert_grouped_list_output(&stdout);
+}
+
+fn assert_grouped_list_output(stdout: &str) {
     assert!(
         stdout.contains("Skills (2):"),
         "missing skills group:\n{stdout}"
     );
-    assert!(stdout.contains("browser"));
-    assert!(stdout.contains("github"));
-    assert!(stdout.contains("anthropics/skills:skills/browser/SKILL.md"));
-    assert!(stdout.contains("commit"));
-    assert!(stdout.contains("local"));
-    assert!(stdout.contains("skills/commit.md"));
+    for expected in [
+        "browser",
+        "github",
+        "anthropics/skills:skills/browser/SKILL.md",
+        "commit",
+        "local",
+        "skills/commit.md",
+        "reviewer",
+        "v1",
+        "Install targets: claude-code (local)",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected:?}:\n{stdout}");
+    }
     assert!(
         stdout.contains("Agents (1):"),
         "missing agents group:\n{stdout}"
     );
-    assert!(stdout.contains("reviewer"));
-    assert!(stdout.contains("v1"));
-    assert!(stdout.contains("Install targets: claude-code (local)"));
 }
 
 #[test]
