@@ -4,7 +4,7 @@ exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "1.7.3"
+version = "1.7.4"
 edition = "2021"
 rust-version = "1.82"
 license = "Apache-2.0"
@@ -15,9 +15,9 @@ categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 # Internal crates
-skillfile-core = { path = "crates/core", version = "1.7.3" }
-skillfile-sources = { path = "crates/sources", version = "1.7.3" }
-skillfile-deploy = { path = "crates/deploy", version = "1.7.3" }
+skillfile-core = { path = "crates/core", version = "1.7.4" }
+skillfile-sources = { path = "crates/sources", version = "1.7.4" }
+skillfile-deploy = { path = "crates/deploy", version = "1.7.4" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

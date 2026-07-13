@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "skillfile"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "skillfile-core"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "skillfile-deploy"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "dirs",
  "serde_json",
@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "skillfile-sources"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "html-escape",
  "serde",

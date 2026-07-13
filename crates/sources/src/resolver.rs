@@ -1442,6 +1442,56 @@ mod tests {
     }
 
     #[test]
+    fn fetch_github_file_encodes_space_in_path() {
+        let sha = "abc123";
+        let url = format!("https://raw.githubusercontent.com/org/repo/{sha}/skills/my%20skill.md");
+        let mut client = MockClient::new();
+        client.add_bytes(&url, b"# Skill with space".to_vec());
+
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo: "org/repo",
+            ref_: sha,
+        };
+        let result = fetch_github_file(&gh, "skills/my skill.md").unwrap();
+        assert_eq!(result, b"# Skill with space");
+    }
+
+    #[test]
+    fn fetch_github_file_encodes_hash_in_path() {
+        let sha = "abc123";
+        let url = format!("https://raw.githubusercontent.com/org/repo/{sha}/skills/my%23skill.md");
+        let mut client = MockClient::new();
+        client.add_bytes(&url, b"# Skill with hash".to_vec());
+
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo: "org/repo",
+            ref_: sha,
+        };
+        let result = fetch_github_file(&gh, "skills/my#skill.md").unwrap();
+        assert_eq!(result, b"# Skill with hash");
+    }
+
+    #[test]
+    fn fetch_github_file_encodes_unicode_in_path() {
+        let sha = "abc123";
+        let url = format!(
+            "https://raw.githubusercontent.com/org/repo/{sha}/skills/%E6%8C%89%E9%92%AE.md"
+        );
+        let mut client = MockClient::new();
+        client.add_bytes(&url, b"# Unicode skill".to_vec());
+
+        let gh = GithubFetch {
+            client: &client,
+            owner_repo: "org/repo",
+            ref_: sha,
+        };
+        let result = fetch_github_file(&gh, "skills/按钮.md").unwrap();
+        assert_eq!(result, b"# Unicode skill");
+    }
+
+    #[test]
     fn fetch_github_file_propagates_error() {
         let sha = "fff000";
         let url = format!("https://raw.githubusercontent.com/org/repo/{sha}/missing.md");

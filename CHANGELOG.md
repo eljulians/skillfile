@@ -6,9 +6,16 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+## v1.7.4 - 13-07-2026
+
+### Changed
+
+- **Dependency refresh** - bumped `clap_complete` to 4.6.7.
+
 ### Fixed
 
 - **Directory-entry keys now stay consistent during updates and patch application** - `skillfile install --update` preserves edits to nested files when cache paths use platform-native separators, and directory patches use the same portable keys as installed file maps by @ychampion
+- **GitHub single-file fetches now handle encoded paths correctly** - GitHub entries that point directly at files with spaces, `#`, or non-ASCII characters in their path now fetch the intended raw file instead of failing with an invalid URI error or requesting the wrong path by @humammoin09-blip
 
 ## v1.7.3 - 10-07-2026
 
