@@ -267,9 +267,7 @@ fn parse_hunks(patch_text: &str) -> Result<Vec<Hunk>, SkillfileError> {
 }
 
 fn remove_line_ending(line: &mut String) {
-    if line.ends_with("\r\n") {
-        line.truncate(line.len() - 2);
-    } else if line.ends_with('\n') {
+    if line.ends_with('\n') {
         line.pop();
     }
 }
@@ -861,6 +859,11 @@ mod tests {
         assert!(!patch.contains('\r'));
         let result = apply_patch_pure(orig, &patch).unwrap();
         assert_eq!(result, "line one\nline changed\n");
+    }
+
+    #[test]
+    fn generate_patch_ignores_crlf_only_changes() {
+        assert!(generate_patch("line one\r\n", "line one\n", "test.md").is_empty());
     }
 
     #[test]

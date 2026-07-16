@@ -2539,6 +2539,15 @@ mod tests {
     }
 
     #[test]
+    fn auto_pin_preserves_malformed_patch() {
+        assert!(patch_already_covers(
+            "@@ invalid\n",
+            "Original\n",
+            "Modified\n"
+        ));
+    }
+
+    #[test]
     fn auto_pin_dir_comparison_treats_crlf_as_equivalent() {
         let left = BTreeMap::from([("SKILL.md".into(), "Modified\n".into())]);
         let right = BTreeMap::from([("SKILL.md".into(), "Modified\r\n".into())]);
