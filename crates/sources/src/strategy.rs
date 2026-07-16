@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use skillfile_core::models::{Entry, SourceFields, DEFAULT_REF};
-use skillfile_core::parser::infer_name;
+use skillfile_core::parser::{infer_name, quote_field};
 
 /// Known source types.
 pub const KNOWN_SOURCES: &[&str] = &["github", "gitlab", "local", "url"];
@@ -103,7 +103,7 @@ fn cache_has_auxiliary_files_from(root: &Path, dir: &Path) -> bool {
 /// Used by `add` and `sort` commands.
 #[must_use]
 pub fn format_parts(entry: &Entry) -> Vec<String> {
-    match &entry.source {
+    let parts = match &entry.source {
         SourceFields::Github {
             owner_repo,
             path_in_repo,
@@ -141,7 +141,8 @@ pub fn format_parts(entry: &Entry) -> Vec<String> {
             parts.push(url.clone());
             parts
         }
-    }
+    };
+    parts.into_iter().map(|part| quote_field(&part)).collect()
 }
 
 #[must_use]
@@ -321,6 +322,80 @@ mod tests {
             },
         };
         assert_eq!(format_parts(&e), vec!["git-commit", "skills/git/commit.md"]);
+    }
+
+    #[test]
+    fn format_parts_quotes_local_path_with_spaces() {
+        let e = Entry {
+            entity_type: EntityType::Skill,
+            name: "git-commit".into(),
+            source: SourceFields::Local {
+                path: "my skills/git commit.md".into(),
+            },
+        };
+        assert_eq!(
+            format_parts(&e),
+            vec!["git-commit", "\"my skills/git commit.md\""]
+        );
+    }
+
+    #[test]
+    fn format_parts_quotes_hash_in_local_path() {
+        let e = Entry {
+            entity_type: EntityType::Skill,
+            name: "hash-skill".into(),
+            source: SourceFields::Local {
+                path: "#skills/hash.md".into(),
+            },
+        };
+        assert_eq!(format_parts(&e), vec!["hash-skill", "\"#skills/hash.md\""]);
+    }
+
+    #[test]
+    fn format_parts_quotes_remote_and_url_fields() {
+        let github = Entry {
+            entity_type: EntityType::Skill,
+            name: "skill".into(),
+            source: SourceFields::Github {
+                owner_repo: "owner/repo".into(),
+                path_in_repo: "path with spaces/skill.md".into(),
+                ref_: "release #1".into(),
+            },
+        };
+        assert_eq!(
+            format_parts(&github),
+            vec![
+                "owner/repo",
+                "\"path with spaces/skill.md\"",
+                "\"release #1\""
+            ]
+        );
+
+        let gitlab = Entry {
+            entity_type: EntityType::Agent,
+            name: "agent".into(),
+            source: SourceFields::Gitlab {
+                owner_repo: "group/project".into(),
+                path_in_repo: "agents/team agent.md".into(),
+                ref_: "main".into(),
+            },
+        };
+        assert_eq!(
+            format_parts(&gitlab),
+            vec!["agent", "group/project", "\"agents/team agent.md\""]
+        );
+
+        let url = Entry {
+            entity_type: EntityType::Skill,
+            name: "remote".into(),
+            source: SourceFields::Url {
+                url: "https://example.com/skill.md#stable".into(),
+            },
+        };
+        assert_eq!(
+            format_parts(&url),
+            vec!["remote", "\"https://example.com/skill.md#stable\""]
+        );
     }
 
     fn gitlab_entry(path_in_repo: &str) -> Entry {

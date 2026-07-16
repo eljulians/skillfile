@@ -425,9 +425,64 @@ fn format_golden_path() {
     assert!(entry_lines[1].contains("zebra"), "zebra should be second");
 }
 
+#[test]
+fn format_keeps_spaced_local_path_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("my skills")).unwrap();
+    std::fs::write(
+        dir.path().join("my skills/git commit.md"),
+        "# Commit skill\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "local  skill  commit  \"my skills/git commit.md\"\n",
+    )
+    .unwrap();
+
+    sf(dir.path()).arg("validate").assert().success();
+    sf(dir.path()).arg("format").assert().success();
+    sf(dir.path()).arg("validate").assert().success();
+
+    let text = std::fs::read_to_string(dir.path().join("Skillfile")).unwrap();
+    assert!(text.contains("local  skill  commit  \"my skills/git commit.md\""));
+}
+
 // ---------------------------------------------------------------------------
 // add, remove
 // ---------------------------------------------------------------------------
+
+#[test]
+fn add_keeps_spaced_local_path_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("my skills")).unwrap();
+    std::fs::write(
+        dir.path().join("my skills/git commit.md"),
+        "# Commit skill\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    sf(dir.path())
+        .env(
+            "SKILLFILE_CONFIG_PATH",
+            dir.path().join("missing-config.toml"),
+        )
+        .args([
+            "add",
+            "local",
+            "skill",
+            "my skills/git commit.md",
+            "--name",
+            "commit",
+        ])
+        .assert()
+        .success();
+    sf(dir.path()).arg("validate").assert().success();
+
+    let text = std::fs::read_to_string(dir.path().join("Skillfile")).unwrap();
+    assert!(text.contains("local  skill  commit  \"my skills/git commit.md\""));
+}
 
 #[test]
 fn add_then_remove() {
