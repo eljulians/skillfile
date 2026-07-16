@@ -13,6 +13,17 @@ use skillfile_deploy::install::{
 use skillfile_sources::strategy::format_parts;
 use skillfile_sources::sync::{sync_entry, vendor_dir_for, SyncContext};
 
+fn has_interactive_stdio(stdin_is_terminal: bool, stderr_is_terminal: bool) -> bool {
+    stdin_is_terminal && stderr_is_terminal
+}
+
+fn is_interactive_terminal() -> bool {
+    has_interactive_stdio(
+        std::io::stdin().is_terminal(),
+        std::io::stderr().is_terminal(),
+    )
+}
+
 fn format_line(entry: &Entry) -> String {
     let mut parts = vec![
         entry.source_type().to_string(),
@@ -215,7 +226,7 @@ fn select_entries(
     if args.no_interactive {
         return Ok(entries.to_vec());
     }
-    if !std::io::stderr().is_terminal() {
+    if !is_interactive_terminal() {
         return Err(SkillfileError::Manifest(
             "interactive selection requires a terminal; use --no-interactive".to_string(),
         ));
@@ -458,7 +469,7 @@ pub fn cmd_add(entry: &Entry, repo_root: &Path) -> Result<(), SkillfileError> {
 /// add functions. Each flow terminates in a function that is already
 /// tested independently.
 pub fn cmd_add_interactive(repo_root: &Path) -> Result<(), SkillfileError> {
-    if !std::io::stderr().is_terminal() {
+    if !is_interactive_terminal() {
         return Err(SkillfileError::Manifest(
             "interactive wizard requires a terminal; use `skillfile add github|local|url` directly"
                 .to_owned(),
@@ -671,6 +682,14 @@ mod tests {
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
+    }
+
+    #[test]
+    fn interactive_stdio_requires_both_streams() {
+        assert!(has_interactive_stdio(true, true));
+        assert!(!has_interactive_stdio(true, false));
+        assert!(!has_interactive_stdio(false, true));
+        assert!(!has_interactive_stdio(false, false));
     }
 
     #[test]

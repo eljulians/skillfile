@@ -6,6 +6,10 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **Interactive add now rejects piped input instead of hanging** - bare `skillfile add` and bulk selection require stdin as well as stderr to be attached to a terminal before starting their interactive UI by @ychampion
+
 ## v1.7.4 - 13-07-2026
 
 ### Changed

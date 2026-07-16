@@ -53,6 +53,27 @@ fn pty_input_sanity_check() {
     session.exp_eof().ok();
 }
 
+#[test]
+fn add_wizard_rejects_piped_stdin() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    // Keep stderr attached to rexpect's PTY while piping only stdin.
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "printf '\\n' | \"$SKILLFILE_BIN\" add"])
+        .current_dir(dir.path())
+        .env("SKILLFILE_BIN", skillfile_bin());
+
+    let mut session = rexpect::session::spawn_command(cmd, Some(2_000))
+        .expect("failed to spawn skillfile add with piped stdin");
+    session
+        .exp_string("interactive wizard requires a terminal")
+        .expect("piped stdin should be rejected before the prompt starts");
+    session
+        .exp_eof()
+        .expect("skillfile add should exit after rejecting piped stdin");
+}
+
 // ---------------------------------------------------------------------------
 // init wizard
 // ---------------------------------------------------------------------------
