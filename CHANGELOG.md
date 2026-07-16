@@ -6,6 +6,10 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **Pinned files now keep stable modification status across line-ending styles** - patch round-trips preserve a missing final newline, and CRLF/LF differences no longer make a freshly pinned file appear modified by @ychampion
+
 ## v1.7.4 - 13-07-2026
 
 ### Changed

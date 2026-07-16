@@ -648,6 +648,35 @@ fn assert_info_lock_pin_cache_output(stdout: &str) {
 }
 
 #[test]
+fn pin_status_preserves_installed_line_endings() {
+    for (name, installed_text) in [
+        ("no-final-newline", "# Skill\n\nPinned without newline."),
+        ("crlf", "# Skill\r\n\r\nPinned with CRLF.\r\n"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        write_remote_skill_fixture(
+            dir.path(),
+            &RemoteSkillFixture {
+                name,
+                installed_text: Some(installed_text),
+                patch_text: None,
+            },
+        );
+
+        sf(dir.path()).args(["pin", name]).assert().success();
+
+        let output = sf(dir.path()).arg("status").output().unwrap();
+        let stdout = std::str::from_utf8(&output.stdout).unwrap();
+        let entry_line = output_line(stdout, name);
+        assert!(output.status.success(), "status failed:\n{stdout}");
+        assert!(
+            !entry_line.contains("[modified]"),
+            "freshly pinned entry must be clean:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn install_first_run_shows_platform_hint() {
     let dir = tempfile::tempdir().unwrap();
     write_local_manifest(dir.path());
