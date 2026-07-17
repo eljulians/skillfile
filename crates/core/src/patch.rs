@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use crate::error::SkillfileError;
@@ -147,6 +148,21 @@ fn remove_empty_parent(path: &Path) {
 // Diff generation
 // ---------------------------------------------------------------------------
 
+fn normalize_crlf(text: &str) -> Cow<'_, str> {
+    if text.contains("\r\n") {
+        Cow::Owned(text.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Compare text using the line-ending normalization applied by patches.
+/// A missing final newline remains significant.
+#[must_use]
+pub fn text_content_eq(left: &str, right: &str) -> bool {
+    normalize_crlf(left) == normalize_crlf(right)
+}
+
 /// Generate a unified diff of original → modified. Empty string if identical.
 /// All output lines are guaranteed to end with '\n'.
 /// Format: `--- a/{label}` / `+++ b/{label}`, 3 lines of context.
@@ -167,7 +183,13 @@ pub fn generate_patch(original: &str, modified: &str, label: &str) -> String {
         return String::new();
     }
 
-    let diff = similar::TextDiff::from_lines(original, modified);
+    let original = normalize_crlf(original);
+    let modified = normalize_crlf(modified);
+    if original == modified {
+        return String::new();
+    }
+
+    let diff = similar::TextDiff::from_lines(&original, &modified);
     let raw = format!(
         "{}",
         diff.unified_diff()
@@ -179,8 +201,8 @@ pub fn generate_patch(original: &str, modified: &str, label: &str) -> String {
         return String::new();
     }
 
-    // Post-process: remove "\ No newline at end of file" markers,
-    // normalize any lines not ending with \n.
+    // Keep standard missing-newline markers so application can reconstruct the
+    // exact final-newline state. Patch-file lines themselves always end in \n.
     let mut result = String::new();
     for line in raw.split_inclusive('\n') {
         normalize_diff_line(line, &mut result);
@@ -191,17 +213,8 @@ pub fn generate_patch(original: &str, modified: &str, label: &str) -> String {
 
 /// Process one line from a raw unified-diff output into `result`.
 ///
-/// "\ No newline at end of file" markers are dropped (but a trailing newline is
-/// ensured on the preceding content line). Every other line is guaranteed to end
-/// with `'\n'`.
+/// Every patch-file line is guaranteed to end with `'\n'`.
 fn normalize_diff_line(line: &str, result: &mut String) {
-    if line.starts_with("\\ ") {
-        // "\ No newline at end of file" — ensure the preceding line ends with \n
-        if !result.ends_with('\n') {
-            result.push('\n');
-        }
-        return;
-    }
     result.push_str(line);
     if !line.ends_with('\n') {
         result.push('\n');
@@ -253,6 +266,12 @@ fn parse_hunks(patch_text: &str) -> Result<Vec<Hunk>, SkillfileError> {
     Ok(hunks)
 }
 
+fn remove_line_ending(line: &mut String) {
+    if line.ends_with('\n') {
+        line.pop();
+    }
+}
+
 fn collect_hunk_body(lines: &[&str], pi: &mut usize) -> Vec<String> {
     let mut body: Vec<String> = Vec::new();
     while *pi < lines.len() {
@@ -261,7 +280,7 @@ fn collect_hunk_body(lines: &[&str], pi: &mut usize) -> Vec<String> {
             break;
         }
         if hl.starts_with("\\ ") {
-            // "\ No newline at end of file" — skip
+            body.last_mut().into_iter().for_each(remove_line_ending);
             *pi += 1;
             continue;
         }
@@ -383,8 +402,8 @@ pub fn apply_patch_pure(original: &str, patch_text: &str) -> Result<String, Skil
     }
 
     // Normalize CRLF to LF so patches apply cleanly on Windows.
-    let original = &original.replace("\r\n", "\n");
-    let patch_text = &patch_text.replace("\r\n", "\n");
+    let original = normalize_crlf(original);
+    let patch_text = normalize_crlf(patch_text);
 
     // Split into lines preserving newlines (like Python's splitlines(keepends=True))
     let lines: Vec<String> = original
@@ -394,7 +413,7 @@ pub fn apply_patch_pure(original: &str, patch_text: &str) -> Result<String, Skil
 
     let mut state = PatchState::new(&lines);
 
-    for hunk in parse_hunks(patch_text)? {
+    for hunk in parse_hunks(&patch_text)? {
         // Build context: lines with ' ' or '-' prefix, stripped of prefix and trailing \n
         let ctx_lines: Vec<&str> = hunk
             .body
@@ -822,20 +841,41 @@ mod tests {
 
     #[test]
     fn generate_patch_no_trailing_newline_roundtrip() {
-        // apply_patch_pure must reconstruct the modified text even when neither
-        // side ends with a newline.
         let orig = "line one\nline two";
         let modified = "line one\nline changed";
         let patch = generate_patch(orig, modified, "test.md");
         assert!(!patch.is_empty());
-        // The patch must normalise to a clean result — at minimum not error.
+        assert!(patch.contains("\\ No newline at end of file"));
         let result = apply_patch_pure(orig, &patch).unwrap();
-        // The applied result should match modified (possibly with a trailing newline
-        // added by the normalization, so we compare trimmed content).
-        assert_eq!(
-            result.trim_end_matches('\n'),
-            modified.trim_end_matches('\n')
-        );
+        assert_eq!(result, modified);
+    }
+
+    #[test]
+    fn generate_patch_normalizes_crlf() {
+        let orig = "line one\r\nline two\r\n";
+        let modified = "line one\r\nline changed\r\n";
+        let patch = generate_patch(orig, modified, "test.md");
+        assert!(!patch.is_empty());
+        assert!(!patch.contains('\r'));
+        let result = apply_patch_pure(orig, &patch).unwrap();
+        assert_eq!(result, "line one\nline changed\n");
+    }
+
+    #[test]
+    fn generate_patch_ignores_crlf_only_changes() {
+        assert!(generate_patch("line one\r\n", "line one\n", "test.md").is_empty());
+    }
+
+    #[test]
+    fn text_content_eq_normalizes_only_crlf() {
+        assert!(text_content_eq(
+            "line one\r\nline two\r\n",
+            "line one\nline two\n"
+        ));
+        assert!(!text_content_eq(
+            "line one\nline two",
+            "line one\nline two\n"
+        ));
     }
 
     // --- apply_patch_pure: "\ No newline at end of file" marker in patch ---
@@ -855,7 +895,7 @@ mod tests {
             "\\ No newline at end of file\n",
         );
         let result = apply_patch_pure(orig, patch).unwrap();
-        assert_eq!(result, "line1\nchanged\n");
+        assert_eq!(result, "line1\nchanged");
     }
 
     // --- walkdir: edge cases ---

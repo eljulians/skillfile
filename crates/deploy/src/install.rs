@@ -13,8 +13,8 @@ use skillfile_core::models::{
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_core::patch::{
     apply_patch_pure, dir_patch_path, generate_patch, has_patch, patch_path, patches_root,
-    read_patch, relative_file_key, remove_dir_patch, remove_patch, walkdir, write_dir_patch,
-    write_patch,
+    read_patch, relative_file_key, remove_dir_patch, remove_patch, text_content_eq, walkdir,
+    write_dir_patch, write_patch,
 };
 use skillfile_core::progress;
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry, is_dir_entry};
@@ -148,9 +148,9 @@ fn apply_dir_patches(
 /// the patch captures.
 fn patch_already_covers(patch_text: &str, cache_text: &str, installed_text: &str) -> bool {
     match apply_patch_pure(cache_text, patch_text) {
-        Ok(expected) if installed_text == expected => true, // no new edits
-        Err(_) => true,                                     // cache inconsistent — preserve
-        Ok(_) => false,                                     // additional edits — fall through
+        Ok(expected) if text_content_eq(installed_text, &expected) => true, // no new edits
+        Err(_) => true, // cache inconsistent — preserve
+        Ok(_) => false, // additional edits — fall through
     }
 }
 
@@ -216,7 +216,7 @@ fn representative_single_file_content(
 ) -> Result<Option<String>, SkillfileError> {
     let modified: Vec<&SingleInstalledVariant> = variants
         .iter()
-        .filter(|variant| variant.content != cache_text)
+        .filter(|variant| !text_content_eq(&variant.content, cache_text))
         .collect();
     if modified.is_empty() {
         return Ok(None);
@@ -224,7 +224,7 @@ fn representative_single_file_content(
     let representative = &modified[0].content;
     if modified
         .iter()
-        .any(|variant| variant.content != *representative)
+        .any(|variant| !text_content_eq(&variant.content, representative))
     {
         let labels: Vec<String> = modified
             .iter()
@@ -380,11 +380,20 @@ fn modified_dir_content(
         };
         let cache_text = std::fs::read_to_string(cache_file)?;
         let installed_text = std::fs::read_to_string(installed_path)?;
-        if installed_text != cache_text {
+        if !text_content_eq(&installed_text, &cache_text) {
             modified.insert(filename.clone(), installed_text);
         }
     }
     Ok(modified)
+}
+
+fn dir_modified_content_eq(left: &DirModifiedMap, right: &DirModifiedMap) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(filename, content)| {
+            right
+                .get(filename)
+                .is_some_and(|other| text_content_eq(content, other))
+        })
 }
 
 fn representative_dir_changes(
@@ -405,7 +414,7 @@ fn representative_dir_changes(
     let representative = &modified[0].1;
     if modified
         .iter()
-        .any(|(_, changed)| changed != representative)
+        .any(|(_, changed)| !dir_modified_content_eq(changed, representative))
     {
         let labels: Vec<String> = modified.iter().map(|(label, _)| label.clone()).collect();
         return Err(divergent_auto_pin_error(entry_name, &labels));
@@ -2506,6 +2515,44 @@ mod tests {
         auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
 
         assert!(!patch_fixture_path(dir.path(), &entry).exists());
+    }
+
+    #[test]
+    fn auto_pin_comparisons_treat_crlf_as_equivalent() {
+        let patch = "--- a/test.md\n+++ b/test.md\n@@ -1 +1 @@\n-Original\n+Modified\n";
+        assert!(patch_already_covers(patch, "Original\n", "Modified\r\n"));
+
+        let variants = vec![
+            SingleInstalledVariant {
+                label: "claude-code (local)".into(),
+                content: "Modified\n".into(),
+            },
+            SingleInstalledVariant {
+                label: "cursor (local)".into(),
+                content: "Modified\r\n".into(),
+            },
+        ];
+        assert_eq!(
+            representative_single_file_content("test", "Original\n", &variants).unwrap(),
+            Some("Modified\n".into())
+        );
+    }
+
+    #[test]
+    fn auto_pin_preserves_malformed_patch() {
+        assert!(patch_already_covers(
+            "@@ invalid\n",
+            "Original\n",
+            "Modified\n"
+        ));
+    }
+
+    #[test]
+    fn auto_pin_dir_comparison_treats_crlf_as_equivalent() {
+        let left = BTreeMap::from([("SKILL.md".into(), "Modified\n".into())]);
+        let right = BTreeMap::from([("SKILL.md".into(), "Modified\r\n".into())]);
+
+        assert!(dir_modified_content_eq(&left, &right));
     }
 
     #[test]

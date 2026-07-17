@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use skillfile_core::error::SkillfileError;
+use skillfile_core::patch::text_content_eq;
 
 use crate::commands::installed_variants::{DirVariant, SingleFileVariant};
 
@@ -28,7 +29,7 @@ pub(crate) fn modified_single_file_variants<'a>(
 ) -> Vec<&'a SingleFileVariant> {
     variants
         .iter()
-        .filter(|variant| variant.content != cache_text)
+        .filter(|variant| !text_content_eq(&variant.content, cache_text))
         .collect()
 }
 
@@ -60,11 +61,20 @@ pub(crate) fn modified_dir_content(
         }
         let cache_text = std::fs::read_to_string(cache_file)?;
         let installed_text = std::fs::read_to_string(installed)?;
-        if installed_text != cache_text {
+        if !text_content_eq(&installed_text, &cache_text) {
             modified.insert(filename.clone(), installed_text);
         }
     }
     Ok(modified)
+}
+
+pub(crate) fn dir_content_eq(left: &DirContentMap, right: &DirContentMap) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(filename, content)| {
+            right
+                .get(filename)
+                .is_some_and(|other| text_content_eq(content, other))
+        })
 }
 
 pub(crate) fn modified_dir_variants(

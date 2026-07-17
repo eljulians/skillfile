@@ -425,9 +425,64 @@ fn format_golden_path() {
     assert!(entry_lines[1].contains("zebra"), "zebra should be second");
 }
 
+#[test]
+fn format_keeps_spaced_local_path_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("my skills")).unwrap();
+    std::fs::write(
+        dir.path().join("my skills/git commit.md"),
+        "# Commit skill\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "local  skill  commit  \"my skills/git commit.md\"\n",
+    )
+    .unwrap();
+
+    sf(dir.path()).arg("validate").assert().success();
+    sf(dir.path()).arg("format").assert().success();
+    sf(dir.path()).arg("validate").assert().success();
+
+    let text = std::fs::read_to_string(dir.path().join("Skillfile")).unwrap();
+    assert!(text.contains("local  skill  commit  \"my skills/git commit.md\""));
+}
+
 // ---------------------------------------------------------------------------
 // add, remove
 // ---------------------------------------------------------------------------
+
+#[test]
+fn add_keeps_spaced_local_path_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("my skills")).unwrap();
+    std::fs::write(
+        dir.path().join("my skills/git commit.md"),
+        "# Commit skill\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("Skillfile"), "# empty\n").unwrap();
+
+    sf(dir.path())
+        .env(
+            "SKILLFILE_CONFIG_PATH",
+            dir.path().join("missing-config.toml"),
+        )
+        .args([
+            "add",
+            "local",
+            "skill",
+            "my skills/git commit.md",
+            "--name",
+            "commit",
+        ])
+        .assert()
+        .success();
+    sf(dir.path()).arg("validate").assert().success();
+
+    let text = std::fs::read_to_string(dir.path().join("Skillfile")).unwrap();
+    assert!(text.contains("local  skill  commit  \"my skills/git commit.md\""));
+}
 
 #[test]
 fn add_then_remove() {
@@ -645,6 +700,35 @@ fn assert_info_lock_pin_cache_output(stdout: &str) {
         modified_line.trim_end().ends_with("no"),
         "pinned fixture should report modified=no:\n{stdout}"
     );
+}
+
+#[test]
+fn pin_status_preserves_installed_line_endings() {
+    for (name, installed_text) in [
+        ("no-final-newline", "# Skill\n\nPinned without newline."),
+        ("crlf", "# Skill\r\n\r\nPinned with CRLF.\r\n"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        write_remote_skill_fixture(
+            dir.path(),
+            &RemoteSkillFixture {
+                name,
+                installed_text: Some(installed_text),
+                patch_text: None,
+            },
+        );
+
+        sf(dir.path()).args(["pin", name]).assert().success();
+
+        let output = sf(dir.path()).arg("status").output().unwrap();
+        let stdout = std::str::from_utf8(&output.stdout).unwrap();
+        let entry_line = output_line(stdout, name);
+        assert!(output.status.success(), "status failed:\n{stdout}");
+        assert!(
+            !entry_line.contains("[modified]"),
+            "freshly pinned entry must be clean:\n{stdout}"
+        );
+    }
 }
 
 #[test]

@@ -70,11 +70,29 @@ fn split_line(line: &str) -> Vec<String> {
     parts
 }
 
-fn strip_inline_comment(parts: Vec<String>) -> Vec<String> {
-    if let Some(pos) = parts.iter().position(|p| p.starts_with('#')) {
-        parts[..pos].to_vec()
+fn strip_inline_comment(line: &str) -> &str {
+    let mut in_quotes = false;
+    let mut previous_was_whitespace = false;
+
+    for (index, ch) in line.char_indices() {
+        if ch == '"' {
+            in_quotes = !in_quotes;
+        } else if ch == '#' && !in_quotes && previous_was_whitespace {
+            return line[..index].trim_end();
+        }
+        previous_was_whitespace = ch.is_whitespace();
+    }
+
+    line
+}
+
+/// Quote a manifest field when the parser would otherwise split or comment it out.
+#[must_use]
+pub fn quote_field(field: &str) -> String {
+    if field.chars().any(char::is_whitespace) || field.contains('#') {
+        format!("\"{field}\"")
     } else {
-        parts
+        field.to_string()
     }
 }
 
@@ -420,7 +438,7 @@ pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileErro
             continue;
         }
 
-        let parts = strip_inline_comment(split_line(line));
+        let parts = split_line(strip_inline_comment(line));
         if parts.len() < 2 {
             acc.warnings
                 .push(format!("warning: line {lineno}: too few fields, skipping"));
@@ -451,8 +469,7 @@ pub fn parse_manifest(manifest_path: &Path) -> Result<ParseResult, SkillfileErro
 
 #[must_use]
 pub fn parse_manifest_line(line: &str) -> Option<Entry> {
-    let parts = split_line(line);
-    let parts = strip_inline_comment(parts);
+    let parts = split_line(strip_inline_comment(line));
     if parts.len() < 3 {
         return None;
     }
@@ -891,6 +908,17 @@ mod tests {
             r.manifest.entries[0].path_in_repo(),
             "path with spaces/skill.md"
         );
+    }
+
+    #[test]
+    fn quoted_hash_path_is_not_an_inline_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(MANIFEST_NAME);
+        fs::write(&p, "local  skill  hash-skill  \"#skills/hash.md\"\n").unwrap();
+        let r = parse_manifest(&p).unwrap();
+        assert_eq!(r.manifest.entries.len(), 1);
+        assert_eq!(r.manifest.entries[0].name, "hash-skill");
+        assert_eq!(r.manifest.entries[0].local_path(), "#skills/hash.md");
     }
 
     #[test]
