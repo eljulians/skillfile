@@ -9,6 +9,7 @@ All notable changes to skillfile are documented here.
 ### Fixed
 
 - **Formatting keeps quoted manifest fields valid** - `skillfile add` and `skillfile format` now preserve paths and other fields containing whitespace or `#` instead of rewriting them into a different entry by @ychampion
+- **Pinned files now keep stable modification status across line-ending styles** - patch round-trips preserve a missing final newline, and CRLF/LF differences no longer make a freshly pinned file appear modified by @ychampion
 
 ## v1.7.4 - 13-07-2026
 
