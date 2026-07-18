@@ -474,17 +474,36 @@ fn print_init_outro(entry_count: usize) -> Result<(), SkillfileError> {
     Ok(())
 }
 
+fn init_guard_error(
+    is_ci: bool,
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+) -> Option<&'static str> {
+    if is_ci {
+        Some(
+            "skillfile init is unavailable when CI=true.\n\
+             Use `skillfile add` for scripted/CI usage.",
+        )
+    } else if !stdin_is_terminal || !stdout_is_terminal {
+        Some(
+            "skillfile init requires an interactive terminal.\n\
+             Use `skillfile add` for scripted/CI usage.",
+        )
+    } else {
+        None
+    }
+}
+
 pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     // TTY guard: cliclack requires an interactive terminal. Check stdin, stdout,
     // and the CI env var because some CI runners (macOS GitHub Actions) report
     // piped fds as TTY.
-    let is_ci = std::env::var("CI").is_ok();
-    if is_ci || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(SkillfileError::Manifest(
-            "skillfile init requires an interactive terminal.\n\
-             Use `skillfile add` for scripted/CI usage."
-                .into(),
-        ));
+    if let Some(message) = init_guard_error(
+        crate::env_flag("CI"),
+        io::stdin().is_terminal(),
+        io::stdout().is_terminal(),
+    ) {
+        return Err(SkillfileError::Manifest(message.into()));
     }
 
     cliclack::intro(console::style(" skillfile init ").on_cyan().black())?;
@@ -546,6 +565,32 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_guard_distinguishes_ci_from_missing_terminal() {
+        assert_eq!(
+            init_guard_error(true, true, true),
+            Some(
+                "skillfile init is unavailable when CI=true.\n\
+                 Use `skillfile add` for scripted/CI usage."
+            )
+        );
+        assert_eq!(
+            init_guard_error(false, false, true),
+            Some(
+                "skillfile init requires an interactive terminal.\n\
+                 Use `skillfile add` for scripted/CI usage."
+            )
+        );
+        assert_eq!(
+            init_guard_error(false, true, false),
+            Some(
+                "skillfile init requires an interactive terminal.\n\
+                 Use `skillfile add` for scripted/CI usage."
+            )
+        );
+        assert_eq!(init_guard_error(false, true, true), None);
+    }
 
     // -- build_manifest_with_targets --
 

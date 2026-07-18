@@ -144,7 +144,22 @@ fn init_fails_without_tty() {
         .timeout(std::time::Duration::from_secs(5))
         .assert()
         .failure()
-        .stderr(predicate::str::contains("interactive terminal"));
+        .stderr(predicate::str::contains(
+            "skillfile init is unavailable when CI=true",
+        ));
+}
+
+#[test]
+fn ci_false_does_not_trigger_ci_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    sf(dir.path())
+        .arg("init")
+        .env("CI", "false")
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("interactive terminal"))
+        .stderr(predicate::str::contains("CI=true").not());
 }
 
 // ---------------------------------------------------------------------------

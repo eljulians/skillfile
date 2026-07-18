@@ -63,10 +63,10 @@ pub fn cache_path() -> Option<PathBuf> {
 }
 
 pub fn should_check() -> bool {
-    if std::env::var("SKILLFILE_NO_UPDATE_NOTIFIER").is_ok_and(|v| !v.is_empty()) {
+    if skillfile::env_flag("SKILLFILE_NO_UPDATE_NOTIFIER") {
         return false;
     }
-    if std::env::var("CI").is_ok_and(|v| v == "true" || v == "1") {
+    if skillfile::env_flag("CI") {
         return false;
     }
     std::io::stderr().is_terminal()
@@ -235,6 +235,7 @@ fn parse_timestamp(s: &str) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     // -----------------------------------------------------------------------
     // is_newer — pure semver comparison
@@ -292,16 +293,12 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[serial]
     fn should_check_blocked_by_no_update_notifier() {
-        // Note: env var manipulation is not thread-safe, but these tests
-        // are simple enough that interference is unlikely.
         let key = "SKILLFILE_NO_UPDATE_NOTIFIER";
         let original = std::env::var(key).ok();
 
         std::env::set_var(key, "1");
-        assert!(!should_check());
-
-        std::env::set_var(key, "yes");
         assert!(!should_check());
 
         // Restore
@@ -312,6 +309,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn should_check_blocked_by_ci_true() {
         let key = "CI";
         let original = std::env::var(key).ok();
@@ -329,6 +327,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn should_check_not_blocked_by_empty_notifier_var() {
         let key = "SKILLFILE_NO_UPDATE_NOTIFIER";
         let original = std::env::var(key).ok();
@@ -343,6 +342,28 @@ mod tests {
         match original {
             Some(v) => std::env::set_var(key, v),
             None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn should_check_not_blocked_by_false_boolean_flags() {
+        let notifier_key = "SKILLFILE_NO_UPDATE_NOTIFIER";
+        let ci_key = "CI";
+        let original_notifier = std::env::var(notifier_key).ok();
+        let original_ci = std::env::var(ci_key).ok();
+
+        std::env::set_var(notifier_key, "0");
+        std::env::set_var(ci_key, "false");
+        assert_eq!(should_check(), std::io::stderr().is_terminal());
+
+        match original_notifier {
+            Some(v) => std::env::set_var(notifier_key, v),
+            None => std::env::remove_var(notifier_key),
+        }
+        match original_ci {
+            Some(v) => std::env::set_var(ci_key, v),
+            None => std::env::remove_var(ci_key),
         }
     }
 

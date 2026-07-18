@@ -829,7 +829,7 @@ fn run() -> Result<(), SkillfileError> {
             e.exit();
         }
     };
-    let quiet = cli.quiet || std::env::var("SKILLFILE_QUIET").is_ok_and(|v| !v.is_empty());
+    let quiet = cli.quiet || skillfile::env_flag("SKILLFILE_QUIET");
     skillfile_core::output::set_quiet(quiet);
     let repo_root = PathBuf::from(".");
     run_content_commands(&repo_root, cli.command)
