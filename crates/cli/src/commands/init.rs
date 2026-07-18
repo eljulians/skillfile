@@ -474,17 +474,13 @@ fn print_init_outro(entry_count: usize) -> Result<(), SkillfileError> {
     Ok(())
 }
 
-fn init_guard_error(
-    is_ci: bool,
-    stdin_is_terminal: bool,
-    stdout_is_terminal: bool,
-) -> Option<&'static str> {
+fn init_guard_error(is_ci: bool, has_interactive_terminal: bool) -> Option<&'static str> {
     if is_ci {
         Some(
             "skillfile init is unavailable when CI=true.\n\
              Use `skillfile add` for scripted/CI usage.",
         )
-    } else if !stdin_is_terminal || !stdout_is_terminal {
+    } else if !has_interactive_terminal {
         Some(
             "skillfile init requires an interactive terminal.\n\
              Use `skillfile add` for scripted/CI usage.",
@@ -500,8 +496,7 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     // piped fds as TTY.
     if let Some(message) = init_guard_error(
         crate::env_flag("CI"),
-        io::stdin().is_terminal(),
-        io::stdout().is_terminal(),
+        io::stdin().is_terminal() && io::stdout().is_terminal(),
     ) {
         return Err(SkillfileError::Manifest(message.into()));
     }
@@ -569,27 +564,20 @@ mod tests {
     #[test]
     fn init_guard_distinguishes_ci_from_missing_terminal() {
         assert_eq!(
-            init_guard_error(true, true, true),
+            init_guard_error(true, true),
             Some(
                 "skillfile init is unavailable when CI=true.\n\
                  Use `skillfile add` for scripted/CI usage."
             )
         );
         assert_eq!(
-            init_guard_error(false, false, true),
+            init_guard_error(false, false),
             Some(
                 "skillfile init requires an interactive terminal.\n\
                  Use `skillfile add` for scripted/CI usage."
             )
         );
-        assert_eq!(
-            init_guard_error(false, true, false),
-            Some(
-                "skillfile init requires an interactive terminal.\n\
-                 Use `skillfile add` for scripted/CI usage."
-            )
-        );
-        assert_eq!(init_guard_error(false, true, true), None);
+        assert_eq!(init_guard_error(false, true), None);
     }
 
     // -- build_manifest_with_targets --
