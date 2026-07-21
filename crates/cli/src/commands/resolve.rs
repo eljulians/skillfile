@@ -151,16 +151,16 @@ fn resolve_conflicts_or_clean(
     result: MergeResult,
     entry_name: &str,
     filename: &str,
-) -> Result<String, SkillfileError> {
+) -> Result<Option<String>, SkillfileError> {
     if !result.has_conflicts {
         progress!("  clean merge — no conflicts in '{entry_name}'");
-        return Ok(result.merged);
+        return Ok(Some(result.merged));
     }
     eprintln!(
         "\nConflicts detected in '{entry_name}'. Opening in editor to resolve...\n  Save and close when done."
     );
     let resolved = open_in_editor(&result.merged, filename)?;
-    reject_conflict_markers(resolved)
+    Ok(Some(reject_conflict_markers(resolved)?))
 }
 
 fn resolve_single_file(
@@ -197,7 +197,9 @@ fn resolve_single_file(
         yours: &yours,
     };
     let result = three_way_merge(&input, &filename)?;
-    let merged = resolve_conflicts_or_clean(result, &entry.name, &filename)?;
+    let Some(merged) = resolve_conflicts_or_clean(result, &entry.name, &filename)? else {
+        return Ok(());
+    };
 
     std::fs::write(&installed, &merged)?;
 
@@ -232,7 +234,7 @@ struct UpstreamVersions<'a> {
 fn merge_all_files(
     upstream: &UpstreamVersions<'_>,
     ctx: &DirMergeCtx<'_>,
-) -> Result<(FileMap, bool), SkillfileError> {
+) -> Result<Option<(FileMap, bool)>, SkillfileError> {
     let mut merged_results = FileMap::new();
     let mut any_conflict = false;
 
@@ -262,12 +264,14 @@ fn merge_all_files(
             any_conflict = true;
             eprintln!("\n  Conflicts in '{filename}'. Opening in editor...");
         }
-        let merged = resolve_conflicts_or_clean(result, filename, filename)?;
+        let Some(merged) = resolve_conflicts_or_clean(result, filename, filename)? else {
+            return Ok(None);
+        };
 
         merged_results.insert(filename.clone(), merged);
     }
 
-    Ok((merged_results, any_conflict))
+    Ok(Some((merged_results, any_conflict)))
 }
 
 fn write_merged_results(
@@ -357,7 +361,9 @@ fn resolve_dir_entry(
         base: &base_files,
         theirs: &theirs_files,
     };
-    let (merged_results, any_conflict) = merge_all_files(&upstream, &dir_ctx)?;
+    let Some((merged_results, any_conflict)) = merge_all_files(&upstream, &dir_ctx)? else {
+        return Ok(());
+    };
 
     if !any_conflict {
         progress!("  all files merged cleanly in '{}'", entry.name);
