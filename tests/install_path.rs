@@ -64,12 +64,16 @@ fn format_validate_and_install(root: &std::path::Path, name: &str) -> std::path:
 
 fn assert_install_is_observable(root: &std::path::Path, name: &str) {
     let info = command_stdout(root, &["info", name]);
+    let installed = info
+        .lines()
+        .find_map(|line| line.split_once("Installed:").map(|(_, path)| path.trim()))
+        .expect("info output must contain an Installed path");
     let installed_suffix = std::path::Path::new("custom targets")
         .join("skills")
         .join(name)
         .join("SKILL.md");
     assert!(
-        info.contains(installed_suffix.to_string_lossy().as_ref()),
+        std::path::Path::new(installed).ends_with(installed_suffix),
         "unexpected info output:\n{info}"
     );
 
