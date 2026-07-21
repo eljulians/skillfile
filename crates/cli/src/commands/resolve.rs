@@ -118,6 +118,15 @@ fn open_in_editor(content: &str, filename: &str) -> Result<String, SkillfileErro
     Ok(result)
 }
 
+fn reject_conflict_markers(resolved: String) -> Result<String, SkillfileError> {
+    if resolved.contains("<<<<<<<") {
+        return Err(SkillfileError::Manifest(
+            "conflict markers still present — resolve all conflicts and try again".into(),
+        ));
+    }
+    Ok(resolved)
+}
+
 fn reconstruct_yours_single(
     ctx: &ResolveEntryCtx<'_>,
     base: &str,
@@ -138,25 +147,20 @@ fn reconstruct_yours_single(
 }
 
 /// Apply conflict resolution: open editor when needed, return resolved text.
-/// Returns `Ok(None)` when conflict markers remain after editing.
 fn resolve_conflicts_or_clean(
     result: MergeResult,
     entry_name: &str,
     filename: &str,
-) -> Result<Option<String>, SkillfileError> {
+) -> Result<String, SkillfileError> {
     if !result.has_conflicts {
         progress!("  clean merge — no conflicts in '{entry_name}'");
-        return Ok(Some(result.merged));
+        return Ok(result.merged);
     }
     eprintln!(
         "\nConflicts detected in '{entry_name}'. Opening in editor to resolve...\n  Save and close when done."
     );
     let resolved = open_in_editor(&result.merged, filename)?;
-    if resolved.contains("<<<<<<<") {
-        eprintln!("error: conflict markers still present — resolve all conflicts and try again");
-        return Ok(None);
-    }
-    Ok(Some(resolved))
+    reject_conflict_markers(resolved)
 }
 
 fn resolve_single_file(
@@ -193,9 +197,7 @@ fn resolve_single_file(
         yours: &yours,
     };
     let result = three_way_merge(&input, &filename)?;
-    let Some(merged) = resolve_conflicts_or_clean(result, &entry.name, &filename)? else {
-        return Ok(());
-    };
+    let merged = resolve_conflicts_or_clean(result, &entry.name, &filename)?;
 
     std::fs::write(&installed, &merged)?;
 
@@ -226,12 +228,11 @@ struct UpstreamVersions<'a> {
 }
 
 /// Merge each file using three-way merge. Returns the merged results and whether
-/// any file had conflicts requiring manual resolution. Returns `Ok(None)` when
-/// conflict markers remain after editor interaction (signals early exit to caller).
+/// any file had conflicts requiring manual resolution.
 fn merge_all_files(
     upstream: &UpstreamVersions<'_>,
     ctx: &DirMergeCtx<'_>,
-) -> Result<Option<(FileMap, bool)>, SkillfileError> {
+) -> Result<(FileMap, bool), SkillfileError> {
     let mut merged_results = FileMap::new();
     let mut any_conflict = false;
 
@@ -261,14 +262,12 @@ fn merge_all_files(
             any_conflict = true;
             eprintln!("\n  Conflicts in '{filename}'. Opening in editor...");
         }
-        let Some(merged) = resolve_conflicts_or_clean(result, filename, filename)? else {
-            return Ok(None);
-        };
+        let merged = resolve_conflicts_or_clean(result, filename, filename)?;
 
         merged_results.insert(filename.clone(), merged);
     }
 
-    Ok(Some((merged_results, any_conflict)))
+    Ok((merged_results, any_conflict))
 }
 
 fn write_merged_results(
@@ -358,9 +357,7 @@ fn resolve_dir_entry(
         base: &base_files,
         theirs: &theirs_files,
     };
-    let Some((merged_results, any_conflict)) = merge_all_files(&upstream, &dir_ctx)? else {
-        return Ok(());
-    };
+    let (merged_results, any_conflict) = merge_all_files(&upstream, &dir_ctx)?;
 
     if !any_conflict {
         progress!("  all files merged cleanly in '{}'", entry.name);
@@ -498,6 +495,21 @@ mod tests {
         assert!(
             result.merged.contains("<<<<<<<"),
             "expected conflict markers"
+        );
+    }
+
+    #[test]
+    fn unresolved_markers_are_an_error() {
+        let error =
+            reject_conflict_markers("<<<<<<< ours\n=======\n>>>>>>> theirs\n".into()).unwrap_err();
+        assert!(error.to_string().contains("conflict markers still present"));
+    }
+
+    #[test]
+    fn resolved_text_is_returned() {
+        assert_eq!(
+            reject_conflict_markers("resolved\n".into()).unwrap(),
+            "resolved\n"
         );
     }
 

@@ -8,6 +8,7 @@ All notable changes to skillfile are documented here.
 
 ### Fixed
 
+- **Unresolved conflicts now fail `skillfile resolve`** - leaving conflict markers in the editor returns a nonzero exit instead of allowing scripts to continue as though resolution succeeded by @ychampion
 - **Boolean environment flags now require explicit true values** - `CI=false` no longer blocks `skillfile init`, while `SKILLFILE_QUIET=0` and `SKILLFILE_NO_UPDATE_NOTIFIER=0` no longer enable their respective flags by @floze-the-genius
 
 ## v1.8.0 - 17-07-2026
