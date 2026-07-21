@@ -8,6 +8,7 @@ All notable changes to skillfile are documented here.
 
 ### Fixed
 
+- **Failed update checks are cached briefly** - slow or unavailable GitHub release checks no longer add the full wait to every command, while successful checks remain cached for 24 hours by @ychampion
 - **Boolean environment flags now require explicit true values** - `CI=false` no longer blocks `skillfile init`, while `SKILLFILE_QUIET=0` and `SKILLFILE_NO_UPDATE_NOTIFIER=0` no longer enable their respective flags by @floze-the-genius
 
 ## v1.8.0 - 17-07-2026
