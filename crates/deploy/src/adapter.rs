@@ -148,6 +148,15 @@ pub(crate) fn ensure_no_symlink_components(path: &Path) -> std::io::Result<()> {
         if component_path.as_os_str().is_empty() {
             continue;
         }
+        // Top-level absolute components are controlled by the OS or an administrator. macOS
+        // exposes `/var` as a symlink, and Windows may use equivalent root-level aliases.
+        if component_path.is_absolute()
+            && component_path
+                .parent()
+                .is_some_and(|parent| parent.parent().is_none())
+        {
+            continue;
+        }
         match std::fs::symlink_metadata(component_path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(symlink_error(component_path));
@@ -932,6 +941,23 @@ mod tests {
     #[test]
     fn registry_get_unknown_returns_none() {
         assert!(adapters().get("unknown-tool").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_guard_allows_root_managed_top_level_symlink() {
+        let root_link = ["/var", "/bin", "/sbin", "/lib"]
+            .into_iter()
+            .map(Path::new)
+            .find(|path| {
+                std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            });
+        let Some(root_link) = root_link else {
+            return;
+        };
+
+        assert!(ensure_no_symlink_components(&root_link.join("skillfile-path-check")).is_ok());
     }
 
     // -- supports() --

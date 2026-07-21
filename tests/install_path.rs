@@ -64,7 +64,14 @@ fn format_validate_and_install(root: &std::path::Path, name: &str) -> std::path:
 
 fn assert_install_is_observable(root: &std::path::Path, name: &str) {
     let info = command_stdout(root, &["info", name]);
-    assert!(info.contains(&format!("custom targets/skills/{name}/SKILL.md")));
+    let installed_suffix = std::path::Path::new("custom targets")
+        .join("skills")
+        .join(name)
+        .join("SKILL.md");
+    assert!(
+        info.contains(installed_suffix.to_string_lossy().as_ref()),
+        "unexpected info output:\n{info}"
+    );
 
     let status = command_stdout(root, &["status"]);
     assert!(status.contains(name));
