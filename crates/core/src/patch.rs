@@ -457,14 +457,26 @@ pub fn walkdir(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn walkdir_inner(dir: &Path, result: &mut Vec<PathBuf>) {
+    let Ok(metadata) = std::fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             walkdir_inner(&path, result);
-        } else {
+        } else if file_type.is_file() {
             result.push(path);
         }
     }
@@ -937,6 +949,24 @@ mod tests {
             .collect();
         assert!(names.contains(&"top.txt".to_string()));
         assert!(names.contains(&"nested.txt".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walkdir_skips_symlinked_files_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(source.join("real.md"), "real").unwrap();
+        std::fs::write(outside.join("secret.md"), "secret").unwrap();
+        symlink(outside.join("secret.md"), source.join("linked-file.md")).unwrap();
+        symlink(&outside, source.join("linked-dir")).unwrap();
+
+        assert_eq!(walkdir(&source), vec![source.join("real.md")]);
     }
 
     #[test]

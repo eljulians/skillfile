@@ -7,7 +7,7 @@ use skillfile_core::patch::walkdir;
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry, meta_sha};
 use skillfile_sources::sync::vendor_dir_for;
 
-use crate::adapter::{adapters, AdapterScope};
+use crate::adapter::{adapters, ensure_no_symlink_components, AdapterScope};
 use crate::target::ResolvedInstallTarget;
 
 pub fn resolve_target_dir(
@@ -28,7 +28,15 @@ pub fn installed_path(
     repo_root: &Path,
 ) -> Result<PathBuf, SkillfileError> {
     let target = first_supporting_target(entry, manifest)?;
-    Ok(target.installed_path(entry, repo_root))
+    let path = target.installed_path(entry, repo_root);
+    ensure_no_symlink_components(&path)
+        .map_err(|error| SkillfileError::Install(error.to_string()))?;
+    Ok(path)
+}
+
+#[must_use]
+pub fn is_safe_installed_path(path: &Path) -> bool {
+    ensure_no_symlink_components(path).is_ok()
 }
 
 /// Installed paths for a single-file entry across all install targets.
@@ -43,7 +51,10 @@ pub fn installed_paths(
         if !target.supports(entry.entity_type) {
             continue;
         }
-        paths.push(target.installed_path(entry, repo_root));
+        let path = target.installed_path(entry, repo_root);
+        if is_safe_installed_path(&path) {
+            paths.push(path);
+        }
     }
     Ok(paths)
 }

@@ -379,9 +379,9 @@ fn parse_install_line(parts: &[String], lineno: usize, acc: &mut ParseAccumulato
 }
 
 fn parse_install_path_line(parts: &[String], lineno: usize, acc: &mut ParseAccumulator) {
-    if parts.len() < 4 {
+    if parts.len() != 4 {
         acc.warnings.push(format!(
-            "warning: line {lineno}: install-path line needs: tool-name entity-type path"
+            "warning: line {lineno}: install-path line needs exactly: tool-name entity-type path"
         ));
         return;
     }

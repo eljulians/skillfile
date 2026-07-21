@@ -6,6 +6,10 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Explicit install path targets** - deploy skills and agents to custom local or global directories using `install-path`, with support for formatting, validation, status, diff, pin, and unpin by @mto-s
+
 ### Fixed
 
 - **Boolean environment flags now require explicit true values** - `CI=false` no longer blocks `skillfile init`, while `SKILLFILE_QUIET=0` and `SKILLFILE_NO_UPDATE_NOTIFIER=0` no longer enable their respective flags by @floze-the-genius

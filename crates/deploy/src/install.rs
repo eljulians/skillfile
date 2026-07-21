@@ -20,7 +20,7 @@ use skillfile_core::progress;
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry, is_dir_entry};
 use skillfile_sources::sync::{cmd_sync, vendor_dir_for};
 
-use crate::adapter::{DeployRequest, DirInstallMode};
+use crate::adapter::{ensure_no_symlink_components, DeployRequest, DirInstallMode};
 use crate::paths::source_path;
 use crate::target::ResolvedInstallTarget;
 
@@ -189,7 +189,7 @@ fn installed_single_file_variants(
             continue;
         }
         let path = resolved.installed_path(entry, repo_root);
-        if !path.exists() {
+        if ensure_no_symlink_components(&path).is_err() || !path.exists() {
             continue;
         }
         variants.push(SingleInstalledVariant {
@@ -804,11 +804,22 @@ fn install_effect_paths(ctx: &InstallValidationCtx<'_>) -> Vec<PathBuf> {
         vec![target_dir.join(&ctx.entry.name)]
     };
 
-    if ctx.resolved_target.dir_mode(ctx.entry.entity_type) != Some(DirInstallMode::Flat) {
+    if matches!(ctx.target, InstallTarget::Platform { .. })
+        && ctx.resolved_target.dir_mode(ctx.entry.entity_type) != Some(DirInstallMode::Flat)
+    {
         paths.push(target_dir.join(format!("{}.md", ctx.entry.name)));
     }
     paths.push(patch_effect_path(ctx));
     paths
+}
+
+fn ensure_safe_install_effect_paths(ctx: &InstallValidationCtx<'_>) -> Result<(), SkillfileError> {
+    for path in install_effect_paths(ctx) {
+        if let Err(error) = ensure_no_symlink_components(&path) {
+            return Err(install_failure(ctx.entry, ctx.target, &error.to_string()));
+        }
+    }
+    Ok(())
 }
 
 pub fn capture_install_snapshot(
@@ -834,9 +845,12 @@ fn install_effect_paths_for_target(
     if !resolved_target.supports(entry.entity_type) {
         return Vec::new();
     }
-    let Some(source) = source_path(entry, repo_root).filter(|path| path.exists()) else {
+    let Some(source) = source_path(entry, repo_root) else {
         return Vec::new();
     };
+    if ensure_no_symlink_components(&source).is_err() || !source.exists() {
+        return Vec::new();
+    }
     let default_opts = InstallOptions::default();
     let validation_ctx = InstallValidationCtx {
         entry,
@@ -1010,13 +1024,16 @@ pub fn install_entry_with_outcome(
         ));
     }
 
-    let source = match source_path(entry, ctx.repo_root) {
-        Some(p) if p.exists() => p,
-        _ => {
-            eprintln!("  warning: source missing for {}, skipping", entry.name);
-            return Ok(InstallOutcome::Skipped(InstallSkipReason::MissingSource));
-        }
+    let Some(source) = source_path(entry, ctx.repo_root) else {
+        eprintln!("  warning: source missing for {}, skipping", entry.name);
+        return Ok(InstallOutcome::Skipped(InstallSkipReason::MissingSource));
     };
+    ensure_no_symlink_components(&source)
+        .map_err(|error| install_failure(entry, target, &error.to_string()))?;
+    if !source.exists() {
+        eprintln!("  warning: source missing for {}, skipping", entry.name);
+        return Ok(InstallOutcome::Skipped(InstallSkipReason::MissingSource));
+    }
 
     let is_dir = is_dir_entry(entry) || source.is_dir();
     let validation_ctx = InstallValidationCtx {
@@ -1028,6 +1045,7 @@ pub fn install_entry_with_outcome(
         is_dir,
         opts,
     };
+    ensure_safe_install_effect_paths(&validation_ctx)?;
     let plan = build_install_plan(&validation_ctx);
     let snapshot = if opts.dry_run {
         InstallSnapshot::default()
