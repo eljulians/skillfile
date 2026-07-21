@@ -10,6 +10,7 @@ All notable changes to skillfile are documented here.
 
 - **Failed update checks are cached briefly** - slow or unavailable GitHub release checks no longer add the full wait to every command, while successful checks remain cached for 24 hours by @ychampion
 - **Unresolved conflicts now fail `skillfile resolve`** - leaving conflict markers in the editor returns a nonzero exit instead of allowing scripts to continue as though resolution succeeded by @ychampion
+- **Stale patches are reported explicitly** - `skillfile status` and `skillfile info` no longer describe an entry as clean when its saved patch cannot apply to the current cache by @ychampion
 
 ## v1.9.0 - 21-07-2026
 
