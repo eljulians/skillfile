@@ -1269,6 +1269,10 @@ pub struct SyncCmdOpts<'a> {
     pub dry_run: bool,
     pub entry_filter: Option<&'a str>,
     pub update: bool,
+    /// Whether to print manifest parse warnings. `cmd_install` parses the
+    /// manifest itself and already prints these, so it passes `false` here
+    /// to avoid showing the same warning twice.
+    pub print_warnings: bool,
 }
 
 /// Run the `sync` command.
@@ -1286,8 +1290,10 @@ pub fn cmd_sync(opts: &SyncCmdOpts<'_>) -> Result<(), SkillfileError> {
     }
 
     let result = parse_manifest(&manifest_path)?;
-    for w in &result.warnings {
-        eprintln!("{w}");
+    if opts.print_warnings {
+        for w in &result.warnings {
+            eprintln!("{w}");
+        }
     }
 
     let mut entries: Vec<&Entry> = result.manifest.entries.iter().collect();
@@ -2625,6 +2631,7 @@ mod tests {
             dry_run: false,
             entry_filter: None,
             update: false,
+            print_warnings: true,
         });
         assert!(result.is_ok(), "cmd_sync failed: {result:?}");
     }
@@ -2643,6 +2650,7 @@ mod tests {
             dry_run: false,
             entry_filter: None,
             update: false,
+            print_warnings: true,
         });
         assert!(result.is_ok());
     }
@@ -2657,6 +2665,7 @@ mod tests {
             dry_run: false,
             entry_filter: None,
             update: false,
+            print_warnings: true,
         });
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -2683,6 +2692,7 @@ mod tests {
             dry_run: false,
             entry_filter: Some("alpha"),
             update: false,
+            print_warnings: true,
         });
         assert!(result.is_ok(), "cmd_sync with filter failed: {result:?}");
     }
@@ -2702,6 +2712,7 @@ mod tests {
             dry_run: false,
             entry_filter: Some("nonexistent"),
             update: false,
+            print_warnings: true,
         });
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -2726,6 +2737,7 @@ mod tests {
             dry_run: true,
             entry_filter: None,
             update: false,
+            print_warnings: true,
         });
         assert!(result.is_ok(), "cmd_sync dry-run failed: {result:?}");
 

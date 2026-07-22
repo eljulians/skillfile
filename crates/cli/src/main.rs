@@ -735,6 +735,7 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
             dry_run,
             entry_filter: entry.as_deref(),
             update,
+            print_warnings: true,
         }),
         Command::Status { check_upstream } => {
             commands::status::cmd_status(repo_root, check_upstream)
