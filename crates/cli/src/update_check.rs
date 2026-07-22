@@ -19,6 +19,8 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const FAILURE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 const RELEASES_URL: &str = "https://api.github.com/repos/eljulians/skillfile/releases/latest";
 
@@ -97,15 +99,16 @@ fn read_cache_from(path: &std::path::Path) -> Option<CacheEntry> {
     let entry: CacheEntry = serde_json::from_str(&contents).ok()?;
     let last_check = parse_timestamp(&entry.last_check)?;
     let elapsed = SystemTime::now().duration_since(last_check).ok()?;
-    if elapsed < CHECK_INTERVAL {
+    let interval = if entry.latest_version.is_empty() {
+        FAILURE_CHECK_INTERVAL
+    } else {
+        CHECK_INTERVAL
+    };
+    if elapsed < interval {
         Some(entry)
     } else {
         None
     }
-}
-
-fn read_cache() -> Option<CacheEntry> {
-    read_cache_from(&cache_path()?)
 }
 
 /// Write a cache entry to a specific file path. Errors are silently ignored.
@@ -118,19 +121,16 @@ fn write_cache_to(path: &std::path::Path, entry: &CacheEntry) {
     }
 }
 
-fn write_cache(entry: &CacheEntry) {
-    if let Some(path) = cache_path() {
-        write_cache_to(&path, entry);
-    }
-}
-
 /// Fetch the latest release tag and URL from the GitHub Releases API.
 ///
 /// Returns `None` on any error (network, parse, rate limit). Errors are
 /// intentionally swallowed — this runs in a background thread and must
 /// never block or crash the CLI.
 fn fetch_latest_release() -> Option<(String, String)> {
-    let agent = ureq::Agent::new_with_defaults();
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .build();
+    let agent: ureq::Agent = config.into();
     let mut response = agent
         .get(RELEASES_URL)
         .header("User-Agent", "skillfile-update-check")
@@ -156,9 +156,12 @@ fn fetch_latest_release() -> Option<(String, String)> {
 /// 3. Returns `Some(UpdateNotice)` if the latest version is newer.
 ///
 /// All errors are silently swallowed — this function never panics or returns errors.
-pub fn check_for_update() -> Option<UpdateNotice> {
+fn check_for_update_at(
+    path: Option<&std::path::Path>,
+    fetch: impl FnOnce() -> Option<(String, String)>,
+) -> Option<UpdateNotice> {
     // Try cache first
-    if let Some(cached) = read_cache() {
+    if let Some(cached) = path.and_then(read_cache_from) {
         return if is_newer(CURRENT_VERSION, &cached.latest_version) {
             Some(UpdateNotice {
                 current: CURRENT_VERSION.to_string(),
@@ -170,16 +173,33 @@ pub fn check_for_update() -> Option<UpdateNotice> {
         };
     }
 
-    // Cache miss or stale — fetch from GitHub
-    let (tag, url) = fetch_latest_release()?;
+    // Suppress repeated waits even if this fetch stalls or fails. A successful
+    // response replaces this short-lived sentinel with the normal 24-hour entry.
+    if let Some(path) = path {
+        write_cache_to(
+            path,
+            &CacheEntry {
+                last_check: now_timestamp(),
+                latest_version: String::new(),
+                release_url: String::new(),
+            },
+        );
+    }
+
+    let (tag, url) = fetch()?;
     let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
 
     // Write cache regardless of whether there's an update
-    write_cache(&CacheEntry {
-        last_check: now_timestamp(),
-        latest_version: version.clone(),
-        release_url: url.clone(),
-    });
+    if let Some(path) = path {
+        write_cache_to(
+            path,
+            &CacheEntry {
+                last_check: now_timestamp(),
+                latest_version: version.clone(),
+                release_url: url.clone(),
+            },
+        );
+    }
 
     if is_newer(CURRENT_VERSION, &version) {
         Some(UpdateNotice {
@@ -192,11 +212,15 @@ pub fn check_for_update() -> Option<UpdateNotice> {
     }
 }
 
+pub fn check_for_update() -> Option<UpdateNotice> {
+    let path = cache_path();
+    check_for_update_at(path.as_deref(), fetch_latest_release)
+}
+
 /// Spawn a background thread that checks for updates.
 ///
-/// Writes a sentinel cache entry immediately (in the calling thread) so
-/// that even if the process exits before the background HTTP call completes,
-/// subsequent invocations within 24 hours won't re-check.
+/// Writes a short-lived sentinel before the HTTP request so repeated commands
+/// do not wait again when the update endpoint is unavailable.
 ///
 /// Returns an [`mpsc::Receiver`] that will receive at most one
 /// `Option<UpdateNotice>`. If the check finds no update, the channel
@@ -528,6 +552,52 @@ mod tests {
             read_cache_from(&path).is_none(),
             "stale cache entry (48h old) should be ignored"
         );
+    }
+
+    #[test]
+    fn failed_check_writes_short_lived_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+
+        assert!(check_for_update_at(Some(&path), || None).is_none());
+        let cached = read_cache_from(&path).expect("failed check should write a sentinel");
+        assert!(cached.latest_version.is_empty());
+        assert!(cached.release_url.is_empty());
+
+        assert!(
+            check_for_update_at(Some(&path), || panic!("fresh sentinel must skip fetch")).is_none()
+        );
+    }
+
+    #[test]
+    fn failed_check_cache_expires_before_success_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let two_hours_ago = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 2 * 60 * 60;
+
+        write_cache_to(
+            &path,
+            &CacheEntry {
+                last_check: two_hours_ago.to_string(),
+                latest_version: String::new(),
+                release_url: String::new(),
+            },
+        );
+        assert!(read_cache_from(&path).is_none());
+
+        write_cache_to(
+            &path,
+            &CacheEntry {
+                last_check: two_hours_ago.to_string(),
+                latest_version: "99.88.77".into(),
+                release_url: "https://example.com/release".into(),
+            },
+        );
+        assert!(read_cache_from(&path).is_some());
     }
 
     #[test]
