@@ -20,7 +20,8 @@ A Skillfile consists of lines, each of which is one of:
 
 - **Blank line** — ignored
 - **Comment line** — starts with `#` (after optional whitespace), ignored
-- **`install` line** — declares a deployment target
+- **`install` line** — declares a built-in platform deployment target
+- **`install-path` line** — declares an explicit filesystem deployment target
 - **Entry line** — declares a skill or agent to manage (`local`, `github`, `gitlab`, or `url`)
 
 ### Inline Comments
@@ -49,7 +50,7 @@ install  <platform>  <scope>
 
 | Field | Values | Description |
 |---|---|---|
-| `platform` | `claude-code`, `gemini-cli`, `codex`, `junie` | Target AI tool |
+| `platform` | `claude-code`, `codex`, `cursor`, `copilot`, `factory`, `gemini-cli`, `junie`, `opencode`, `windsurf`, `antigravity` | Target AI tool |
 | `scope` | `global`, `local` | Where to deploy (user-wide or project-local) |
 
 Multiple install lines are allowed (one per platform+scope combination). Duplicate install targets produce a warning during validation.
@@ -64,9 +65,25 @@ install-path  <tool-name>  <entity-type>  <path>
 |---|---|---|
 | `tool-name` | any non-empty string | Label used in status and install output |
 | `entity-type` | `skill`, `agent` | Which kind of entry this target accepts |
-| `path` | filesystem path | Exact destination directory; `~` expands to `$HOME`, relative paths are resolved from the repo root |
+| `path` | filesystem path | Base destination directory; `~` expands to the home directory, and relative paths are resolved from the repo root |
 
-Each `install-path` line defines one destination for one entity type. Default directory mode is `nested` for skills and `flat` for agents. Multiple explicit path targets are allowed. Duplicate targets for the same entity type and destination path fail validation.
+Each `install-path` line defines one destination for one entity type. It does not declare or select an entry: installation deploys every manifest entry of the matching entity type to that target. The tool name is only an output label, not a built-in platform adapter name. Multiple explicit path targets are allowed and may be mixed with built-in `install` targets, in which case matching entries are deployed to every compatible target. Duplicate targets for the same entity type and resolved destination path fail validation.
+
+The installed layout depends on the entity type:
+
+| Entity type | Installed layout |
+|---|---|
+| `skill` | `<path>/<name>/SKILL.md` for a single-file entry; directory entries preserve their contents under `<path>/<name>/` |
+| `agent` | `<path>/<name>.md` |
+
+For example:
+
+```
+install-path  openclaw     skill  ~/.openclaw/skills
+install-path  team-agents  agent  "./shared agents"
+```
+
+Explicit targets participate in the same install, update, status, info, diff, pin, and unpin lifecycle as built-in targets. Filesystem operations reject symlinked user-controlled source and destination components rather than following them.
 
 ## Entry Lines
 

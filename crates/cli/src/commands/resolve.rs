@@ -118,6 +118,15 @@ fn open_in_editor(content: &str, filename: &str) -> Result<String, SkillfileErro
     Ok(result)
 }
 
+fn reject_conflict_markers(resolved: String) -> Result<String, SkillfileError> {
+    if resolved.contains("<<<<<<<") {
+        return Err(SkillfileError::Manifest(
+            "conflict markers still present — resolve all conflicts and try again".into(),
+        ));
+    }
+    Ok(resolved)
+}
+
 fn reconstruct_yours_single(
     ctx: &ResolveEntryCtx<'_>,
     base: &str,
@@ -138,7 +147,6 @@ fn reconstruct_yours_single(
 }
 
 /// Apply conflict resolution: open editor when needed, return resolved text.
-/// Returns `Ok(None)` when conflict markers remain after editing.
 fn resolve_conflicts_or_clean(
     result: MergeResult,
     entry_name: &str,
@@ -152,11 +160,7 @@ fn resolve_conflicts_or_clean(
         "\nConflicts detected in '{entry_name}'. Opening in editor to resolve...\n  Save and close when done."
     );
     let resolved = open_in_editor(&result.merged, filename)?;
-    if resolved.contains("<<<<<<<") {
-        eprintln!("error: conflict markers still present — resolve all conflicts and try again");
-        return Ok(None);
-    }
-    Ok(Some(resolved))
+    Ok(Some(reject_conflict_markers(resolved)?))
 }
 
 fn resolve_single_file(
@@ -226,8 +230,7 @@ struct UpstreamVersions<'a> {
 }
 
 /// Merge each file using three-way merge. Returns the merged results and whether
-/// any file had conflicts requiring manual resolution. Returns `Ok(None)` when
-/// conflict markers remain after editor interaction (signals early exit to caller).
+/// any file had conflicts requiring manual resolution.
 fn merge_all_files(
     upstream: &UpstreamVersions<'_>,
     ctx: &DirMergeCtx<'_>,
@@ -498,6 +501,21 @@ mod tests {
         assert!(
             result.merged.contains("<<<<<<<"),
             "expected conflict markers"
+        );
+    }
+
+    #[test]
+    fn unresolved_markers_are_an_error() {
+        let error =
+            reject_conflict_markers("<<<<<<< ours\n=======\n>>>>>>> theirs\n".into()).unwrap_err();
+        assert!(error.to_string().contains("conflict markers still present"));
+    }
+
+    #[test]
+    fn resolved_text_is_returned() {
+        assert_eq!(
+            reject_conflict_markers("resolved\n".into()).unwrap(),
+            "resolved\n"
         );
     }
 

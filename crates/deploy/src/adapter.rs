@@ -95,6 +95,7 @@ pub struct EntityConfig {
 pub struct FileSystemAdapter {
     name: String,
     entities: HashMap<EntityType, EntityConfig>,
+    cleanup_legacy_flat_files: bool,
 }
 
 impl FileSystemAdapter {
@@ -102,7 +103,13 @@ impl FileSystemAdapter {
         Self {
             name: name.to_string(),
             entities,
+            cleanup_legacy_flat_files: true,
         }
+    }
+
+    pub(crate) fn preserve_legacy_flat_files(mut self) -> Self {
+        self.cleanup_legacy_flat_files = false;
+        self
     }
 
     /// Returns true if the entity type uses flat file layout (e.g., agents).
@@ -136,6 +143,32 @@ fn preferred_home_dir() -> PathBuf {
     preferred_home_dir_from(std::env::var_os("HOME"), dirs::home_dir())
 }
 
+pub(crate) fn ensure_no_symlink_components(path: &Path) -> std::io::Result<()> {
+    for component_path in path.ancestors() {
+        if component_path.as_os_str().is_empty() {
+            continue;
+        }
+        // Top-level absolute components are controlled by the OS or an administrator. macOS
+        // exposes `/var` as a symlink, and Windows may use equivalent root-level aliases.
+        if component_path.is_absolute()
+            && component_path
+                .parent()
+                .is_some_and(|parent| parent.parent().is_none())
+        {
+            continue;
+        }
+        match std::fs::symlink_metadata(component_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(symlink_error(component_path));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 impl PlatformAdapter for FileSystemAdapter {
     fn name(&self) -> &str {
         &self.name
@@ -157,9 +190,11 @@ impl PlatformAdapter for FileSystemAdapter {
             Scope::Global => &config.global_path,
             Scope::Local => &config.local_path,
         };
-        if raw.starts_with('~') {
+        if raw == "~" {
+            preferred_home_dir()
+        } else if raw.starts_with("~/") {
             let home = preferred_home_dir();
-            home.join(raw.strip_prefix("~/").unwrap_or(raw))
+            home.join(raw.strip_prefix("~/").unwrap_or_default())
         } else {
             ctx.repo_root.join(raw)
         }
@@ -175,6 +210,11 @@ impl PlatformAdapter for FileSystemAdapter {
             repo_root: req.repo_root,
         };
         let target_dir = self.target_dir(req.entry.entity_type, &ctx);
+        if ensure_no_symlink_components(&target_dir).is_err()
+            || ensure_no_symlink_components(req.source).is_err()
+        {
+            return HashMap::new();
+        }
         // Use filesystem truth as a backstop for ambiguous manifest paths.
         let is_dir = is_dir_entry(req.entry) || req.source.is_dir();
 
@@ -213,7 +253,7 @@ impl PlatformAdapter for FileSystemAdapter {
 
         // Migration: nested-mode installs may leave behind a legacy flat {name}.md from an older
         // layout. Remove it after a successful install to avoid duplicate skill loading.
-        if !self.is_flat_mode(req.entry.entity_type) {
+        if self.cleanup_legacy_flat_files && !self.is_flat_mode(req.entry.entity_type) {
             remove_orphan_flat_file(&req.entry.name, &target_dir);
         }
 
@@ -284,7 +324,7 @@ fn collect_dir_deploy_result(source: &Path, dest: &Path) -> DeployResult {
 /// Returns empty map when the installed directory does not exist.
 fn collect_nested_installed(entry: &Entry, target_dir: &Path) -> HashMap<String, PathBuf> {
     let installed_dir = target_dir.join(&entry.name);
-    if !installed_dir.is_dir() {
+    if ensure_no_symlink_components(&installed_dir).is_err() || !installed_dir.is_dir() {
         return HashMap::new();
     }
     collect_walkdir_relative(&installed_dir)
@@ -292,7 +332,7 @@ fn collect_nested_installed(entry: &Entry, target_dir: &Path) -> HashMap<String,
 
 /// Returns empty map when the vendor cache directory does not exist.
 fn collect_flat_installed_checked(vdir: &Path, target_dir: &Path) -> HashMap<String, PathBuf> {
-    if !vdir.is_dir() {
+    if ensure_no_symlink_components(target_dir).is_err() || !vdir.is_dir() {
         return HashMap::new();
     }
     collect_flat_installed(vdir, target_dir)
@@ -319,7 +359,7 @@ fn collect_flat_installed(vdir: &Path, target_dir: &Path) -> HashMap<String, Pat
             continue;
         }
         let dest = target_dir.join(file.file_name().unwrap_or_default());
-        if !dest.exists() {
+        if ensure_no_symlink_components(&dest).is_err() || !dest.exists() {
             continue;
         }
         let Some(key) = relative_file_key(vdir, &file) else {
@@ -397,7 +437,9 @@ fn cleanup_failed_path(path: &Path) {
 }
 
 fn copy_to_destination(op: &PlaceOp<'_>) -> std::io::Result<()> {
+    ensure_no_symlink_components(op.source)?;
     if let Some(parent) = op.dest.parent() {
+        ensure_no_symlink_components(parent)?;
         std::fs::create_dir_all(parent)?;
     }
 
@@ -899,6 +941,23 @@ mod tests {
     #[test]
     fn registry_get_unknown_returns_none() {
         assert!(adapters().get("unknown-tool").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_guard_allows_root_managed_top_level_symlink() {
+        let root_link = ["/var", "/bin", "/sbin", "/lib"]
+            .into_iter()
+            .map(Path::new)
+            .find(|path| {
+                std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            });
+        let Some(root_link) = root_link else {
+            return;
+        };
+
+        assert!(ensure_no_symlink_components(&root_link.join("skillfile-path-check")).is_ok());
     }
 
     // -- supports() --
@@ -1524,6 +1583,24 @@ mod tests {
             assert!(result.is_empty());
             assert!(!dest.join("SKILL.md").exists());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deploy_entry_does_not_follow_symlinked_source_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("SKILL.md"), "# Outside\n").unwrap();
+        let source = dir.path().join("linked-source");
+        symlink(&outside, &source).unwrap();
+
+        let result = deploy_dir(&source, dir.path(), true);
+
+        assert!(result.is_empty());
+        assert!(!dir.path().join(".claude/skills/my-skill").exists());
     }
 
     #[cfg(unix)]

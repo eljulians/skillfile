@@ -3,6 +3,7 @@ use std::path::Path;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::models::{Entry, Manifest};
+use skillfile_deploy::paths::is_safe_installed_path;
 use skillfile_deploy::target::ResolvedInstallTarget;
 
 pub(crate) struct SingleFileVariant {
@@ -31,7 +32,7 @@ pub(crate) fn installed_single_file_variants(
         }
 
         let path = resolved.installed_path(entry, repo_root);
-        if !path.exists() {
+        if !is_safe_installed_path(&path) || !path.exists() {
             continue;
         }
 

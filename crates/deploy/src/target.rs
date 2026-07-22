@@ -96,7 +96,7 @@ fn explicit_adapter(tool_name: &str, entity_type: EntityType, path: &str) -> Fil
             dir_mode: default_dir_mode(entity_type),
         },
     );
-    FileSystemAdapter::new(tool_name, entities)
+    FileSystemAdapter::new(tool_name, entities).preserve_legacy_flat_files()
 }
 
 fn default_dir_mode(entity_type: EntityType) -> DirInstallMode {

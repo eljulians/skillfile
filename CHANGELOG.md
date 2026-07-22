@@ -9,6 +9,20 @@ All notable changes to skillfile are documented here.
 ### Fixed
 
 - **Failed update checks are cached briefly** - slow or unavailable GitHub release checks no longer add the full wait to every command, while successful checks remain cached for 24 hours by @ychampion
+- **Unresolved conflicts now fail `skillfile resolve`** - leaving conflict markers in the editor returns a nonzero exit instead of allowing scripts to continue as though resolution succeeded by @ychampion
+
+## v1.9.0 - 21-07-2026
+
+### Added
+
+- **Custom install paths** - deploy skills and agents to any filesystem directory with `install-path`, including AI tools without a built-in target by @mto-s
+
+### Changed
+
+- **Dependency refresh** - bumped `serde_json` to 1.0.151 and `thiserror` to 2.0.19.
+
+### Fixed
+
 - **Boolean environment flags now require explicit true values** - `CI=false` no longer blocks `skillfile init`, while `SKILLFILE_QUIET=0` and `SKILLFILE_NO_UPDATE_NOTIFIER=0` no longer enable their respective flags by @floze-the-genius
 
 ## v1.8.0 - 17-07-2026

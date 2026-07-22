@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use super::format::sorted_manifest_text;
 use skillfile_core::error::SkillfileError;
 use skillfile_core::lock::{read_lock, write_lock};
-use skillfile_core::models::{EntityType, Entry, Manifest, SourceFields, DEFAULT_REF};
+use skillfile_core::models::{
+    EntityType, Entry, InstallOptions, Manifest, SourceFields, DEFAULT_REF,
+};
 use skillfile_core::parser::{infer_name, parse_manifest, parse_owner_repo_ref, MANIFEST_NAME};
 use skillfile_deploy::install::{
     capture_install_snapshot, install_entry_with_outcome, InstallOutcome, InstallSkipReason,
@@ -68,13 +70,17 @@ fn sync_and_install(
         })?;
 
     let mut report = InstallReport::default();
+    let install_opts = InstallOptions {
+        dry_run: false,
+        overwrite: false,
+    };
     for target in &ctx.manifest.install_targets {
         let outcome = install_entry_with_outcome(
             entry,
             target,
             &skillfile_deploy::install::InstallCtx {
                 repo_root: ctx.repo_root,
-                opts: None,
+                opts: Some(&install_opts),
             },
         )?;
         let label = format!("{target}");
