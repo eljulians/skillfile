@@ -8,7 +8,7 @@
 [![GitHub release downloads](https://img.shields.io/github/downloads/eljulians/skillfile/total?style=flat-square&label=GitHub%20release%20downloads)](https://github.com/eljulians/skillfile/releases)
 [![crates.io downloads](https://img.shields.io/crates/d/skillfile?style=flat-square&label=crates.io%20downloads)](https://crates.io/crates/skillfile)
 
-**One AI setup, everywhere. Pin it. Patch it. Deploy everywhere.**
+**One AI setup, everywhere. Pin it. Patch it. Deploy everywhere. Search community registries for skills without leaving your terminal.**
 
 Use the same skills and agents on your work laptop, personal machine, servers, and whichever AI tools you use. Put the setup in a repo when you want to share it with a team. skillfile locks upstream versions, preserves your edits on update, and installs to Claude Code, Codex, Cursor, Antigravity, custom filesystem paths, and more. No runtime or framework required.
 
@@ -68,6 +68,24 @@ skillfile install
 ```
 
 `Skillfile.lock` pins upstream content to exact SHAs or refs so another machine gets the same files.
+
+## Discover skills from community registries
+
+Find community skills and agents from the CLI, then add a selection to your `Skillfile` without copying repository coordinates by hand:
+
+```bash
+skillfile search "code review"
+```
+
+In a terminal, search opens an interactive browser with a preview pane and an add flow for the selected skill or agent. It searches [agentskill.sh](https://agentskill.sh) and [skills.sh](https://skills.sh) by default; set `SKILLHUB_API_KEY` to include skillhub.club too.
+
+Use `--min-score` to focus on higher-trust results, `--registry` to search one registry, or `--json` / `--no-interactive` for scripts and pipelines:
+
+```bash
+skillfile search linting --min-score 80
+skillfile search docker --registry agentskill.sh --no-interactive
+skillfile search testing --json
+```
 
 ## Update without losing local edits
 
