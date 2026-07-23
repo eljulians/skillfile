@@ -1290,6 +1290,8 @@ pub fn cmd_install(repo_root: &Path, opts: &CmdInstallOpts<'_>) -> Result<(), Sk
         dry_run: opts.dry_run,
         entry_filter: None,
         update: opts.update,
+        // load_manifest already printed these warnings above.
+        print_warnings: false,
     });
 
     // Read new locked state (written by sync).

@@ -386,6 +386,32 @@ fn validate_duplicate_name_reported_once() {
 }
 
 #[test]
+fn install_prints_manifest_warning_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/a.md"), "# A\n").unwrap();
+    std::fs::write(dir.path().join("skills/b.md"), "# B\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         local  skill  dup  skills/a.md\n\
+         local  skill  dup  skills/b.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).arg("install").output().unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert_eq!(
+        stderr
+            .matches("warning: line 3: duplicate entry name 'dup'")
+            .count(),
+        1,
+        "manifest parse warning should only be printed once by install, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn status_output_is_plain_text_when_captured() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
