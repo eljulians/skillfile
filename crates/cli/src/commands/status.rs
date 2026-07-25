@@ -7,8 +7,8 @@ use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{short_sha, EntityType, Entry, LockEntry, Manifest, SourceFields};
 use skillfile_core::parser::MANIFEST_NAME;
 use skillfile_core::patch::{
-    apply_patch_pure, dir_patch_path, has_dir_patch, has_patch, read_patch, relative_file_key,
-    text_content_eq, walkdir,
+    apply_patch_pure, dir_patch_path, has_dir_patch, has_patch, patches_root, read_patch,
+    relative_file_key, text_content_eq, walkdir,
 };
 use skillfile_deploy::paths::{installed_dir_file_sets, installed_paths};
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry, meta_sha};
@@ -51,17 +51,56 @@ fn is_cache_file_modified(
     Ok(!text_content_eq(&installed_text, &expected_text))
 }
 
+fn validate_dir_patches(
+    entry: &Entry,
+    vdir: &Path,
+    repo_root: &Path,
+) -> Result<(), ModificationCheckError> {
+    let patch_dir = patches_root(repo_root)
+        .join(entry.entity_type.dir_name())
+        .join(&entry.name);
+    if !patch_dir.is_dir() {
+        return Ok(());
+    }
+
+    for patch_path in walkdir(&patch_dir).into_iter().filter(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "patch")
+    }) {
+        let mut relative_cache_path = patch_path
+            .strip_prefix(&patch_dir)
+            .map_err(|_| ModificationCheckError::Other)?
+            .to_path_buf();
+        relative_cache_path.set_extension("");
+        let cache_path = vdir.join(relative_cache_path);
+        let cache_text = read_patch_cache(&cache_path)?;
+        let patch_text =
+            std::fs::read_to_string(patch_path).map_err(|_| ModificationCheckError::Other)?;
+        apply_patch_pure(&cache_text, &patch_text)
+            .map_err(|_| ModificationCheckError::PatchStale)?;
+    }
+    Ok(())
+}
+
+fn read_patch_cache(cache_path: &Path) -> Result<String, ModificationCheckError> {
+    std::fs::read_to_string(cache_path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => ModificationCheckError::PatchStale,
+        _ => ModificationCheckError::Other,
+    })
+}
+
 fn check_dir_files_modified(
     entry: &Entry,
     manifest: &Manifest,
     repo_root: &Path,
 ) -> Result<bool, ModificationCheckError> {
+    let vdir = vendor_dir_for(entry, repo_root);
+    validate_dir_patches(entry, &vdir, repo_root)?;
     let installed_sets = installed_dir_file_sets(entry, manifest, repo_root)
         .map_err(|_| ModificationCheckError::Other)?;
     if installed_sets.iter().all(HashMap::is_empty) {
         return Ok(false);
     }
-    let vdir = vendor_dir_for(entry, repo_root);
     if !vdir.is_dir() {
         return Ok(false);
     }
@@ -959,6 +998,54 @@ mod tests {
         std::fs::write(
             patches_dir.join("tool.md.patch"),
             "--- a/tool.md\n+++ b/tool.md\n@@ -1,3 +1,7 @@\n # Agent\n \n Upstream content.\n+\n+## Custom Section\n+\n+Added by user.\n",
+        )
+        .unwrap();
+
+        let manifest = dir_skill_manifest();
+        let entry = &manifest.entries[0];
+        assert_eq!(
+            modification_state(entry, &manifest, dir.path()),
+            ModificationState::PatchStale
+        );
+    }
+
+    #[test]
+    fn stale_directory_patch_for_removed_cache_file_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_dir_entry(dir.path(), Some(MODIFIED), ORIGINAL);
+        let cache_file = dir.path().join(".skillfile/cache/skills/my-dir/tool.md");
+        std::fs::remove_file(cache_file).unwrap();
+        let patches_dir = dir.path().join(".skillfile/patches/skills/my-dir");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        std::fs::write(
+            patches_dir.join("tool.md.patch"),
+            "--- a/tool.md\n+++ b/tool.md\n@@ -1,3 +1,7 @@\n # Agent\n \n Upstream content.\n+\n+## Custom Section\n+\n+Added by user.\n",
+        )
+        .unwrap();
+
+        let manifest = dir_skill_manifest();
+        let entry = &manifest.entries[0];
+        assert_eq!(
+            modification_state(entry, &manifest, dir.path()),
+            ModificationState::PatchStale
+        );
+    }
+
+    #[test]
+    fn modified_file_does_not_hide_later_stale_directory_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_dir_entry(dir.path(), Some(ORIGINAL), ORIGINAL);
+        let cache_dir = dir.path().join(".skillfile/cache/skills/my-dir");
+        std::fs::write(cache_dir.join("a.md"), ORIGINAL).unwrap();
+        std::fs::write(cache_dir.join("z.md"), "# Replaced upstream content\n").unwrap();
+        let installed_dir = dir.path().join(".claude/skills/my-dir");
+        std::fs::write(installed_dir.join("a.md"), MODIFIED).unwrap();
+        std::fs::write(installed_dir.join("z.md"), MODIFIED).unwrap();
+        let patches_dir = dir.path().join(".skillfile/patches/skills/my-dir");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        std::fs::write(
+            patches_dir.join("z.md.patch"),
+            "--- a/z.md\n+++ b/z.md\n@@ -1,3 +1,7 @@\n # Agent\n \n Upstream content.\n+\n+## Custom Section\n+\n+Added by user.\n",
         )
         .unwrap();
 
