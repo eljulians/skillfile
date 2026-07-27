@@ -694,6 +694,48 @@ fn write_info_lock_pin_cache_fixture(dir: &Path) {
     );
 }
 
+fn write_stale_root_dir_patch_fixture(dir: &Path) {
+    let sha = "abc123def456abc123def456abc123def456abc1";
+    std::fs::write(
+        dir.join("Skillfile"),
+        "install  claude-code  local\n\
+         github  skill  root-skill  owner/repo  .  main\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Skillfile.lock"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "github/skill/root-skill": {
+                "sha": sha,
+                "raw_url": "https://example.com/SKILL.md"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let cache_dir = dir.join(".skillfile/cache/skills/root-skill");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::write(cache_dir.join("SKILL.md"), "# Root Skill\n").unwrap();
+    std::fs::write(
+        cache_dir.join(".meta"),
+        serde_json::json!({"sha": sha}).to_string(),
+    )
+    .unwrap();
+
+    let installed_dir = dir.join(".claude/skills/root-skill");
+    std::fs::create_dir_all(&installed_dir).unwrap();
+    std::fs::write(installed_dir.join("SKILL.md"), "# Root Skill\n").unwrap();
+
+    let patch_dir = dir.join(".skillfile/patches/skills/root-skill");
+    std::fs::create_dir_all(&patch_dir).unwrap();
+    std::fs::write(
+        patch_dir.join("removed.md.patch"),
+        "--- a/removed.md\n+++ b/removed.md\n@@ -1 +1,2 @@\n # Removed\n+Pinned edit\n",
+    )
+    .unwrap();
+}
+
 fn output_line<'a>(stdout: &'a str, label: &str) -> &'a str {
     stdout
         .lines()
@@ -1592,6 +1634,30 @@ fn info_reports_modified_when_pinned_entry_has_extra_edits() {
     assert!(
         modified_line.trim_end().ends_with("yes"),
         "info should report pinned extra edits as modified:\n{stdout}"
+    );
+}
+
+#[test]
+fn status_and_info_report_stale_root_patch_for_removed_cache_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_stale_root_dir_patch_fixture(root);
+
+    let status = sf(root).arg("status").output().unwrap();
+    assert!(status.status.success());
+    let status_stdout = std::str::from_utf8(&status.stdout).unwrap();
+    assert!(
+        output_line(status_stdout, "root-skill").contains("[patch stale]"),
+        "status should report the stale root patch:\n{status_stdout}"
+    );
+
+    let info = sf(root).args(["info", "root-skill"]).output().unwrap();
+    assert!(info.status.success());
+    let info_stdout = std::str::from_utf8(&info.stdout).unwrap();
+    assert_output_contains(
+        info_stdout,
+        "Modified:",
+        "patch does not apply to current cache",
     );
 }
 

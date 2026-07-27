@@ -51,6 +51,24 @@ fn is_cache_file_modified(
     Ok(!text_content_eq(&installed_text, &expected_text))
 }
 
+fn validate_single_file_patch(
+    entry: &Entry,
+    vdir: &Path,
+    repo_root: &Path,
+) -> Result<(), ModificationCheckError> {
+    if !has_patch(entry, repo_root) {
+        return Ok(());
+    }
+    let filename = content_file(entry);
+    if filename.is_empty() {
+        return Err(ModificationCheckError::PatchStale);
+    }
+    let cache_text = read_patch_cache(&vdir.join(filename))?;
+    let patch_text = read_patch(entry, repo_root).map_err(|_| ModificationCheckError::Other)?;
+    apply_patch_pure(&cache_text, &patch_text).map_err(|_| ModificationCheckError::PatchStale)?;
+    Ok(())
+}
+
 fn validate_dir_patches(
     entry: &Entry,
     vdir: &Path,
@@ -89,13 +107,21 @@ fn read_patch_cache(cache_path: &Path) -> Result<String, ModificationCheckError>
     })
 }
 
+fn validate_saved_patches(
+    entry: &Entry,
+    vdir: &Path,
+    repo_root: &Path,
+) -> Result<(), ModificationCheckError> {
+    validate_single_file_patch(entry, vdir, repo_root)?;
+    validate_dir_patches(entry, vdir, repo_root)
+}
+
 fn check_dir_files_modified(
     entry: &Entry,
     manifest: &Manifest,
     repo_root: &Path,
 ) -> Result<bool, ModificationCheckError> {
     let vdir = vendor_dir_for(entry, repo_root);
-    validate_dir_patches(entry, &vdir, repo_root)?;
     let installed_sets = installed_dir_file_sets(entry, manifest, repo_root)
         .map_err(|_| ModificationCheckError::Other)?;
     if installed_sets.iter().all(HashMap::is_empty) {
@@ -208,11 +234,13 @@ pub(crate) fn modification_state(
         return ModificationState::Clean;
     }
     let vdir = vendor_dir_for(entry, repo_root);
-    let result = if is_cached_dir_entry(entry, &vdir) {
-        check_dir_files_modified(entry, manifest, repo_root)
-    } else {
-        check_single_file_modified(entry, manifest, repo_root)
-    };
+    let result = validate_saved_patches(entry, &vdir, repo_root).and_then(|()| {
+        if is_cached_dir_entry(entry, &vdir) {
+            check_dir_files_modified(entry, manifest, repo_root)
+        } else {
+            check_single_file_modified(entry, manifest, repo_root)
+        }
+    });
     match result {
         Ok(true) => ModificationState::Modified,
         Ok(false) | Err(ModificationCheckError::Other) => ModificationState::Clean,
@@ -968,6 +996,33 @@ mod tests {
     }
 
     #[test]
+    fn stale_single_file_patch_for_removed_cache_file_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/agent/my-agent": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        let installed = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("my-agent.md"), MODIFIED).unwrap();
+        let patches_dir = dir.path().join(".skillfile/patches/agents");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        std::fs::write(
+            patches_dir.join("my-agent.patch"),
+            "--- a/my-agent.md\n+++ b/my-agent.md\n@@ -1,3 +1,7 @@\n # Agent\n \n Upstream content.\n+\n+## Custom Section\n+\n+Added by user.\n",
+        )
+        .unwrap();
+
+        let manifest = agent_manifest();
+        let entry = &manifest.entries[0];
+        assert_eq!(
+            modification_state(entry, &manifest, dir.path()),
+            ModificationState::PatchStale
+        );
+    }
+
+    #[test]
     fn dir_entry_pinned_not_modified() {
         let dir = tempfile::tempdir().unwrap();
         setup_dir_entry(dir.path(), Some(MODIFIED), ORIGINAL);
@@ -1024,6 +1079,51 @@ mod tests {
         .unwrap();
 
         let manifest = dir_skill_manifest();
+        let entry = &manifest.entries[0];
+        assert_eq!(
+            modification_state(entry, &manifest, dir.path()),
+            ModificationState::PatchStale
+        );
+    }
+
+    #[test]
+    fn stale_root_directory_patch_for_removed_cache_file_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        write_lock(
+            dir.path(),
+            &serde_json::json!({"github/skill/root-skill": {"sha": SHA, "raw_url": "https://example.com"}}),
+        );
+        let vdir = dir.path().join(".skillfile/cache/skills/root-skill");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("SKILL.md"), ORIGINAL).unwrap();
+        std::fs::write(
+            vdir.join(".meta"),
+            serde_json::json!({"sha": SHA}).to_string(),
+        )
+        .unwrap();
+        let installed = dir.path().join(".claude/skills/root-skill");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("SKILL.md"), ORIGINAL).unwrap();
+        let patches_dir = dir.path().join(".skillfile/patches/skills/root-skill");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        std::fs::write(
+            patches_dir.join("removed.md.patch"),
+            "--- a/removed.md\n+++ b/removed.md\n@@ -1,3 +1,7 @@\n # Agent\n \n Upstream content.\n+\n+## Custom Section\n+\n+Added by user.\n",
+        )
+        .unwrap();
+
+        let manifest = Manifest {
+            entries: vec![Entry {
+                entity_type: EntityType::Skill,
+                name: "root-skill".into(),
+                source: SourceFields::Github {
+                    owner_repo: "owner/repo".into(),
+                    path_in_repo: ".".into(),
+                    ref_: "main".into(),
+                },
+            }],
+            install_targets: vec![claude_local_target()],
+        };
         let entry = &manifest.entries[0];
         assert_eq!(
             modification_state(entry, &manifest, dir.path()),
