@@ -12,7 +12,7 @@ use skillfile_deploy::target::ResolvedInstallTarget;
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry};
 use skillfile_sources::sync::vendor_dir_for;
 
-use super::status::is_modified_local;
+use super::status::{modification_state, ModificationState};
 
 #[derive(Debug, PartialEq, Eq)]
 struct InstalledLocation {
@@ -242,10 +242,10 @@ pub fn cmd_info(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
     println!(
         "{:>label_w$}  {}",
         "Modified:",
-        if is_modified_local(entry, &manifest, repo_root) {
-            "yes"
-        } else {
-            "no"
+        match modification_state(entry, &manifest, repo_root) {
+            ModificationState::Clean => "no",
+            ModificationState::Modified => "yes",
+            ModificationState::PatchStale => "patch does not apply to current cache",
         }
     );
 
