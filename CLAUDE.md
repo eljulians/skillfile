@@ -62,6 +62,15 @@ Notes:
 - `tests/upstream.rs` uses real external APIs and needs `GITHUB_TOKEN` for GitHub-backed checks.
 - Fuzzing uses nightly: `cargo +nightly fuzz run parse_manifest -- -max_total_time=60`.
 
+## Releases
+
+- Release from `master`; review commits since the latest `v*` tag and select the SemVer bump.
+- Before tagging, move the relevant `Unreleased` entries into `## vX.Y.Z - DD-MM-YYYY` in `CHANGELOG.md`. The release workflow extracts that exact versioned section as the GitHub Release notes.
+- When adding `CHANGELOG.md` entries for external contributions, end the entry with `by @handle` and no trailing full stop after the mention.
+- Update the workspace version, internal crate dependency constraints in `Cargo.toml`, and the four workspace package versions in `Cargo.lock`.
+- Run the applicable release checks unless the user explicitly waives them.
+- Commit as `Release X.Y.Z`, create annotated tag `vX.Y.Z`, and push `master` and the tag. Ask for explicit confirmation before pushing the tag: it triggers CI, crates.io publishing, and GitHub Release creation.
+
 ## Core Invariants
 
 - `SourceFields` keeps source-specific fields in enum variants so invalid source states are unrepresentable.
@@ -118,6 +127,5 @@ Out of scope unless the project direction changes:
 
 - Check `SPEC.md` before changing manifest syntax or user-facing semantics.
 - Keep crate boundaries intact; avoid making downstream crates a dependency of upstream crates.
-- Update `README.md`, `SPEC.md`, or `CHANGELOG.md` when behavior visible to users changes.
-- When adding `CHANGELOG.md` entries for external contributions, end the entry with `by @handle` and no trailing full stop after the mention.
+- Update `README.md` or `SPEC.md` when behavior visible to users changes.
 - Keep this file limited to repository-wide engineering guidance; individual contributor workflows should live outside the repository.

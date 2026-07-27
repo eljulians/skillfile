@@ -6,11 +6,18 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+## v1.9.1 - 27-07-2026
+
+### Changed
+
+- **Dependency refresh** - bumped `serde` to 1.0.229.
+
 ### Fixed
 
 - **Failed update checks are cached briefly** - slow or unavailable GitHub release checks no longer add the full wait to every command, while successful checks remain cached for 24 hours by @ychampion
 - **Unresolved conflicts now fail `skillfile resolve`** - leaving conflict markers in the editor returns a nonzero exit instead of allowing scripts to continue as though resolution succeeded by @ychampion
-- **Stale patches are reported explicitly** - `skillfile status` and `skillfile info` no longer describe an entry as clean when its saved patch cannot apply to the current cache by @ychampion
+- **Install warnings are printed once** - `skillfile install` no longer repeats manifest warnings that it has already displayed by @Rehan30g
+- **Stale patches are reported explicitly** - `skillfile status` and `skillfile info` no longer describe an entry as clean when its saved patch cannot apply, including when an upstream change removes the patched file or changes its cache layout, by @ychampion
 
 ## v1.9.0 - 21-07-2026
 
