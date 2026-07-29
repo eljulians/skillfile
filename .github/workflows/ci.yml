@@ -203,7 +203,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+          # Windows target artifacts are slow to archive. On cold-cache PRs,
+          # the post-job upload can exceed this job's timeout after tests pass.
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
