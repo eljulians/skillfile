@@ -1,14 +1,15 @@
 /// Upstream health tests: invoke the compiled `skillfile` binary against real
 /// network services (GitHub API, community registries).
 ///
-/// Tests that need a GitHub token call `require_github_token()` and skip
-/// gracefully when no token is available, so `cargo test --workspace`
-/// always passes for local dev and coverage.
+/// This test target is feature-gated so normal workspace tests and release CI
+/// do not depend on external service availability. Tests that need a GitHub
+/// token call `require_github_token()` and skip when no token is available.
 ///
 /// Network calls are wrapped with `retry` to tolerate transient failures
 /// (rate limits, timeouts, DNS blips).
 ///
-/// Run with: cargo test -p skillfile-functional-tests --test upstream
+/// Run with:
+/// cargo test -p skillfile-functional-tests --features upstream-tests --test upstream
 use predicates::prelude::*;
 use retry::{delay::Exponential, retry};
 use serial_test::serial;

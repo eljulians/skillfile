@@ -51,7 +51,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p skillfile
 cargo test --workspace
-cargo test --test upstream
+cargo test -p skillfile-functional-tests --features upstream-tests --test upstream
 cargo deny check
 cargo machete
 shellcheck install.sh
@@ -59,7 +59,7 @@ shellcheck install.sh
 
 Notes:
 - Build `skillfile` before functional tests that spawn `target/debug/skillfile`.
-- `tests/upstream.rs` uses real external APIs and needs `GITHUB_TOKEN` for GitHub-backed checks.
+- The feature-gated `tests/upstream.rs` target uses real external APIs and needs `GITHUB_TOKEN` for GitHub-backed checks.
 - Fuzzing uses nightly: `cargo +nightly fuzz run parse_manifest -- -max_total_time=60`.
 
 ## Releases

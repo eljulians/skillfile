@@ -33,10 +33,14 @@ jobs:
       - name: Build binary for functional tests
         run: cargo build -p skillfile
 
-      - name: Upstream health + CLI tests
+      - name: Upstream health tests
         env:
           GITHUB_TOKEN: ${{ secrets.FUNCTIONAL_TESTS_GITHUB_TOKEN }}
-        run: cargo test --test upstream --test cli
+        run: >-
+          cargo test
+          -p skillfile-functional-tests
+          --features upstream-tests
+          --test upstream
 
       - name: Create or update failure issue
         if: failure()
