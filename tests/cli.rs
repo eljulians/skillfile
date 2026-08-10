@@ -93,6 +93,26 @@ fn complete_env_zsh_suggests_entry_names() {
 }
 
 #[test]
+fn complete_env_zsh_filters_entry_names_by_partial_value() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "local  skill  browser  skills/browser.md\n\
+         local  agent  reviewer  agents/reviewer.md\n",
+    )
+    .unwrap();
+
+    sf(dir.path())
+        .args(["--", "skillfile", "remove", "bro"])
+        .env("COMPLETE", "zsh")
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("browser"))
+        .stdout(predicate::str::contains("reviewer").not());
+}
+
+#[test]
 fn no_args_exits_nonzero() {
     skillfile_cmd()
         .assert()

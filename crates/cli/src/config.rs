@@ -334,6 +334,23 @@ mod tests {
     }
 
     #[test]
+    fn read_user_targets_from_accepts_toml_1_1_multiline_inline_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "install = [\n  {\n    platform = \"claude-code\",\n    scope = \"global\",\n  },\n]\n",
+        )
+        .unwrap();
+
+        let targets = read_user_targets_from(&path);
+        assert_eq!(
+            targets,
+            vec![InstallTarget::platform("claude-code", Scope::Global)]
+        );
+    }
+
+    #[test]
     fn read_user_targets_from_ignores_invalid_scope() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");

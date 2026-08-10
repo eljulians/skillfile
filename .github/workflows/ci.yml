@@ -79,6 +79,19 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  msrv:
+    name: MSRV (Rust 1.88.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.88.0
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Check workspace at MSRV
+        run: cargo +1.88.0 check --workspace --all-targets --locked
+
   machete:
     name: Unused dependencies
     runs-on: ubuntu-latest

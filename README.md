@@ -47,8 +47,16 @@ curl -fsSL https://github.com/eljulians/skillfile/releases/latest/download/insta
 Or:
 
 ```bash
-cargo install skillfile
+cargo install --locked skillfile
 ```
+
+Or install a published binary with `cargo-binstall`:
+
+```bash
+cargo binstall skillfile
+```
+
+Building from source, including `cargo install --locked skillfile`, requires Rust 1.88 or newer. Run `rustup update stable` before building if your toolchain is older. Prebuilt installs through `install.sh` or `cargo-binstall` are unaffected by this source-build requirement.
 
 Prebuilt binaries are published on [GitHub Releases](https://github.com/eljulians/skillfile/releases/latest).
 
