@@ -398,6 +398,9 @@ fn append_and_format_entry(entry: &Entry, manifest_path: &Path) -> Result<String
     let line = format_line(entry);
     let original = std::fs::read_to_string(manifest_path)?;
     let mut content = original.clone();
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
     content.push_str(&line);
     content.push('\n');
     std::fs::write(manifest_path, &content)?;
@@ -969,6 +972,25 @@ mod tests {
         let updated = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(updated.contains("skills/new.md"));
         assert!(updated.contains("skills/existing.md"));
+    }
+
+    #[test]
+    fn append_and_format_entry_preserves_entry_without_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let initial = "local  skill  skills/existing.md";
+        write_manifest(dir.path(), initial);
+        let entry = entry_from_local("skill", "skills/new.md", None);
+
+        append_and_format_entry(&entry, &dir.path().join(MANIFEST_NAME)).unwrap();
+
+        let parsed = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
+        let paths: Vec<&str> = parsed
+            .manifest
+            .entries
+            .iter()
+            .filter_map(|entry| entry.source.as_local())
+            .collect();
+        assert_eq!(paths, ["skills/existing.md", "skills/new.md"]);
     }
 
     #[test]
