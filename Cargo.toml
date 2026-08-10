@@ -45,7 +45,7 @@ semver = "1"
 similar = "3"
 
 # Manifest field quoting
-shlex = "1"
+shlex = "2"
 
 # HTML entity decoding
 html-escape = "0.2"
