@@ -1,12 +1,12 @@
 [workspace]
 members = ["crates/*", "tests"]
 exclude = ["fuzz"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "1.9.1"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/eljulians/skillfile"
 homepage = "https://github.com/eljulians/skillfile"
@@ -21,7 +21,7 @@ skillfile-deploy = { path = "crates/deploy", version = "1.9.1" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-clap_complete = { version = "4", features = ["unstable-dynamic"] }
+clap_complete = { version = "=4.6.8", features = ["unstable-dynamic"] }
 
 # HTTP (blocking — skillfile is not a server)
 ureq = { version = "3", features = ["json"] }
@@ -29,7 +29,7 @@ ureq = { version = "3", features = ["json"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "=1.1.4"
 
 # Error handling
 thiserror = "2"
@@ -45,7 +45,7 @@ semver = "1"
 similar = "3"
 
 # Manifest field quoting
-shlex = "2"
+shlex = "=2.0.1"
 
 # HTML entity decoding
 html-escape = "0.2"
@@ -56,7 +56,7 @@ cliclack = "0.5"
 console = "0.16"
 
 # TUI
-ratatui = "0.29"
+ratatui = "=0.30.2"
 crossterm = "0.29"
 
 # Testing
@@ -64,7 +64,7 @@ tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
 retry = "2"
-serial_test = "3"
+serial_test = "=3.5.0"
 insta = "1"
 rexpect = "0.7"
 
