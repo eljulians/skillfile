@@ -100,9 +100,7 @@ impl Registry for AgentskillSh {
         let (client, query) = (q.client, q.query);
         let url = format!("{AGENTSKILL_API}?q={}&limit=100", urlencoded(query));
 
-        let bytes = client
-            .get_bytes(&url)
-            .map_err(|e| SkillfileError::Network(format!("agentskill.sh search failed: {e}")))?;
+        let bytes = client.get_bytes(&url)?;
 
         let body = String::from_utf8(bytes).map_err(|e| {
             SkillfileError::Network(format!("invalid UTF-8 in agentskill.sh response: {e}"))
@@ -376,7 +374,7 @@ mod tests {
         let result = super::super::search_with_client(&client, "test", &SearchOptions::default());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("search failed"), "got: {err}");
+        assert_eq!(err, "connection refused");
     }
 
     #[test]

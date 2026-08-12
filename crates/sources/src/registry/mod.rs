@@ -176,9 +176,9 @@ pub const REGISTRY_NAMES: &[&str] = &["agentskill.sh", "skills.sh", "skillhub.cl
 // Public search functions
 // ===========================================================================
 
-/// Iterates over all registries, collecting results (skipping registries that
-/// fail with a warning), applies `min_score` filter, and returns combined
-/// results.
+/// Iterates over all registries, collecting results, applies `min_score`
+/// filtering, and returns the combined results. Individual registry failures
+/// are skipped with a warning, but the search fails if no registry responds.
 pub fn search_all(query: &str, opts: &SearchOptions) -> Result<SearchResponse, SkillfileError> {
     let client = UreqClient::new();
     search_all_with_client(&client, query, opts)
@@ -193,6 +193,7 @@ pub fn search_all_with_client(
     let registries = all_registries();
     let mut all_items = Vec::new();
     let mut total = 0;
+    let mut failures = 0;
 
     for reg in &registries {
         match reg.search(&SearchQuery {
@@ -205,9 +206,16 @@ pub fn search_all_with_client(
                 all_items.extend(resp.items);
             }
             Err(e) => {
+                failures += 1;
                 eprintln!("warning: {} search failed: {e}", reg.name());
             }
         }
+    }
+
+    if failures == registries.len() {
+        return Err(SkillfileError::Network(
+            "all registry searches failed".to_string(),
+        ));
     }
 
     let mut resp = SearchResponse {
@@ -428,6 +436,23 @@ mod tests {
         let resp = search_all_with_client(&client, "test", &SearchOptions::default()).unwrap();
         assert_eq!(resp.items.len(), 2);
         assert_eq!(resp.items[0].registry, RegistryId::SkillsSh);
+    }
+
+    #[test]
+    fn search_all_fails_when_every_registry_fails() {
+        let _guard = SKILLHUB_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("SKILLHUB_API_KEY") };
+        let client = MockClient::new(vec![
+            Err("agentskill unavailable".to_string()),
+            Err("skills unavailable".to_string()),
+        ]);
+
+        let result = search_all_with_client(&client, "test", &SearchOptions::default());
+
+        assert!(matches!(
+            result,
+            Err(SkillfileError::Network(message)) if message == "all registry searches failed"
+        ));
     }
 
     #[test]
