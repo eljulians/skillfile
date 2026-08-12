@@ -106,8 +106,8 @@ pub(crate) fn urlencoded(s: &str) -> String {
     for c in s.chars() {
         match c {
             ' ' => out.push('+'),
-            '&' | '=' | '?' | '#' | '+' | '%' => percent_encode_char(c, &mut out),
-            _ => out.push(c),
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' => out.push(c),
+            _ => percent_encode_char(c, &mut out),
         }
     }
     out
@@ -200,9 +200,13 @@ mod tests {
         assert_eq!(urlencoded("code review"), "code+review");
         assert_eq!(urlencoded("a&b"), "a%26b");
         assert_eq!(urlencoded("q=1"), "q%3D1");
+        assert_eq!(urlencoded(r#"say "hello" <x>"#), "say+%22hello%22+%3Cx%3E");
         assert_eq!(urlencoded("hello"), "hello");
         assert_eq!(urlencoded("docker\n"), "docker");
         assert_eq!(urlencoded("  docker  "), "docker");
-        assert_eq!(urlencoded("代码审查"), "代码审查");
+        assert_eq!(
+            urlencoded("代码审查"),
+            "%E4%BB%A3%E7%A0%81%E5%AE%A1%E6%9F%A5"
+        );
     }
 }
