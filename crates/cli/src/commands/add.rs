@@ -983,14 +983,18 @@ mod tests {
 
         append_and_format_entry(&entry, &dir.path().join(MANIFEST_NAME)).unwrap();
 
-        let parsed = parse_manifest(&dir.path().join(MANIFEST_NAME)).unwrap();
-        let paths: Vec<&str> = parsed
-            .manifest
-            .entries
-            .iter()
-            .filter_map(|entry| entry.source.as_local())
+        let updated = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        let entries: Vec<&str> = updated
+            .lines()
+            .filter(|line| line.starts_with("local  skill  "))
             .collect();
-        assert_eq!(paths, ["skills/existing.md", "skills/new.md"]);
+        assert_eq!(
+            entries,
+            [
+                "local  skill  skills/existing.md",
+                "local  skill  skills/new.md"
+            ]
+        );
     }
 
     #[test]
