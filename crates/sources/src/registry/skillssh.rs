@@ -159,9 +159,7 @@ impl Registry for SkillsSh {
         let (client, query) = (q.client, q.query);
         let url = format!("{SKILLSSH_API}?q={}", urlencoded(query));
 
-        let bytes = client
-            .get_bytes(&url)
-            .map_err(|e| SkillfileError::Network(format!("skills.sh search failed: {e}")))?;
+        let bytes = client.get_bytes(&url)?;
 
         let body = String::from_utf8(bytes).map_err(|e| {
             SkillfileError::Network(format!("invalid UTF-8 in skills.sh response: {e}"))
@@ -274,6 +272,20 @@ mod tests {
             .unwrap();
         assert_eq!(resp.items.len(), 0);
         assert_eq!(resp.total, 0);
+    }
+
+    #[test]
+    fn search_returns_unprefixed_network_error() {
+        let client = MockClient::new(vec![Err("connection refused".to_string())]);
+        let reg = SkillsSh;
+
+        let result = reg.search(&SearchQuery {
+            client: &client,
+            query: "docker",
+            opts: &SearchOptions::default(),
+        });
+
+        assert_eq!(result.unwrap_err().to_string(), "connection refused");
     }
 
     // -- fetch_skill_content tests (GitHub raw fetch with fallback) -------------

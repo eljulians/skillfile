@@ -51,13 +51,11 @@ impl Registry for SkillhubClub {
         })
         .to_string();
 
-        let bytes = client
-            .post_json_with_bearer(&crate::http::BearerPost {
-                url: SKILLHUB_API,
-                body: &body,
-                token: &api_key,
-            })
-            .map_err(|e| SkillfileError::Network(format!("skillhub.club search failed: {e}")))?;
+        let bytes = client.post_json_with_bearer(&crate::http::BearerPost {
+            url: SKILLHUB_API,
+            body: &body,
+            token: &api_key,
+        })?;
 
         let resp_body = String::from_utf8(bytes).map_err(|e| {
             SkillfileError::Network(format!("invalid UTF-8 in skillhub.club response: {e}"))
