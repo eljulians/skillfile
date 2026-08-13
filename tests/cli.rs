@@ -546,6 +546,41 @@ fn add_keeps_spaced_local_path_valid() {
 }
 
 #[test]
+fn add_preserves_manifest_entry_without_trailing_newline() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+    std::fs::write(dir.path().join("skills/existing.md"), "# Existing\n").unwrap();
+    std::fs::write(dir.path().join("skills/new.md"), "# New\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "local  skill  skills/existing.md",
+    )
+    .unwrap();
+
+    sf(dir.path())
+        .env(
+            "SKILLFILE_CONFIG_PATH",
+            dir.path().join("missing-config.toml"),
+        )
+        .args(["add", "local", "skill", "skills/new.md"])
+        .assert()
+        .success();
+    sf(dir.path()).arg("validate").assert().success();
+
+    let text = std::fs::read_to_string(dir.path().join("Skillfile")).unwrap();
+    assert!(
+        text.lines()
+            .any(|line| line == "local  skill  skills/existing.md"),
+        "existing entry was not preserved:\n{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|line| line == "local  skill  skills/new.md"),
+        "new entry was not added:\n{text}"
+    );
+}
+
+#[test]
 fn add_then_remove() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("skills")).unwrap();
