@@ -19,8 +19,9 @@ fn build_manifest_with_targets(existing: &str, new_targets: &[(String, String)])
     let mut non_install: Vec<&str> = existing
         .lines()
         .filter(|line| {
-            let stripped = line.trim();
-            !stripped.starts_with("install ") && stripped != "install"
+            let stripped = skillfile_core::parser::strip_inline_comment(line.trim());
+            let parts = skillfile_core::parser::split_line(stripped).unwrap_or_default();
+            parts.first().map(|s| s.as_str()) != Some("install")
         })
         .collect();
 
@@ -625,6 +626,17 @@ mod tests {
     fn replaces_existing_install_targets() {
         let result = build_manifest_with_targets(
             "install  claude-code  global\nlocal  skill  skills/foo.md\n",
+            &[("gemini-cli".into(), "local".into())],
+        );
+        assert!(!result.contains("claude-code"));
+        assert!(result.contains("install  gemini-cli  local"));
+        assert!(result.contains("local  skill  skills/foo.md"));
+    }
+
+    #[test]
+    fn replaces_tab_separated_install_targets() {
+        let result = build_manifest_with_targets(
+            "install\tclaude-code\tglobal\nlocal  skill  skills/foo.md\n",
             &[("gemini-cli".into(), "local".into())],
         );
         assert!(!result.contains("claude-code"));
