@@ -11,6 +11,7 @@ use skillfile_core::patch::{
     relative_file_key, text_content_eq, walkdir,
 };
 use skillfile_deploy::paths::{installed_dir_file_sets, installed_paths};
+use skillfile_sources::http::HttpClient;
 use skillfile_sources::strategy::{content_file, is_cached_dir_entry, meta_sha};
 use skillfile_sources::sync::vendor_dir_for;
 
@@ -310,45 +311,111 @@ struct StatusContext<'a> {
     repo_root: &'a Path,
     locked: &'a std::collections::BTreeMap<String, LockEntry>,
     check_upstream: bool,
-    sha_cache: &'a mut HashMap<(String, String), String>,
+    client: &'a dyn HttpClient,
+    sha_cache: &'a mut HashMap<ShaCacheKey, String>,
     col_w: usize,
+}
+
+/// Cache slot for one resolved upstream SHA: forge scope, project, ref. The
+/// scope keeps a GitHub and a GitLab project of the same name apart.
+type ShaCacheKey = (String, String, String);
+
+/// The forge a locked entry points at. GitLab carries its host so a
+/// self-hosted instance is queried instead of gitlab.com.
+enum Forge {
+    Github,
+    Gitlab { host: String },
+}
+
+impl Forge {
+    fn cache_scope(&self) -> &str {
+        match self {
+            Self::Github => "github",
+            Self::Gitlab { host } => host,
+        }
+    }
+}
+
+/// The upstream ref a locked entry is measured against.
+struct UpstreamRef {
+    forge: Forge,
+    owner_repo: String,
+    ref_: String,
+}
+
+impl UpstreamRef {
+    fn cache_key(&self) -> ShaCacheKey {
+        (
+            self.forge.cache_scope().to_string(),
+            self.owner_repo.clone(),
+            self.ref_.clone(),
+        )
+    }
+
+    fn resolve(&self, client: &dyn HttpClient) -> Result<String, SkillfileError> {
+        match &self.forge {
+            Forge::Github => skillfile_sources::resolver::resolve_github_sha(
+                client,
+                &self.owner_repo,
+                &self.ref_,
+            ),
+            Forge::Gitlab { host } => skillfile_sources::resolver::resolve_gitlab_sha(
+                client,
+                &self.owner_repo,
+                &self.ref_,
+                host,
+            ),
+        }
+    }
 }
 
 fn resolve_upstream_sha(
     ctx: &mut StatusContext<'_>,
-    owner_repo: &str,
-    ref_: &str,
+    target: &UpstreamRef,
 ) -> Result<String, SkillfileError> {
-    let cache_key = (owner_repo.to_string(), ref_.to_string());
+    let cache_key = target.cache_key();
     if let Some(cached) = ctx.sha_cache.get(&cache_key) {
         return Ok(cached.clone());
     }
-    let client = skillfile_sources::http::UreqClient::new();
-    let resolved = skillfile_sources::resolver::resolve_github_sha(&client, owner_repo, ref_)?;
+    let resolved = target.resolve(ctx.client)?;
     ctx.sha_cache.insert(cache_key, resolved.clone());
     Ok(resolved)
 }
 
-fn upstream_status_for_github(
+fn upstream_status(
     ctx: &mut StatusContext<'_>,
     entry: &Entry,
     sha: &str,
 ) -> Result<String, SkillfileError> {
-    let SourceFields::Github {
-        owner_repo, ref_, ..
-    } = &entry.source
-    else {
-        let sha_short = short_sha(sha);
-        return Ok(format!(
-            "{}  {}",
-            style("locked").dim(),
-            style(format!("sha={sha_short}")).dim(),
-        ));
-    };
-    let owner_repo = owner_repo.clone();
-    let ref_ = ref_.clone();
-    let upstream_sha = resolve_upstream_sha(ctx, &owner_repo, &ref_)?;
     let sha_short = short_sha(sha);
+    let target = match &entry.source {
+        SourceFields::Github {
+            owner_repo, ref_, ..
+        } => UpstreamRef {
+            forge: Forge::Github,
+            owner_repo: owner_repo.clone(),
+            ref_: ref_.clone(),
+        },
+        SourceFields::Gitlab {
+            owner_repo, ref_, ..
+        } => UpstreamRef {
+            forge: Forge::Gitlab {
+                host: skillfile_sources::http::gitlab_host(),
+            },
+            owner_repo: owner_repo.clone(),
+            ref_: ref_.clone(),
+        },
+        // Neither source carries an upstream ref to compare the lock against,
+        // so say so instead of rendering it like a checked entry.
+        SourceFields::Local { .. } | SourceFields::Url { .. } => {
+            return Ok(format!(
+                "{}  {}",
+                style("locked").dim(),
+                style(format!("sha={sha_short}  (upstream n/a)")).dim(),
+            ));
+        }
+    };
+    let upstream_sha = resolve_upstream_sha(ctx, &target)?;
     if upstream_sha == sha {
         Ok(format!(
             "{}  {}",
@@ -429,7 +496,7 @@ fn format_entry_status(
             style(format!("sha={sha_short}  (missing or stale)")).yellow(),
         )
     } else if ctx.check_upstream {
-        upstream_status_for_github(ctx, entry, sha)?
+        upstream_status(ctx, entry, sha)?
     } else {
         format!(
             "{}  {}",
@@ -462,11 +529,13 @@ pub fn cmd_status(repo_root: &Path, check_upstream: bool) -> Result<(), Skillfil
         .unwrap_or(10)
         + 2;
 
+    let client = skillfile_sources::http::UreqClient::new();
     let mut ctx = StatusContext {
         manifest: &manifest,
         repo_root,
         locked: &locked,
         check_upstream,
+        client: &client,
         sha_cache: &mut HashMap::new(),
         col_w,
     };
@@ -570,6 +639,7 @@ fn format_summary(manifest: &Manifest, repo_root: &Path) -> String {
 mod tests {
     use super::*;
     use skillfile_core::models::{EntityType, InstallTarget, Scope, SourceFields};
+    use skillfile_sources::http::HttpClient;
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
@@ -657,6 +727,78 @@ mod tests {
                 },
             }],
             install_targets: vec![claude_local_target()],
+        }
+    }
+
+    const UPSTREAM_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn gitlab_manifest() -> Manifest {
+        Manifest {
+            entries: vec![Entry {
+                entity_type: EntityType::Agent,
+                name: "my-agent".into(),
+                source: SourceFields::Gitlab {
+                    owner_repo: "my-group/my-project".into(),
+                    path_in_repo: "agents/agent.md".into(),
+                    ref_: "main".into(),
+                },
+            }],
+            install_targets: vec![claude_local_target()],
+        }
+    }
+
+    fn url_manifest() -> Manifest {
+        Manifest {
+            entries: vec![Entry {
+                entity_type: EntityType::Agent,
+                name: "my-agent".into(),
+                source: SourceFields::Url {
+                    url: "https://example.com/agent.md".into(),
+                },
+            }],
+            install_targets: vec![claude_local_target()],
+        }
+    }
+
+    fn locked_map(key: &str, sha: &str) -> std::collections::BTreeMap<String, LockEntry> {
+        std::collections::BTreeMap::from([(
+            key.to_string(),
+            LockEntry {
+                sha: sha.to_string(),
+                raw_url: "https://example.com".to_string(),
+            },
+        )])
+    }
+
+    /// Answers the forge API by URL suffix, so the host of the moment does not
+    /// have to be spelled out. Anything unexpected fails the test loudly.
+    #[derive(Default)]
+    struct FakeForge {
+        json: Vec<(String, String)>,
+    }
+
+    impl FakeForge {
+        fn with_json(mut self, url_suffix: &str, body: &str) -> Self {
+            self.json.push((url_suffix.to_string(), body.to_string()));
+            self
+        }
+    }
+
+    impl HttpClient for FakeForge {
+        fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SkillfileError> {
+            panic!("unexpected raw fetch in test: {url}");
+        }
+
+        fn get_json(&self, url: &str) -> Result<Option<String>, SkillfileError> {
+            Ok(self
+                .json
+                .iter()
+                .find(|(suffix, _)| url.ends_with(suffix.as_str()))
+                .map(|(_, body)| body.clone()))
+        }
+
+        fn post_json(&self, url: &str, _body: &str) -> Result<Vec<u8>, SkillfileError> {
+            panic!("unexpected post in test: {url}");
         }
     }
 
@@ -1221,6 +1363,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &agent_locked_map(SHA),
             check_upstream: false,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 10,
         };
@@ -1252,6 +1395,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: false,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
@@ -1277,6 +1421,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: false,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
@@ -1288,6 +1433,120 @@ mod tests {
         assert!(
             line.contains("skills/foo.md"),
             "warning should include the path, got: {line}"
+        );
+    }
+
+    // -- format_entry_status: --check-upstream across source types --
+
+    #[test]
+    fn check_upstream_reports_an_outdated_gitlab_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
+
+        let manifest = gitlab_manifest();
+        let locked = locked_map("gitlab/agent/my-agent", SHA);
+        let client = FakeForge::default().with_json(
+            "/api/v4/projects/my-group%2Fmy-project/repository/commits/main",
+            &serde_json::json!({ "id": UPSTREAM_SHA }).to_string(),
+        );
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: true,
+            client: &client,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("outdated"),
+            "a locked GitLab entry behind upstream should read as outdated, got: {line}"
+        );
+        assert!(
+            line.contains(short_sha(UPSTREAM_SHA)),
+            "the line should name the upstream sha, got: {line}"
+        );
+    }
+
+    #[test]
+    fn check_upstream_reports_a_current_gitlab_entry_as_up_to_date() {
+        let dir = tempfile::tempdir().unwrap();
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
+
+        let manifest = gitlab_manifest();
+        let locked = locked_map("gitlab/agent/my-agent", SHA);
+        let client = FakeForge::default().with_json(
+            "/api/v4/projects/my-group%2Fmy-project/repository/commits/main",
+            &serde_json::json!({ "id": SHA }).to_string(),
+        );
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: true,
+            client: &client,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("up to date"),
+            "a GitLab entry at the upstream sha should read as up to date, got: {line}"
+        );
+    }
+
+    #[test]
+    fn check_upstream_marks_a_url_entry_as_not_applicable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_meta(dir.path(), &VE_AGENT, SHA);
+        write_vendor_content(
+            dir.path(),
+            &VendorFile {
+                entry: &VE_AGENT,
+                filename: "agent.md",
+            },
+            ORIGINAL,
+        );
+
+        let manifest = url_manifest();
+        let locked = locked_map("url/agent/my-agent", SHA);
+        let client = FakeForge::default();
+        let mut sha_cache = HashMap::new();
+        let mut ctx = StatusContext {
+            manifest: &manifest,
+            repo_root: dir.path(),
+            locked: &locked,
+            check_upstream: true,
+            client: &client,
+            sha_cache: &mut sha_cache,
+            col_w: 12,
+        };
+
+        let line = format_entry_status(&manifest.entries[0], &mut ctx).unwrap();
+        assert!(
+            line.contains("upstream n/a"),
+            "a url entry has no upstream ref to compare, and the line must say so, got: {line}"
         );
     }
 
@@ -1491,6 +1750,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: false,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
@@ -1515,7 +1775,11 @@ mod tests {
         let mut sha_cache = HashMap::new();
         // Pre-populate cache so no HTTP call is made; same sha = up to date
         sha_cache.insert(
-            ("owner/repo".to_string(), "main".to_string()),
+            (
+                "github".to_string(),
+                "owner/repo".to_string(),
+                "main".to_string(),
+            ),
             sha.to_string(),
         );
         let mut ctx = StatusContext {
@@ -1523,6 +1787,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: true,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
@@ -1541,7 +1806,11 @@ mod tests {
         let locked = std::collections::BTreeMap::new();
         let mut sha_cache = HashMap::new();
         sha_cache.insert(
-            ("owner/repo".to_string(), "main".to_string()),
+            (
+                "github".to_string(),
+                "owner/repo".to_string(),
+                "main".to_string(),
+            ),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
         );
         let mut ctx = StatusContext {
@@ -1549,11 +1818,12 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: true,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
         let locked_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let result = upstream_status_for_github(&mut ctx, entry, locked_sha).unwrap();
+        let result = upstream_status(&mut ctx, entry, locked_sha).unwrap();
         assert!(
             result.contains("outdated"),
             "expected 'outdated', got: {result}"
@@ -1571,6 +1841,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: false,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
@@ -1602,6 +1873,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: false,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
@@ -1629,6 +1901,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: false,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
@@ -1667,6 +1940,7 @@ mod tests {
             repo_root: dir.path(),
             locked: &locked,
             check_upstream: false,
+            client: &FakeForge::default(),
             sha_cache: &mut sha_cache,
             col_w: 12,
         };
