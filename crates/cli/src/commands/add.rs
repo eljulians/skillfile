@@ -178,6 +178,8 @@ pub struct BulkAddArgs<'a> {
     pub owner_repo: &'a str,
     pub base_path: &'a str,
     pub ref_: Option<&'a str>,
+    /// `--name`, honoured only when discovery resolves to a single entry.
+    pub name: Option<&'a str>,
     pub no_interactive: bool,
 }
 
@@ -212,6 +214,8 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
         )));
     }
 
+    ensure_name_is_unambiguous(&entries, args)?;
+
     // Single entry discovered — skip TUI, add directly.
     if entries.len() == 1 {
         add_selected(&entries, args, repo_root);
@@ -221,6 +225,26 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
     let selected = select_entries(&entries, args)?;
     if !selected.is_empty() {
         add_selected(&selected, args, repo_root);
+    }
+    Ok(())
+}
+
+/// A name renames one entry, so discovery that resolved to several has no
+/// single entry to apply it to: reusing it would collide on the second add,
+/// and choosing one of them would be a guess.
+fn ensure_name_is_unambiguous(
+    entries: &[String],
+    args: &BulkAddArgs<'_>,
+) -> Result<(), SkillfileError> {
+    if args.name.is_some() && entries.len() > 1 {
+        return Err(SkillfileError::Manifest(format!(
+            "--name cannot be used with multi-entry discovery: '{}' matched {} {}s in {}. \
+             Point the path at one entry to name it.",
+            args.base_path,
+            entries.len(),
+            args.entity_type,
+            args.owner_repo
+        )));
     }
     Ok(())
 }
@@ -247,6 +271,10 @@ fn select_entries(
 }
 
 fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
+    // `ensure_name_is_unambiguous` has already rejected a name against a
+    // multi-entry discovery, so the only way to get here with one is a single
+    // selection.
+    let name = if selected.len() == 1 { args.name } else { None };
     let mut added = 0usize;
     let mut skipped = 0usize;
     for path in selected {
@@ -255,7 +283,7 @@ fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
             owner_repo: args.owner_repo,
             path,
             ref_: args.ref_,
-            name: None,
+            name,
         });
         match cmd_add(&entry, repo_root) {
             Ok(()) => added += 1,
@@ -592,6 +620,7 @@ fn wizard_github(repo_root: &Path) -> Result<(), SkillfileError> {
             owner_repo: &parsed_repo,
             base_path: &base_path,
             ref_: parsed_ref.as_deref(),
+            name: None,
             no_interactive: false,
         },
         repo_root,
@@ -1107,12 +1136,77 @@ mod tests {
             owner_repo: "owner/repo",
             base_path: "skills",
             ref_: None,
+            name: None,
             no_interactive: true,
         };
         add_selected(&paths, &args, dir.path());
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("owner/repo"));
         assert!(text.contains("skills/my-tool.md"));
+    }
+
+    #[test]
+    fn add_selected_single_entry_honours_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "");
+        let paths = vec!["skills/slack-gif-creator.md".to_string()];
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            name: Some("custom"),
+            no_interactive: true,
+        };
+        add_selected(&paths, &args, dir.path());
+        let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        assert!(text.contains("custom"), "{text}");
+        assert!(!text.contains("slack-gif-creator  "), "{text}");
+    }
+
+    #[test]
+    fn ensure_name_is_unambiguous_accepts_a_single_entry() {
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            name: Some("custom"),
+            no_interactive: true,
+        };
+        let entries = vec!["skills/only.md".to_string()];
+        assert!(ensure_name_is_unambiguous(&entries, &args).is_ok());
+    }
+
+    #[test]
+    fn ensure_name_is_unambiguous_rejects_multiple_entries() {
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            name: Some("custom"),
+            no_interactive: true,
+        };
+        let entries = vec!["skills/alpha.md".to_string(), "skills/beta.md".to_string()];
+        let error = ensure_name_is_unambiguous(&entries, &args).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("--name cannot be used"), "{message}");
+        assert!(message.contains("matched 2 skills"), "{message}");
+    }
+
+    #[test]
+    fn ensure_name_is_unambiguous_ignores_multiple_entries_without_a_name() {
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            name: None,
+            no_interactive: true,
+        };
+        let entries = vec!["skills/alpha.md".to_string(), "skills/beta.md".to_string()];
+        assert!(ensure_name_is_unambiguous(&entries, &args).is_ok());
     }
 
     #[test]
@@ -1125,6 +1219,7 @@ mod tests {
             owner_repo: "owner/repo",
             base_path: "skills",
             ref_: None,
+            name: None,
             no_interactive: true,
         };
         add_selected(&paths, &args, dir.path());
@@ -1223,6 +1318,7 @@ mod tests {
             owner_repo: "owner/repo",
             base_path: "skills",
             ref_: None,
+            name: None,
             no_interactive: true,
         };
         add_selected(&paths, &args, dir.path());
