@@ -21,7 +21,7 @@ fn build_manifest_with_targets(existing: &str, new_targets: &[(String, String)])
         .filter(|line| {
             let stripped = skillfile_core::parser::strip_inline_comment(line.trim());
             let parts = skillfile_core::parser::split_line(stripped).unwrap_or_default();
-            parts.first().map(|s| s.as_str()) != Some("install")
+            parts.first().map(String::as_str) != Some("install")
         })
         .collect();
 
