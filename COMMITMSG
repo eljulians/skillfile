@@ -1,0 +1,7 @@
+fix: re-running `init` fails to remove tab-separated `install` lines - dese
+
+- crates\cli\src\commands\init.rs: treat tab-separated install lines like space-separated
+
+Fixes #200
+
+Signed-off-by: Vedant Madane <6527493+VedantMadane@users.noreply.github.com>

@@ -15,12 +15,21 @@ const GITIGNORE_ENTRIES: &[&str] = &[".skillfile/cache/", ".skillfile/conflict"]
 
 /// Build a new manifest string with install lines replaced.
 /// Pure transformation: takes existing content and new targets, returns new content.
+
+fn is_install_line(stripped: &str) -> bool {
+    let rest = match stripped.strip_prefix("install") {
+        Some(r) => r,
+        None => return false,
+    };
+    rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
 fn build_manifest_with_targets(existing: &str, new_targets: &[(String, String)]) -> String {
     let mut non_install: Vec<&str> = existing
         .lines()
         .filter(|line| {
             let stripped = line.trim();
-            !stripped.starts_with("install ") && stripped != "install"
+            !is_install_line(stripped) && stripped != "install"
         })
         .collect();
 
