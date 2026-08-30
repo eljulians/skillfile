@@ -44,11 +44,11 @@ fn is_valid_name(name: &str) -> bool {
 ///
 /// Unquoted lines split identically to whitespace split.
 /// Quoted fields preserve internal spaces and comment markers.
-fn split_line(line: &str) -> Option<Vec<String>> {
+pub fn split_line(line: &str) -> Option<Vec<String>> {
     shlex::split(line)
 }
 
-fn strip_inline_comment(line: &str) -> &str {
+pub fn strip_inline_comment(line: &str) -> &str {
     let mut quote = None;
     let mut escaped = false;
     let mut previous_was_whitespace = false;

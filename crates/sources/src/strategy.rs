@@ -94,8 +94,7 @@ fn cache_has_auxiliary_files_from(root: &Path, dir: &Path) -> bool {
             return cache_has_auxiliary_files_from(root, &path);
         }
         path.strip_prefix(root)
-            .ok()
-            .is_some_and(|relative| relative != Path::new("SKILL.md"))
+            .is_ok_and(|relative| relative != Path::new("SKILL.md"))
     })
 }
 
