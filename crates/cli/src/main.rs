@@ -569,7 +569,14 @@ fn is_discovery_path(path: &str) -> bool {
 }
 
 type AddEntryParts<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
-type BulkAddParts<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, bool);
+type BulkAddParts<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<&'a str>,
+    Option<&'a str>,
+    bool,
+);
 
 fn github_entry_from_parts(
     (entity_type, owner_repo, path, ref_, name): AddEntryParts<'_>,
@@ -598,7 +605,7 @@ fn gitlab_entry_from_parts(
 }
 
 fn add_github_bulk(
-    (entity_type, owner_repo, base_path, ref_, no_interactive): BulkAddParts<'_>,
+    (entity_type, owner_repo, base_path, ref_, name, no_interactive): BulkAddParts<'_>,
     repo_root: &std::path::Path,
 ) -> Result<(), SkillfileError> {
     let (parsed_repo, parsed_ref) = parse_owner_repo_ref(owner_repo);
@@ -609,6 +616,7 @@ fn add_github_bulk(
             owner_repo: &parsed_repo,
             base_path,
             ref_: explicit_ref.as_deref(),
+            name,
             no_interactive,
         },
         repo_root,
@@ -622,7 +630,7 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
             owner_repo,
             path,
             ref_,
-            name: _,
+            name,
             no_interactive,
         } if is_discovery_path(path.as_deref().unwrap_or(".")) => {
             return add_github_bulk(
@@ -631,6 +639,7 @@ fn handle_add(source: AddSource, repo_root: &std::path::Path) -> Result<(), Skil
                     &owner_repo,
                     path.as_deref().unwrap_or("."),
                     ref_.as_deref(),
+                    name.as_deref(),
                     no_interactive,
                 ),
                 repo_root,
