@@ -6,6 +6,20 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+## v1.9.2 - 31-08-2026
+
+### Changed
+
+- **Rust 1.88 is required for source builds** - `cargo install --locked skillfile` and other source builds now require Rust 1.88 or newer; prebuilt installs are unaffected.
+- **Dependency refresh** - bumped `ureq` to 3.4.0, `thiserror` to 2.0.20, `similar` to 3.1.2, `clap_complete` to 4.6.9, `html-escape` to 0.2.15, `shlex` to 2.0.1, `toml` to 1.1.4, `ratatui` to 0.30.2, and `serial_test` to 3.5.0.
+
+### Fixed
+
+- **Re-running `skillfile init` preserves tab-separated install lines** - existing platform configuration is now recognized when entries use tabs between fields by @vjymisal0
+- **`skillfile add` preserves entries without a trailing newline** - adding an entry no longer merges with the final existing entry in a newline-free `Skillfile` by @alloutflo
+- **Registry searches handle special characters** - search queries containing characters such as spaces are encoded correctly before being sent to registries by @luantaraschi
+- **Failed registry searches now report an error** - `skillfile search` no longer presents an empty result as success when every configured registry fails by @luantaraschi
+
 ## v1.9.1 - 27-07-2026
 
 ### Changed
