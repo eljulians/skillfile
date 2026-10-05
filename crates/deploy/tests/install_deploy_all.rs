@@ -321,3 +321,290 @@ fn install_adds_missing_nested_files_without_overwriting_existing_files() {
         "print('new')\n"
     );
 }
+
+#[test]
+fn install_rejects_duplicate_flat_agent_names_before_writing_target() {
+    let dirs = Dirs::new();
+    let root = dirs.path();
+    std::fs::write(
+        root.join("Skillfile"),
+        "local agent team agents/team\ninstall claude-code local\n",
+    )
+    .unwrap();
+    for source in ["backend/agent.md", "frontend/agent.md"] {
+        let path = root.join("agents/team").join(source);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, source).unwrap();
+    }
+
+    let error = cmd_install(root, &default_opts()).unwrap_err().to_string();
+
+    assert!(error.contains("agent.md"), "{error}");
+    assert!(error.contains("backend/agent.md"), "{error}");
+    assert!(error.contains("frontend/agent.md"), "{error}");
+    assert!(!root.join(".claude/agents/agent.md").exists());
+}
+
+#[test]
+fn update_rejects_cross_entry_flat_collision_without_replacing_local_edit() {
+    let dirs = Dirs::new();
+    let root = dirs.path();
+    std::fs::write(
+        root.join("Skillfile"),
+        "local agent backend agents/backend\n\
+         local agent frontend agents/frontend\n\
+         install claude-code local\n",
+    )
+    .unwrap();
+    for entry in ["backend", "frontend"] {
+        let path = root.join("agents").join(entry).join("agent.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("# {entry}\n")).unwrap();
+    }
+    let installed = root.join(".claude/agents/agent.md");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::write(&installed, "# My local edit\n").unwrap();
+
+    let error = cmd_install(
+        root,
+        &CmdInstallOpts {
+            dry_run: false,
+            update: true,
+            extra_targets: None,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("backend:agent.md"), "{error}");
+    assert!(error.contains("frontend:agent.md"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(installed).unwrap(),
+        "# My local edit\n"
+    );
+}
+
+#[test]
+fn update_rejects_cached_flat_collision_before_auto_pin() {
+    let dirs = Dirs::new();
+    let root = dirs.path();
+    std::fs::write(
+        root.join("Skillfile"),
+        "github agent team owner/repo agents/team\ninstall claude-code local\n",
+    )
+    .unwrap();
+    let cache = root.join(".skillfile/cache/agents/team");
+    for source in ["backend/agent.md", "frontend/agent.md"] {
+        let path = cache.join(source);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("# {source}\n")).unwrap();
+    }
+    std::fs::write(cache.join(".meta"), r#"{"sha":"cached"}"#).unwrap();
+    let locked = BTreeMap::from([(
+        "github/agent/team".to_string(),
+        LockEntry {
+            sha: "cached".into(),
+            raw_url: "https://example.invalid/team".into(),
+        },
+    )]);
+    write_lock(root, &locked).unwrap();
+    let installed = root.join(".claude/agents/agent.md");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::write(&installed, [0xff, 0xfe]).unwrap();
+
+    let error = cmd_install(
+        root,
+        &CmdInstallOpts {
+            dry_run: false,
+            update: true,
+            extra_targets: None,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("duplicate flat destination"), "{error}");
+    assert_eq!(std::fs::read(installed).unwrap(), [0xff, 0xfe]);
+    assert!(!root.join(".skillfile/patches").exists());
+}
+
+#[test]
+fn install_rejects_flat_collision_between_file_and_directory_entries() {
+    let dirs = Dirs::new();
+    let root = dirs.path();
+    std::fs::write(
+        root.join("Skillfile"),
+        "local agent agent agents/standalone.md\n\
+         local agent team agents/team\n\
+         install-path team-agents agent ./shared-agents\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("agents/team")).unwrap();
+    std::fs::write(root.join("agents/standalone.md"), "# Standalone\n").unwrap();
+    std::fs::write(root.join("agents/team/agent.md"), "# Team\n").unwrap();
+
+    let error = cmd_install(root, &default_opts()).unwrap_err().to_string();
+
+    assert!(error.contains("agent:standalone.md"), "{error}");
+    assert!(error.contains("team:agent.md"), "{error}");
+    assert!(!root.join("shared-agents/agent.md").exists());
+}
+
+fn target_aliases_agent_names(target: &Path) -> bool {
+    // Probe the actual target directory rather than assuming an OS-wide case rule.
+    let upper = target.join("Agent.md");
+    let lower = target.join("agent.md");
+    drop(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&upper)
+            .unwrap(),
+    );
+    let names_alias = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lower)
+    {
+        Ok(file) => {
+            drop(file);
+            false
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => true,
+        Err(error) => panic!("cannot probe target filename behavior: {error}"),
+    };
+    std::fs::remove_file(&upper).unwrap();
+    if !names_alias {
+        std::fs::remove_file(&lower).unwrap();
+    }
+    eprintln!("actual target filename case alias: {names_alias}");
+    names_alias
+}
+
+fn write_case_alias_agents(root: &Path) {
+    std::fs::write(
+        root.join("Skillfile"),
+        "local agent team agents/team\ninstall claude-code local\n",
+    )
+    .unwrap();
+    for (source, content) in [
+        ("backend/Agent.md", "# Backend\n"),
+        ("frontend/agent.md", "# Frontend\n"),
+    ] {
+        let path = root.join("agents/team").join(source);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+}
+
+#[test]
+fn install_rejects_flat_agent_names_that_alias_on_the_target_filesystem() {
+    let dirs = Dirs::new();
+    let root = dirs.path();
+    let target = root.join(".claude/agents");
+    std::fs::create_dir_all(&target).unwrap();
+    let names_alias = target_aliases_agent_names(&target);
+    let existing = target.join("existing.md");
+    std::fs::write(&existing, "# User content\n").unwrap();
+    write_case_alias_agents(root);
+
+    let result = cmd_install(root, &default_opts());
+
+    if names_alias {
+        assert!(
+            result.is_err(),
+            "aliased names must be rejected before install"
+        );
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("backend/Agent.md"), "{error}");
+        assert!(error.contains("frontend/agent.md"), "{error}");
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+    } else {
+        result.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target.join("Agent.md")).unwrap(),
+            "# Backend\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("agent.md")).unwrap(),
+            "# Frontend\n"
+        );
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 3);
+    }
+    assert_eq!(
+        std::fs::read_to_string(existing).unwrap(),
+        "# User content\n"
+    );
+}
+
+#[test]
+fn install_cleans_new_target_after_case_alias_check() {
+    let dirs = Dirs::new();
+    let root = dirs.path();
+    let target = root.join(".claude/agents");
+    std::fs::create_dir_all(&target).unwrap();
+    let names_alias = target_aliases_agent_names(&target);
+    std::fs::remove_dir(&target).unwrap();
+    std::fs::remove_dir(root.join(".claude")).unwrap();
+    write_case_alias_agents(root);
+
+    let result = cmd_install(root, &default_opts());
+
+    if names_alias {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("backend/Agent.md"), "{error}");
+        assert!(error.contains("frontend/agent.md"), "{error}");
+        assert!(!root.join(".claude").exists());
+    } else {
+        result.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target.join("Agent.md")).unwrap(),
+            "# Backend\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("agent.md")).unwrap(),
+            "# Frontend\n"
+        );
+        assert_eq!(std::fs::read_dir(target).unwrap().count(), 2);
+    }
+}
+
+#[test]
+fn dry_run_case_alias_check_does_not_create_target() {
+    let dirs = Dirs::new();
+    let root = dirs.path();
+    write_case_alias_agents(root);
+
+    cmd_install(
+        root,
+        &CmdInstallOpts {
+            dry_run: true,
+            ..default_opts()
+        },
+    )
+    .unwrap();
+
+    assert!(!root.join(".claude").exists());
+}
+
+#[test]
+fn case_alias_validation_reports_non_directory_target_without_changing_it() {
+    let dirs = Dirs::new();
+    let root = dirs.path();
+    let target = root.join(".claude/agents");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "# Existing target\n").unwrap();
+    write_case_alias_agents(root);
+
+    let error = cmd_install(root, &default_opts()).unwrap_err().to_string();
+
+    assert!(
+        error.contains("cannot validate flat destinations"),
+        "{error}"
+    );
+    assert!(!error.contains("duplicate flat destination"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(target).unwrap(),
+        "# Existing target\n"
+    );
+}

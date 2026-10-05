@@ -9,8 +9,8 @@ use skillfile_core::models::{
 };
 use skillfile_core::parser::{infer_name, parse_manifest, parse_owner_repo_ref, MANIFEST_NAME};
 use skillfile_deploy::install::{
-    capture_install_snapshot, install_entry_with_outcome, InstallOutcome, InstallSkipReason,
-    InstallSnapshot,
+    capture_install_snapshot, ensure_unique_flat_install_destinations, install_entry_with_outcome,
+    InstallOutcome, InstallSkipReason, InstallSnapshot,
 };
 use skillfile_sources::strategy::format_parts;
 use skillfile_sources::sync::{sync_entry, vendor_dir_for, SyncContext};
@@ -62,6 +62,7 @@ fn sync_and_install(
     };
     sync_entry(&client, entry, &mut sync_ctx)?;
     write_lock(ctx.repo_root, &sync_ctx.locked)?;
+    ensure_unique_flat_install_destinations(ctx.manifest, ctx.repo_root, false)?;
     ctx.rollback
         .capture_install_snapshot(&InstallSnapshotCapture {
             entry,
@@ -722,6 +723,30 @@ mod tests {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
     }
 
+    fn target_aliases_case_names(target: &Path) -> bool {
+        let upper = target.join("Probe.md");
+        let lower = target.join("probe.md");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&upper)
+            .unwrap();
+        let aliases = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lower)
+        {
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => true,
+            Err(error) => panic!("cannot probe target filename behavior: {error}"),
+        };
+        std::fs::remove_file(upper).unwrap();
+        if !aliases {
+            std::fs::remove_file(lower).unwrap();
+        }
+        aliases
+    }
+
     #[test]
     fn interactive_stdio_requires_both_streams() {
         assert!(has_interactive_stdio(true, true));
@@ -864,6 +889,77 @@ mod tests {
         let entry = entry_from_local("skill", "skills/foo.md", None);
         // Should succeed without install targets
         cmd_add(&entry, dir.path()).unwrap();
+    }
+
+    #[test]
+    fn add_rolls_back_when_agent_destination_collides_with_existing_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = "install claude-code local\nlocal agent backend agents/backend\n";
+        write_manifest(dir.path(), manifest);
+        for entry in ["backend", "frontend"] {
+            let source = dir.path().join("agents").join(entry).join("agent.md");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::write(source, format!("# {entry}\n")).unwrap();
+        }
+        let installed = dir.path().join(".claude/agents/agent.md");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, "# Existing\n").unwrap();
+        let entry = entry_from_local("agent", "agents/frontend", Some("frontend"));
+
+        let error = cmd_add(&entry, dir.path()).unwrap_err().to_string();
+
+        assert!(error.contains("backend:agent.md"), "{error}");
+        assert!(error.contains("frontend:agent.md"), "{error}");
+        assert_failed_add_state(dir.path(), manifest);
+        assert_eq!(std::fs::read_to_string(installed).unwrap(), "# Existing\n");
+    }
+
+    #[test]
+    fn add_uses_target_case_rules_and_preserves_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target = root.join(".claude/agents");
+        std::fs::create_dir_all(&target).unwrap();
+        let aliases = target_aliases_case_names(&target);
+
+        let manifest = "install claude-code local\nlocal agent backend agents/backend\n";
+        write_manifest(root, manifest);
+        for (entry, name) in [("backend", "Agent.md"), ("frontend", "agent.md")] {
+            let source = root.join("agents").join(entry).join(name);
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::write(source, format!("# {entry}\n")).unwrap();
+        }
+        let installed = target.join("Agent.md");
+        std::fs::write(&installed, "# Existing\n").unwrap();
+        let entry = entry_from_local("agent", "agents/frontend", Some("frontend"));
+
+        let result = cmd_add(&entry, root);
+        let updated_manifest = std::fs::read_to_string(root.join(MANIFEST_NAME)).unwrap();
+        if aliases {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("backend:Agent.md"), "{error}");
+            assert!(error.contains("frontend:agent.md"), "{error}");
+            assert_failed_add_state(root, manifest);
+        } else {
+            result.unwrap();
+            assert!(updated_manifest.contains("local  agent  agents/backend\n"));
+            assert!(updated_manifest.contains("local  agent  agents/frontend\n"));
+            assert_eq!(
+                std::fs::read_to_string(target.join("agent.md")).unwrap(),
+                "# frontend\n"
+            );
+            assert_eq!(std::fs::read_dir(&target).unwrap().count(), 2);
+        }
+        assert_eq!(std::fs::read_to_string(installed).unwrap(), "# Existing\n");
+    }
+
+    fn assert_failed_add_state(root: &Path, manifest: &str) {
+        assert_eq!(
+            std::fs::read_to_string(root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        assert!(!root.join("Skillfile.lock").exists());
+        assert!(!root.join(".skillfile/cache/agents/frontend").exists());
     }
 
     // --- format_line direct tests ---
