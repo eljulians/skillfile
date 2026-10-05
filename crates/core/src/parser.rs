@@ -33,8 +33,12 @@ pub fn infer_name(path_or_url: &str) -> String {
 }
 
 /// Check if a name is filesystem-safe: alphanumeric, dot, hyphen, underscore.
+///
+/// Names made only of dots (`.`, `..`, `...`) are rejected because they
+/// resolve to the current or parent directory once used as a path component.
 fn is_valid_name(name: &str) -> bool {
     !name.is_empty()
+        && !name.chars().all(|c| c == '.')
         && name
             .chars()
             .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_')
@@ -129,7 +133,8 @@ fn parse_github_owner_repo(
     warnings: &mut Vec<String>,
 ) -> Option<(String, Option<String>)> {
     let (owner_repo, at_ref) = parse_owner_repo_ref(raw_owner_repo);
-    if owner_repo.contains('/') {
+    // `owner/repo@` has an empty ref, so the trailing `@` would stay in the repo name.
+    if owner_repo.contains('/') && !raw_owner_repo.ends_with('@') {
         return Some((owner_repo, at_ref));
     }
     warnings.push(format!(
@@ -427,7 +432,7 @@ fn validate_and_push_entry(entry: Entry, lineno: usize, acc: &mut ParseAccumulat
     if !is_valid_name(&entry.name) {
         acc.warnings.push(format!(
             "warning: line {lineno}: invalid name '{}' \
-             — names must match [a-zA-Z0-9._-], skipping",
+             — names must match [a-zA-Z0-9._-] and not be only dots, skipping",
             entry.name
         ));
     } else if acc.seen_names.contains(&entry.name) {
@@ -1217,6 +1222,23 @@ mod tests {
     }
 
     #[test]
+    fn dot_only_entry_names_rejected() {
+        for name in [".", "..", "..."] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = write_manifest(
+                dir.path(),
+                &format!("github  skill  {name}  owner/repo  skills/x.md"),
+            );
+            let r = parse_manifest(&p).unwrap();
+            assert!(r.manifest.entries.is_empty(), "name '{name}' accepted");
+            assert!(r
+                .warnings
+                .iter()
+                .any(|w| w.contains(&format!("invalid name '{name}'"))));
+        }
+    }
+
+    #[test]
     fn inferred_name_validated() {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "local  skill  skills/foo.md");
@@ -1344,6 +1366,18 @@ mod tests {
             "entry with invalid owner/repo should be skipped"
         );
         assert!(r.warnings.iter().any(|w| w.contains("owner/repo")));
+    }
+
+    #[test]
+    fn github_owner_repo_with_empty_at_ref_skipped_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_manifest(dir.path(), "github  skill  owner/repo@  skills/x.md");
+        let r = parse_manifest(&p).unwrap();
+        assert!(r.manifest.entries.is_empty());
+        assert!(r
+            .warnings
+            .iter()
+            .any(|w| w.contains("invalid owner/repo 'owner/repo@'")));
     }
 
     #[test]
