@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use skillfile_core::error::SkillfileError;
 
@@ -312,6 +313,39 @@ enum JsonAttempt {
     Missing { code: u16 },
 }
 
+/// Message for a failure that carries no HTTP status: connection refused, TLS
+/// error, or one of the bounded timeouts. `action` reads as "fetching" or
+/// "posting to" so the sentence names what the command was doing.
+fn transport_error(error: &ureq::Error, action: &str, url: &str) -> SkillfileError {
+    match error {
+        ureq::Error::Timeout(phase) => {
+            SkillfileError::Network(format!("timed out {action} {url} ({phase})"))
+        }
+        _ => SkillfileError::Network(format!("{error} {action} {url}")),
+    }
+}
+
+/// Transport timeouts applied to every request.
+///
+/// ureq leaves all of them unset, so a peer that accepts the socket and never
+/// answers blocks the command forever. Each phase is bounded on its own rather
+/// than with a single global timeout, so a slow but healthy download is not cut
+/// off midway.
+#[derive(Debug, Clone, Copy)]
+struct HttpTimeouts {
+    connect: Duration,
+    recv_response: Duration,
+    recv_body: Duration,
+}
+
+impl HttpTimeouts {
+    const DEFAULT: Self = Self {
+        connect: Duration::from_secs(10),
+        recv_response: Duration::from_secs(30),
+        recv_body: Duration::from_secs(60),
+    };
+}
+
 /// Production HTTP client backed by `ureq::Agent`.
 ///
 /// Attaches `User-Agent` to every request. GitHub `Authorization` header
@@ -323,11 +357,18 @@ pub struct UreqClient {
 
 impl UreqClient {
     pub fn new() -> Self {
+        Self::with_timeouts(HttpTimeouts::DEFAULT)
+    }
+
+    fn with_timeouts(timeouts: HttpTimeouts) -> Self {
         let config = ureq::config::Config::builder()
             // Preserve Authorization header on same-host HTTPS redirects.
             // GitHub returns 301 for renamed repos (api.github.com -> api.github.com);
             // the default (Never) strips auth, causing 401 on the redirect target.
             .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
+            .timeout_connect(Some(timeouts.connect))
+            .timeout_recv_response(Some(timeouts.recv_response))
+            .timeout_recv_body(Some(timeouts.recv_body))
             .build();
         Self {
             agent: ureq::Agent::new_with_config(config),
@@ -378,9 +419,7 @@ impl UreqClient {
                     code: *code,
                     error: SkillfileError::Network(format!("HTTP {code} fetching {url}")),
                 },
-                _ => HttpAttemptError::Other(SkillfileError::Network(format!(
-                    "{e} fetching {url}"
-                ))),
+                _ => HttpAttemptError::Other(transport_error(&e, "fetching", url)),
             })?;
         response.body_mut().read_to_vec().map_err(|e| {
             HttpAttemptError::Other(SkillfileError::Network(format!(
@@ -420,9 +459,9 @@ impl UreqClient {
                 code,
                 error: SkillfileError::Network(format!("HTTP {code} fetching {url}")),
             }),
-            Err(e) => Err(HttpAttemptError::Other(SkillfileError::Network(format!(
-                "{e} fetching {url}"
-            )))),
+            Err(e) => Err(HttpAttemptError::Other(transport_error(
+                &e, "fetching", url,
+            ))),
         }
     }
 
@@ -488,7 +527,7 @@ impl HttpClient for UreqClient {
                 ureq::Error::StatusCode(code) => {
                     SkillfileError::Network(format!("HTTP {code} posting to {url}"))
                 }
-                _ => SkillfileError::Network(format!("{e} posting to {url}")),
+                _ => transport_error(&e, "posting to", url),
             })?;
         response.body_mut().read_to_vec().map_err(|e| {
             SkillfileError::Network(format!("failed to read response from {url}: {e}"))
@@ -508,7 +547,7 @@ impl HttpClient for UreqClient {
                 ureq::Error::StatusCode(code) => {
                     SkillfileError::Network(format!("HTTP {code} posting to {url}"))
                 }
-                _ => SkillfileError::Network(format!("{e} posting to {url}")),
+                _ => transport_error(&e, "posting to", url),
             })?;
         response.body_mut().read_to_vec().map_err(|e| {
             SkillfileError::Network(format!("failed to read response from {url}: {e}"))
@@ -525,6 +564,10 @@ fn json_attempt_into_option(result: JsonAttempt) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
     use super::*;
 
     #[test]
@@ -842,5 +885,112 @@ mod tests {
                 "is_gitlab_url failed for input {input:?}"
             );
         }
+    }
+
+    // -- transport timeouts ---------------------------------------------------
+
+    #[test]
+    fn new_client_bounds_every_transport_phase() {
+        let timeouts = UreqClient::new().agent.config().timeouts();
+        assert_eq!(timeouts.connect, Some(Duration::from_secs(10)));
+        assert_eq!(timeouts.recv_response, Some(Duration::from_secs(30)));
+        assert_eq!(timeouts.recv_body, Some(Duration::from_secs(60)));
+    }
+
+    /// A port nothing listens on, so the connection is refused right away.
+    fn closed_port_url() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener address");
+        drop(listener);
+        format!("http://{addr}/skill.md")
+    }
+
+    #[test]
+    fn a_refused_connection_keeps_the_existing_wording() {
+        let url = closed_port_url();
+        let client = UreqClient::new();
+
+        let fetching = format!("fetching {url}");
+        for (label, error) in [
+            (
+                "get_bytes",
+                client.get_bytes(&url).expect_err("nothing is listening"),
+            ),
+            (
+                "get_json",
+                client.get_json(&url).expect_err("nothing is listening"),
+            ),
+        ] {
+            let text = error.to_string();
+            assert!(
+                text.contains(fetching.as_str()),
+                "{label} should name the url: {text}"
+            );
+            assert!(
+                !text.contains("timed out"),
+                "{label} is not a timeout: {text}"
+            );
+        }
+
+        let posting = format!("posting to {url}");
+        for (label, error) in [
+            (
+                "post_json",
+                client
+                    .post_json(&url, "{}")
+                    .expect_err("nothing is listening"),
+            ),
+            (
+                "post_json_with_bearer",
+                client
+                    .post_json_with_bearer(&BearerPost {
+                        url: &url,
+                        body: "{}",
+                        token: "token",
+                    })
+                    .expect_err("nothing is listening"),
+            ),
+        ] {
+            let text = error.to_string();
+            assert!(
+                text.contains(posting.as_str()),
+                "{label} should name the url: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_bytes_gives_up_on_a_peer_that_never_answers() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let url = format!(
+            "http://{}/skill.md",
+            listener.local_addr().expect("listener address")
+        );
+        // Accept the connection and hold it open without ever writing a response.
+        thread::spawn(move || {
+            let accepted = listener.accept();
+            thread::sleep(Duration::from_secs(3));
+            drop(accepted);
+        });
+
+        let client = UreqClient::with_timeouts(HttpTimeouts {
+            connect: Duration::from_millis(500),
+            recv_response: Duration::from_millis(500),
+            recv_body: Duration::from_millis(500),
+        });
+        let started = Instant::now();
+        let error = client
+            .get_bytes(&url)
+            .expect_err("a stalled peer must not produce a body");
+        let waited = started.elapsed();
+
+        assert!(
+            waited < Duration::from_secs(2),
+            "get_bytes waited {waited:?} on a peer that never answered"
+        );
+        assert!(
+            error.to_string().contains("timed out"),
+            "the error should name the timeout, got: {error}"
+        );
     }
 }
