@@ -145,7 +145,7 @@ url  <entity-type>  [name]  <url>
 
 ### Valid Characters
 
-Names must match the pattern `[a-zA-Z0-9._-]+`. They become directory names and filenames on disk.
+Names must match the pattern `[a-zA-Z0-9._-]+` and must not be made only of dots (such as `.` or `..`). They become directory names and filenames on disk.
 
 ### Name Inference
 
