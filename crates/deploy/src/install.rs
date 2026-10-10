@@ -184,7 +184,9 @@ fn installed_single_file_variants(
 ) -> Result<Vec<SingleInstalledVariant>, SkillfileError> {
     let mut variants = Vec::new();
     for target in &manifest.install_targets {
-        let resolved = ResolvedInstallTarget::from_target(target)?;
+        let Ok(resolved) = ResolvedInstallTarget::from_target(target) else {
+            continue;
+        };
         if !resolved.supports(entry.entity_type) {
             continue;
         }
@@ -337,10 +339,12 @@ fn installed_dir_variants(
     entry: &Entry,
     manifest: &Manifest,
     repo_root: &Path,
-) -> Result<Vec<DirInstalledVariant>, SkillfileError> {
+) -> Vec<DirInstalledVariant> {
     let mut variants = Vec::new();
     for target in &manifest.install_targets {
-        let resolved = ResolvedInstallTarget::from_target(target)?;
+        let Ok(resolved) = ResolvedInstallTarget::from_target(target) else {
+            continue;
+        };
         if !resolved.supports(entry.entity_type) {
             continue;
         }
@@ -353,7 +357,7 @@ fn installed_dir_variants(
             files,
         });
     }
-    Ok(variants)
+    variants
 }
 
 fn modified_dir_content(
@@ -450,7 +454,7 @@ fn auto_pin_dir_entry(
     if !vdir.is_dir() {
         return Ok(());
     }
-    let installed = installed_dir_variants(entry, manifest, repo_root)?;
+    let installed = installed_dir_variants(entry, manifest, repo_root);
     if installed.is_empty() {
         return Ok(());
     }
@@ -2653,6 +2657,38 @@ mod tests {
     }
 
     #[test]
+    fn auto_pin_entry_skips_unknown_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "my-skill";
+
+        setup_github_skill_repo(dir.path(), name, "# My Skill\n\nOriginal content.\n");
+
+        let installed_dir = dir.path().join(format!(".claude/skills/{name}"));
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(
+            installed_dir.join("SKILL.md"),
+            "# My Skill\n\nUser-modified content.\n",
+        )
+        .unwrap();
+
+        let entry = make_skill_entry(name);
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                make_target("unknown-platform", Scope::Local),
+                make_target("claude-code", Scope::Local),
+            ],
+        };
+
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
+
+        assert!(
+            patch_fixture_path(dir.path(), &entry).exists(),
+            "edits on known targets must still be pinned when an unknown platform is listed"
+        );
+    }
+
+    #[test]
     fn auto_pin_entry_errors_on_divergent_multi_target_edits() {
         let dir = tempfile::tempdir().unwrap();
         let name = "my-skill";
@@ -2949,6 +2985,47 @@ mod tests {
             std::fs::read_to_string(first_inst_dir.join("SKILL.md")).unwrap(),
             "# Lang Pro\n\nModified.\n",
             "auto-pin must preserve dir-entry edits from a modified secondary target"
+        );
+    }
+
+    #[test]
+    fn auto_pin_dir_entry_skips_unknown_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "lang-pro";
+
+        let mut locked: BTreeMap<String, LockEntry> = BTreeMap::new();
+        locked.insert(
+            format!("github/skill/{name}"),
+            LockEntry {
+                sha: "deadbeefdeadbeefdeadbeef".into(),
+                raw_url: format!("https://example.com/{name}"),
+            },
+        );
+        write_lock_fixture(dir.path(), &locked);
+
+        let vdir = dir.path().join(format!(".skillfile/cache/skills/{name}"));
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("SKILL.md"), "# Lang Pro\n\nOriginal.\n").unwrap();
+        std::fs::write(vdir.join(".meta"), r#"{"sha":"cached"}"#).unwrap();
+
+        let installed_dir = dir.path().join(format!(".claude/skills/{name}"));
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(installed_dir.join("SKILL.md"), "# Lang Pro\n\nModified.\n").unwrap();
+
+        let entry = make_dir_skill_entry(name);
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                make_target("unknown-platform", Scope::Local),
+                make_target("claude-code", Scope::Local),
+            ],
+        };
+
+        auto_pin_entry(&entry, &manifest, dir.path()).unwrap();
+
+        assert!(
+            has_dir_patch_fixture(dir.path(), &entry),
+            "dir-entry edits must still be pinned when an unknown platform is listed"
         );
     }
 
