@@ -7,6 +7,7 @@ use skillfile_core::lock::{lock_key, read_lock};
 use skillfile_core::models::{EntityType, InstallTarget, Manifest, SourceFields};
 use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
 use skillfile_deploy::adapter::adapters;
+use skillfile_deploy::install::{undeployable_entries, undeployable_entry_warning};
 use skillfile_deploy::target::ResolvedInstallTarget;
 
 fn check_duplicate_names(manifest: &Manifest, errors: &mut Vec<String>) {
@@ -118,6 +119,14 @@ fn check_duplicate_targets(manifest: &Manifest, repo_root: &Path, errors: &mut V
     errors.extend(duplicate_messages);
 }
 
+fn check_undeployable_entries(manifest: &Manifest, warnings: &mut Vec<String>) {
+    warnings.extend(
+        undeployable_entries(manifest)
+            .into_iter()
+            .map(undeployable_entry_warning),
+    );
+}
+
 fn check_orphaned_locks(
     manifest: &Manifest,
     repo_root: &Path,
@@ -138,6 +147,10 @@ fn check_orphaned_locks(
 
 fn error_label() -> StyledObject<&'static str> {
     style("error").for_stderr().red().bold()
+}
+
+fn warning_label() -> StyledObject<&'static str> {
+    style("warning").for_stderr().yellow().bold()
 }
 
 fn ok_label() -> StyledObject<&'static str> {
@@ -179,6 +192,12 @@ pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     check_duplicate_targets(&manifest, repo_root, &mut errors);
     check_orphaned_locks(&manifest, repo_root, &mut errors)?;
 
+    let mut warnings: Vec<String> = Vec::new();
+    check_undeployable_entries(&manifest, &mut warnings);
+    for msg in &warnings {
+        eprintln!("{}: {msg}", warning_label());
+    }
+
     if !errors.is_empty() {
         for msg in &errors {
             eprintln!("{}: {msg}", error_label());
@@ -205,6 +224,7 @@ mod tests {
         colors_enabled, colors_enabled_stderr, set_colors_enabled, set_colors_enabled_stderr,
     };
     use serial_test::serial;
+    use skillfile_core::models::{Entry, Scope};
 
     struct ConsoleColorGuard {
         stdout_enabled: bool,
@@ -396,10 +416,41 @@ mod tests {
     }
 
     #[test]
+    fn undeployable_entry_warns() {
+        let manifest = Manifest {
+            entries: vec![Entry {
+                entity_type: EntityType::Agent,
+                name: "a".into(),
+                source: SourceFields::Local {
+                    path: "agents/a.md".into(),
+                },
+            }],
+            install_targets: vec![InstallTarget::platform("codex", Scope::Local)],
+        };
+        let mut warnings = Vec::new();
+        check_undeployable_entries(&manifest, &mut warnings);
+        assert_eq!(
+            warnings,
+            ["agent 'a' will not be installed: no install target supports agents"]
+        );
+    }
+
+    #[test]
     #[serial]
     fn error_label_uses_stderr_color_detection() {
         let _guard = set_console_colors(false, true);
         let rendered = format!("{}", error_label());
+        assert!(
+            rendered.contains("\u{1b}["),
+            "stderr styling should render ANSI when stderr colors are enabled: {rendered:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn warning_label_uses_stderr_color_detection() {
+        let _guard = set_console_colors(false, true);
+        let rendered = format!("{}", warning_label());
         assert!(
             rendered.contains("\u{1b}["),
             "stderr styling should render ANSI when stderr colors are enabled: {rendered:?}"

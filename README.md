@@ -234,7 +234,7 @@ The label (`openclaw` or `openclaw-agents` above) is only a name shown in comman
 
 Relative paths are resolved from the repository root. `~` and paths beginning with `~/` use your home directory. Custom targets can be mixed with built-in `install` targets; matching entries are installed to every configured target that supports their entity type.
 
-`skillfile validate` rejects duplicate destinations for the same entity type. Install and read operations also refuse to traverse user-controlled symlinked path components so a declared target cannot escape through a symlink.
+`skillfile validate` rejects duplicate destinations for the same entity type. Both `skillfile validate` and `skillfile install` warn when an entry's entity type is supported by none of the configured targets (for example an `agent` entry with only skills-only platforms), since it would be installed nowhere. Install and read operations also refuse to traverse user-controlled symlinked path components so a declared target cannot escape through a symlink.
 
 ## Notes
 

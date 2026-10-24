@@ -1156,6 +1156,37 @@ fn append_rollback_detail(error: SkillfileError, patch_message: &str) -> Skillfi
     }
 }
 
+/// Entries whose entity type none of the resolvable install targets supports,
+/// so deploying the manifest leaves them installed nowhere. Empty when no
+/// target resolves at all: unknown platforms get their own warning.
+pub fn undeployable_entries(manifest: &Manifest) -> Vec<&Entry> {
+    let resolved: Vec<ResolvedInstallTarget<'_>> = manifest
+        .install_targets
+        .iter()
+        .filter_map(|target| ResolvedInstallTarget::from_target(target).ok())
+        .collect();
+    if resolved.is_empty() {
+        return Vec::new();
+    }
+    manifest
+        .entries
+        .iter()
+        .filter(|entry| {
+            !resolved
+                .iter()
+                .any(|target| target.supports(entry.entity_type))
+        })
+        .collect()
+}
+
+pub fn undeployable_entry_warning(entry: &Entry) -> String {
+    let entity_type = entry.entity_type;
+    format!(
+        "{entity_type} '{}' will not be installed: no install target supports {entity_type}s",
+        entry.name
+    )
+}
+
 fn install_entry_or_conflict(
     entry: &Entry,
     target: &InstallTarget,
@@ -1193,6 +1224,10 @@ fn deploy_all(manifest: &Manifest, ctx: &DeployCtx<'_>) -> Result<(), SkillfileE
         for entry in &manifest.entries {
             install_entry_or_conflict(entry, target, ctx)?;
         }
+    }
+
+    for entry in undeployable_entries(manifest) {
+        eprintln!("warning: {}", undeployable_entry_warning(entry));
     }
 
     Ok(())
@@ -2131,6 +2166,61 @@ mod tests {
         );
 
         assert!(!dir.path().join(".codex").exists());
+    }
+
+    #[test]
+    fn undeployable_entries_finds_agent_with_skills_only_targets() {
+        let manifest = Manifest {
+            entries: vec![make_agent_entry("a"), make_local_entry("s", "skills/s.md")],
+            install_targets: vec![
+                make_target("codex", Scope::Local),
+                InstallTarget::Path {
+                    tool_name: "custom".into(),
+                    entity_type: EntityType::Skill,
+                    path: "out/skills".into(),
+                },
+            ],
+        };
+        let names: Vec<&str> = undeployable_entries(&manifest)
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, ["a"]);
+    }
+
+    #[test]
+    fn undeployable_entries_is_empty_when_any_target_supports_the_entry() {
+        let manifest = Manifest {
+            entries: vec![make_agent_entry("a")],
+            install_targets: vec![
+                make_target("codex", Scope::Local),
+                make_target("claude-code", Scope::Local),
+            ],
+        };
+        assert_eq!(undeployable_entries(&manifest), Vec::<&Entry>::new());
+    }
+
+    #[test]
+    fn undeployable_entries_is_empty_without_resolvable_targets() {
+        let none = Manifest {
+            entries: vec![make_agent_entry("a")],
+            install_targets: Vec::new(),
+        };
+        assert_eq!(undeployable_entries(&none), Vec::<&Entry>::new());
+
+        let unknown = Manifest {
+            entries: vec![make_agent_entry("a")],
+            install_targets: vec![make_target("unknown-platform", Scope::Local)],
+        };
+        assert_eq!(undeployable_entries(&unknown), Vec::<&Entry>::new());
+    }
+
+    #[test]
+    fn undeployable_entry_warning_names_the_entity_type() {
+        assert_eq!(
+            undeployable_entry_warning(&make_agent_entry("a")),
+            "agent 'a' will not be installed: no install target supports agents"
+        );
     }
 
     #[test]

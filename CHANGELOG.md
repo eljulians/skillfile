@@ -8,6 +8,7 @@ All notable changes to skillfile are documented here.
 
 ### Fixed
 
+- **Entries no install target can deploy are reported** - `skillfile install` and `skillfile validate` now warn when no configured install target supports an entry's entity type (such as an `agent` entry with only skills-only platforms), instead of reporting success while the entry is installed nowhere by @costajohnt
 - **Invalid entry names and empty refs are caught while parsing** - entry names made only of dots (such as `.` or `..`) and GitHub repos written as `owner/repo@` with nothing after `@` are now skipped with a warning instead of causing confusing errors later by @Sarthak-Shreshtha01
 
 ## v1.9.2 - 31-08-2026
