@@ -167,6 +167,11 @@ skillfile add local skill skills/my-skill/SKILL.md
 skillfile add url agent https://example.com/agent.md --name my-agent
 ```
 
+Bulk GitHub adds continue processing every selected entry. Existing entry names
+are skipped. If another entry fails, the command exits nonzero and the summary
+reports failed entries separately from skips. Successfully added entries remain
+in the Skillfile.
+
 ## Auth
 
 GitHub:

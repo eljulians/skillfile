@@ -8,6 +8,7 @@ All notable changes to skillfile are documented here.
 
 ### Fixed
 
+- **Bulk add failures return a nonzero exit status** - selected entries continue processing, duplicates remain skips, and the summary reports failures separately by @Boulea7
 - **Invalid entry names and empty refs are caught while parsing** - entry names made only of dots (such as `.` or `..`) and GitHub repos written as `owner/repo@` with nothing after `@` are now skipped with a warning instead of causing confusing errors later by @Sarthak-Shreshtha01
 
 ## v1.9.2 - 31-08-2026

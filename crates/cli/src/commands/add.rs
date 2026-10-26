@@ -207,6 +207,14 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
     );
     spinner.finish();
 
+    add_discovered_entries(&entries, args, repo_root)
+}
+
+fn add_discovered_entries(
+    entries: &[String],
+    args: &BulkAddArgs<'_>,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
     if entries.is_empty() {
         return Err(SkillfileError::Manifest(format!(
             "no {}s found under '{}' in {}",
@@ -214,17 +222,16 @@ pub fn cmd_add_bulk(args: &BulkAddArgs<'_>, repo_root: &Path) -> Result<(), Skil
         )));
     }
 
-    ensure_name_is_unambiguous(&entries, args)?;
+    ensure_name_is_unambiguous(entries, args)?;
 
     // Single entry discovered — skip TUI, add directly.
     if entries.len() == 1 {
-        add_selected(&entries, args, repo_root);
-        return Ok(());
+        return add_selected(entries, args, repo_root);
     }
 
-    let selected = select_entries(&entries, args)?;
+    let selected = select_entries(entries, args)?;
     if !selected.is_empty() {
-        add_selected(&selected, args, repo_root);
+        add_selected(&selected, args, repo_root)?;
     }
     Ok(())
 }
@@ -270,13 +277,18 @@ fn select_entries(
     Ok(selected)
 }
 
-fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
+fn add_selected(
+    selected: &[String],
+    args: &BulkAddArgs<'_>,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
     // `ensure_name_is_unambiguous` has already rejected a name against a
     // multi-entry discovery, so the only way to get here with one is a single
     // selection.
     let name = if selected.len() == 1 { args.name } else { None };
     let mut added = 0usize;
     let mut skipped = 0usize;
+    let mut failed = 0usize;
     for path in selected {
         let entry = entry_from_github(&GithubEntryArgs {
             entity_type: args.entity_type,
@@ -293,20 +305,35 @@ fn add_selected(selected: &[String], args: &BulkAddArgs<'_>, repo_root: &Path) {
             }
             Err(e) => {
                 eprintln!("warning: failed to add '{}': {e}", entry.name);
-                skipped += 1;
+                failed += 1;
             }
         }
     }
     let plural = if added == 1 { "" } else { "s" };
-    let skip_msg = if skipped > 0 {
-        format!(" ({skipped} skipped)")
-    } else {
+    let mut outcomes = Vec::new();
+    if skipped > 0 {
+        outcomes.push(format!("{skipped} skipped"));
+    }
+    if failed > 0 {
+        outcomes.push(format!("{failed} failed"));
+    }
+    let summary = if outcomes.is_empty() {
         String::new()
+    } else {
+        format!(" ({})", outcomes.join(", "))
     };
     println!(
-        "Added {added} {}{plural} to Skillfile.{skip_msg}",
+        "Added {added} {}{plural} to Skillfile.{summary}",
         args.entity_type
     );
+    if failed > 0 {
+        return Err(SkillfileError::Install(format!(
+            "failed to add {failed} selected {}{}",
+            args.entity_type,
+            if failed == 1 { "" } else { "s" }
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -1126,6 +1153,172 @@ mod tests {
 
     // --- add_selected tests ---
 
+    fn seed_bulk_cache(dir: &Path, names: &[&str]) -> serde_json::Value {
+        let mut lock = serde_json::Map::new();
+        for name in names {
+            lock.insert(
+                format!("github/skill/{name}"),
+                serde_json::json!({"sha": "abc123", "raw_url": "https://example.com/skill.md"}),
+            );
+            let cache = dir.join(".skillfile/cache/skills").join(name);
+            std::fs::create_dir_all(&cache).unwrap();
+            std::fs::write(cache.join(format!("{name}.md")), format!("# {name}\n")).unwrap();
+            std::fs::write(cache.join(".meta"), r#"{"sha":"abc123"}"#).unwrap();
+        }
+        let lock = serde_json::Value::Object(lock);
+        std::fs::write(
+            dir.join("Skillfile.lock"),
+            serde_json::to_string_pretty(&lock).unwrap(),
+        )
+        .unwrap();
+        lock
+    }
+
+    #[test]
+    fn bulk_add_propagates_single_and_multiple_entry_failures() {
+        for paths in [
+            vec!["skills/alpha.md".to_string()],
+            vec!["skills/alpha.md".to_string(), "skills/beta.md".to_string()],
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let args = BulkAddArgs {
+                entity_type: "skill",
+                owner_repo: "owner/repo",
+                base_path: "skills",
+                ref_: None,
+                name: None,
+                no_interactive: true,
+            };
+            let error = add_discovered_entries(&paths, &args, dir.path()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("failed to add {} selected", paths.len())),
+                "{error}"
+            );
+            assert!(!dir.path().join(MANIFEST_NAME).exists());
+            assert!(!dir.path().join("Skillfile.lock").exists());
+        }
+    }
+
+    #[test]
+    fn bulk_add_duplicate_only_is_successful() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = "github  skill  owner/repo  skills/alpha.md\n\
+                        github  skill  owner/repo  skills/beta.md\n";
+        write_manifest(dir.path(), manifest);
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            name: None,
+            no_interactive: true,
+        };
+        for paths in [
+            vec!["skills/alpha.md".to_string()],
+            vec!["skills/alpha.md".to_string(), "skills/beta.md".to_string()],
+        ] {
+            add_discovered_entries(&paths, &args, dir.path()).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        assert!(!dir.path().join("Skillfile.lock").exists());
+    }
+
+    fn assert_bulk_entries_retained(dir: &Path, names: &[&str]) {
+        let manifest = std::fs::read_to_string(dir.join(MANIFEST_NAME)).unwrap();
+        for name in names {
+            assert!(
+                manifest.contains(&format!("skills/{name}.md")),
+                "{manifest}"
+            );
+            assert!(dir.join(".skillfile/cache/skills").join(name).exists());
+        }
+    }
+
+    #[test]
+    fn bulk_add_continues_after_failure_and_preserves_successes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "install  claude-code  local\ngithub  skill  owner/repo  skills/existing.md\n",
+        );
+        let lock = seed_bulk_cache(dir.path(), &["alpha", "blocked", "beta", "existing"]);
+        let target = dir.path().join(".claude/skills");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("blocked"), "keep this blocker").unwrap();
+        let paths =
+            ["alpha", "blocked", "beta", "existing"].map(|name| format!("skills/{name}.md"));
+        let args = BulkAddArgs {
+            entity_type: "skill",
+            owner_repo: "owner/repo",
+            base_path: "skills",
+            ref_: None,
+            name: None,
+            no_interactive: true,
+        };
+        let error = add_discovered_entries(&paths, &args, dir.path()).unwrap_err();
+        assert!(error.to_string().contains("failed to add 1 selected skill"));
+        let manifest = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
+        assert_bulk_entries_retained(dir.path(), &["alpha", "beta", "existing"]);
+        assert!(!manifest.contains("skills/blocked.md"), "{manifest}");
+        assert!(target.join("alpha/SKILL.md").exists());
+        assert!(target.join("beta/SKILL.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(target.join("blocked")).unwrap(),
+            "keep this blocker"
+        );
+        assert!(!dir.path().join(".skillfile/cache/skills/blocked").exists());
+        let final_lock: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("Skillfile.lock")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(final_lock, lock);
+        assert!(!dir.path().join(".skillfile/tmp").exists());
+    }
+
+    #[test]
+    fn add_selected_reports_failed_count() {
+        const CHILD_ENV: &str = "SKILLFILE_ADD_FAILURE_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = vec!["skills/alpha.md".to_string(), "skills/beta.md".to_string()];
+            let args = BulkAddArgs {
+                entity_type: "skill",
+                owner_repo: "owner/repo",
+                base_path: "skills",
+                ref_: None,
+                name: None,
+                no_interactive: true,
+            };
+            let _ = add_selected(&paths, &args, dir.path());
+            assert!(!dir.path().join(MANIFEST_NAME).exists());
+            assert!(!dir.path().join("Skillfile.lock").exists());
+            assert!(!dir.path().join(".skillfile").exists());
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::add::tests::add_selected_reports_failed_count",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("warning: failed to add '").count(), 2);
+        assert!(stderr.contains("Skillfile not found"), "{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("2 failed"), "{stdout}");
+        assert!(!stdout.contains("skipped"), "{stdout}");
+    }
+
     #[test]
     fn add_selected_single_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1139,7 +1332,7 @@ mod tests {
             name: None,
             no_interactive: true,
         };
-        add_selected(&paths, &args, dir.path());
+        add_selected(&paths, &args, dir.path()).unwrap();
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("owner/repo"));
         assert!(text.contains("skills/my-tool.md"));
@@ -1158,7 +1351,7 @@ mod tests {
             name: Some("custom"),
             no_interactive: true,
         };
-        add_selected(&paths, &args, dir.path());
+        add_selected(&paths, &args, dir.path()).unwrap();
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("custom"), "{text}");
         assert!(!text.contains("slack-gif-creator  "), "{text}");
@@ -1222,7 +1415,7 @@ mod tests {
             name: None,
             no_interactive: true,
         };
-        add_selected(&paths, &args, dir.path());
+        add_selected(&paths, &args, dir.path()).unwrap();
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         assert!(text.contains("skills/alpha.md"));
         assert!(text.contains("skills/beta.md"));
@@ -1321,7 +1514,7 @@ mod tests {
             name: None,
             no_interactive: true,
         };
-        add_selected(&paths, &args, dir.path());
+        add_selected(&paths, &args, dir.path()).unwrap();
         let text = std::fs::read_to_string(dir.path().join(MANIFEST_NAME)).unwrap();
         // gamma should have been added, alpha should still be there (not duplicated)
         assert!(text.contains("skills/gamma.md"));
