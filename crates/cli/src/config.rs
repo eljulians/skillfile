@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn read_user_targets_from_missing_file_returns_empty() {
         let targets = read_user_targets_from(Path::new("/nonexistent/config.toml"));
-        assert!(targets.is_empty());
+        assert_eq!(targets.len(), 0);
     }
 
     #[test]
@@ -376,7 +376,7 @@ mod tests {
         std::fs::write(&path, "# empty config\n").unwrap();
 
         let targets = read_user_targets_from(&path);
-        assert!(targets.is_empty());
+        assert_eq!(targets.len(), 0);
     }
 
     #[test]
@@ -386,7 +386,7 @@ mod tests {
         std::fs::write(&path, "this is not valid toml {{{").unwrap();
 
         let targets = read_user_targets_from(&path);
-        assert!(targets.is_empty());
+        assert_eq!(targets.len(), 0);
     }
 
     #[test]

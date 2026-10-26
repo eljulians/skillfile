@@ -856,7 +856,7 @@ mod tests {
         let orig = "line one\nline two";
         let modified = "line one\nline changed";
         let patch = generate_patch(orig, modified, "test.md");
-        assert!(!patch.is_empty());
+        assert_ne!(patch.len(), 0);
         assert!(patch.contains("\\ No newline at end of file"));
         let result = apply_patch_pure(orig, &patch).unwrap();
         assert_eq!(result, modified);
@@ -867,7 +867,7 @@ mod tests {
         let orig = "line one\r\nline two\r\n";
         let modified = "line one\r\nline changed\r\n";
         let patch = generate_patch(orig, modified, "test.md");
-        assert!(!patch.is_empty());
+        assert_ne!(patch.len(), 0);
         assert!(!patch.contains('\r'));
         let result = apply_patch_pure(orig, &patch).unwrap();
         assert_eq!(result, "line one\nline changed\n");
@@ -875,7 +875,10 @@ mod tests {
 
     #[test]
     fn generate_patch_ignores_crlf_only_changes() {
-        assert!(generate_patch("line one\r\n", "line one\n", "test.md").is_empty());
+        assert_eq!(
+            generate_patch("line one\r\n", "line one\n", "test.md").len(),
+            0
+        );
     }
 
     #[test]

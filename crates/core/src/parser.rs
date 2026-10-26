@@ -940,7 +940,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "github  skill  us@tal/repo  path/to/SKILL.md");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r
             .warnings
             .iter()
@@ -955,7 +955,7 @@ mod tests {
             "github  skill  my-skill  us@tal/repo  path/to/SKILL.md",
         );
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r
             .warnings
             .iter()
@@ -1042,7 +1042,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "github  agent");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("warning")));
     }
 
@@ -1051,7 +1051,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "svn  skill  foo  some/path");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("warning")));
         assert!(r.warnings.iter().any(|w| w.contains("svn")));
     }
@@ -1213,7 +1213,7 @@ mod tests {
         let p = dir.path().join(MANIFEST_NAME);
         fs::write(&p, "local  skill  \"my skill!\"  skills/foo.md\n").unwrap();
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r
             .warnings
             .iter()
@@ -1270,7 +1270,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "install  claude-code  worldwide");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.install_targets.is_empty());
+        assert_eq!(r.manifest.install_targets.len(), 0);
         assert!(r
             .warnings
             .iter()
@@ -1282,7 +1282,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "install-path  misc-target  bot  ./target");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.install_targets.is_empty());
+        assert_eq!(r.manifest.install_targets.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("invalid entity type")));
     }
 
@@ -1291,7 +1291,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "install-path  \"\"  skill  ./target");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.install_targets.is_empty());
+        assert_eq!(r.manifest.install_targets.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("tool-name")));
     }
 
@@ -1300,7 +1300,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "install-path  misc-target  skill  \"\"");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.install_targets.is_empty());
+        assert_eq!(r.manifest.install_targets.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("path")));
     }
 
@@ -1351,7 +1351,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "local  hook  foo  hooks/foo.md");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("unknown entity type")));
     }
 
@@ -1373,7 +1373,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "github  skill  owner/repo@  skills/x.md");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r
             .warnings
             .iter()
@@ -1394,7 +1394,7 @@ mod tests {
         )
         .unwrap();
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("invalid owner/repo")));
     }
 
@@ -1491,7 +1491,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "local  skill  \"unterminated.md");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("invalid quoting")));
     }
 
@@ -1549,7 +1549,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_manifest(dir.path(), "gitlab  skill");
         let r = parse_manifest(&p).unwrap();
-        assert!(r.manifest.entries.is_empty());
+        assert_eq!(r.manifest.entries.len(), 0);
         assert!(r.warnings.iter().any(|w| w.contains("warning")));
     }
 }

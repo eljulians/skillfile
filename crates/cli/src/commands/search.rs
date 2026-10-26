@@ -847,7 +847,7 @@ mod tests {
 
         let (candidates, resolved) = discover_skill_path(&client, &query).unwrap();
 
-        assert!(candidates.is_empty());
+        assert_eq!(candidates.len(), 0);
         assert!(resolved.is_none());
     }
 
@@ -885,7 +885,7 @@ mod tests {
 
         let (candidates, resolved) = discover_skill_path(&client, &query).unwrap();
 
-        assert!(candidates.is_empty());
+        assert_eq!(candidates.len(), 0);
         assert_eq!(
             resolved.as_deref(),
             Some("skills/linkedin-profile-optimizer")
@@ -929,7 +929,7 @@ mod tests {
 
         let (candidates, resolved) = discover_skill_path(&client, &query).unwrap();
 
-        assert!(candidates.is_empty());
+        assert_eq!(candidates.len(), 0);
         assert_eq!(
             resolved.as_deref(),
             Some("skills/linkedin-profile-optimizer")
@@ -1106,7 +1106,7 @@ mod tests {
     fn rank_no_matches_returns_empty() {
         let entries = paths(&["skills/docker", "skills/python", "skills/rust.md"]);
         let ranked = rank_by_name_for_entity(&entries, "kubernetes-specialist", "skill");
-        assert!(ranked.is_empty());
+        assert_eq!(ranked.len(), 0);
     }
 
     #[test]
@@ -1114,13 +1114,13 @@ mod tests {
         // "." is the root SKILL.md — should not match a specific name.
         let entries = paths(&["."]);
         let ranked = rank_by_name_for_entity(&entries, "some-skill", "skill");
-        assert!(ranked.is_empty());
+        assert_eq!(ranked.len(), 0);
     }
 
     #[test]
     fn rank_empty_entries_returns_empty() {
         let ranked = rank_by_name_for_entity(&[], "anything", "skill");
-        assert!(ranked.is_empty());
+        assert_eq!(ranked.len(), 0);
     }
 
     #[test]
@@ -1356,7 +1356,7 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["total"], 0);
-        assert!(parsed["items"].as_array().unwrap().is_empty());
+        assert_eq!(parsed["items"].as_array().unwrap().len(), 0);
     }
 
     #[test]

@@ -648,8 +648,8 @@ mod tests {
     #[test]
     fn manifest_defaults() {
         let m = Manifest::default();
-        assert!(m.entries.is_empty());
-        assert!(m.install_targets.is_empty());
+        assert_eq!(m.entries.len(), 0);
+        assert_eq!(m.install_targets.len(), 0);
     }
 
     #[test]

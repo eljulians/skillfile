@@ -844,7 +844,7 @@ mod tests {
         let items: Vec<SearchResult> = vec![];
         let app = App::new(&items, 0);
         assert_eq!(app.list_state.selected(), None);
-        assert!(app.filtered.is_empty());
+        assert_eq!(app.filtered.len(), 0);
     }
 
     #[test]
@@ -873,7 +873,7 @@ mod tests {
         let mut app = App::new(&items, 3);
         app.filter = "zzz_nonexistent_zzz".to_string();
         app.refilter();
-        assert!(app.filtered.is_empty());
+        assert_eq!(app.filtered.len(), 0);
         assert!(app.selected().is_none());
     }
 
@@ -1160,7 +1160,7 @@ mod tests {
     #[test]
     fn parse_skillssh_audits_no_matches_returns_empty() {
         let audits = parse_skillssh_audits("<html><body>no audit data</body></html>");
-        assert!(audits.is_empty());
+        assert_eq!(audits.len(), 0);
     }
 
     #[test]

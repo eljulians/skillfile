@@ -684,7 +684,7 @@ mod tests {
         let items: Vec<String> = vec![];
         let app = App::new(&items, "owner/repo", "main");
         assert_eq!(app.list_state.selected(), None);
-        assert!(app.filtered.is_empty());
+        assert_eq!(app.filtered.len(), 0);
     }
 
     #[test]
@@ -786,7 +786,7 @@ mod tests {
         let items = sample_items();
         let app = App::new(&items, "owner/repo", "main");
         let paths = resolve_selections(&app);
-        assert!(paths.is_empty());
+        assert_eq!(paths.len(), 0);
     }
 
     // -- Filter tests ----------------------------------------------------------
@@ -816,7 +816,7 @@ mod tests {
         let mut app = App::new(&items, "owner/repo", "main");
         app.filter = "zzz_nonexistent".to_string();
         app.refilter();
-        assert!(app.filtered.is_empty());
+        assert_eq!(app.filtered.len(), 0);
         assert!(app.highlighted_path().is_none());
     }
 

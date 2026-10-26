@@ -660,7 +660,7 @@ mod tests {
         let meta = scrape_github_meta_from_page(&client, "openclaw/k8s");
         let meta = meta.expect("should return meta with empty path");
         assert_eq!(meta.source_repo, "openclaw/skills");
-        assert!(meta.source_path.is_empty());
+        assert_eq!(meta.source_path.len(), 0);
     }
 
     #[test]

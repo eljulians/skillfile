@@ -561,8 +561,8 @@ mod tests {
 
         assert!(check_for_update_at(Some(&path), || None).is_none());
         let cached = read_cache_from(&path).expect("failed check should write a sentinel");
-        assert!(cached.latest_version.is_empty());
-        assert!(cached.release_url.is_empty());
+        assert_eq!(cached.latest_version.len(), 0);
+        assert_eq!(cached.release_url.len(), 0);
 
         assert!(
             check_for_update_at(Some(&path), || panic!("fresh sentinel must skip fetch")).is_none()
