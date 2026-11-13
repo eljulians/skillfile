@@ -394,9 +394,12 @@ pub(crate) fn list_gitlab_dir_recursive(
         // directory, then page until fewer than GITLAB_TREE_PAGE_SIZE results
         // are returned.
         let url = gitlab_tree_url(gl, trimmed, page);
-        let Some(text) = gl.client.get_json(&url)? else {
-            break;
-        };
+        let text = gl.client.get_json(&url)?.ok_or_else(|| {
+            SkillfileError::Network(format!(
+                "failed to list directory {}/{trimmed}: 4xx error",
+                gl.owner_repo
+            ))
+        })?;
         // GitLab returns a flat JSON array, not {"tree": [...]} like GitHub.
         // With the `path` parameter, returned paths are still repo-absolute.
         let items: Vec<serde_json::Value> = serde_json::from_str(&text)
@@ -427,9 +430,12 @@ fn list_gitlab_root_dir_recursive(gl: &GitlabFetch<'_>) -> Result<Vec<DirEntry>,
 
     loop {
         let url = gitlab_root_tree_url(gl, page);
-        let Some(text) = gl.client.get_json(&url)? else {
-            break;
-        };
+        let text = gl.client.get_json(&url)?.ok_or_else(|| {
+            SkillfileError::Network(format!(
+                "failed to list directory {}/.: 4xx error",
+                gl.owner_repo
+            ))
+        })?;
         let items: Vec<serde_json::Value> = serde_json::from_str(&text)
             .map_err(|e| SkillfileError::Network(format!("invalid GitLab tree JSON: {e}")))?;
 
@@ -2859,7 +2865,7 @@ mod tests {
     }
 
     #[test]
-    fn list_gitlab_dir_recursive_4xx_returns_empty() {
+    fn list_gitlab_dir_recursive_4xx_returns_error() {
         let owner_repo = "group/project";
         let ref_ = "main";
         let url = gitlab_tree_url(
@@ -2880,8 +2886,10 @@ mod tests {
             ref_,
             host: "gitlab.com",
         };
-        let entries = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap();
-        assert!(entries.is_empty());
+        let err = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("failed to list directory group/project/skills/dir"));
     }
 
     #[test]
