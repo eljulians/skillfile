@@ -6,6 +6,8 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+- **Entries no install target can deploy are reported** - `skillfile install` and `skillfile validate` now warn when no configured install target supports an entry's entity type (such as an `agent` entry with only skills-only platforms), instead of reporting success while the entry is installed nowhere by @costajohnt
+
 ## v1.9.3 - 21-11-2026
 
 ### Changed
