@@ -6,10 +6,23 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+- **Bulk add failures return a nonzero exit status** - selected entries continue processing, duplicates remain skips, and the summary reports failures separately by @Boulea7
+
+## v1.9.3 - 21-11-2026
+
+### Changed
+
+- **Dependency refresh** - bumped `clap` to 4.6.6.
+
 ### Fixed
 
-- **Bulk add failures return a nonzero exit status** - selected entries continue processing, duplicates remain skips, and the summary reports failures separately by @Boulea7
+- **`--dry-run` no longer downloads locked entries** - `install --dry-run` and `sync --dry-run` now report that a locked entry would be re-fetched instead of downloading it and rewriting `.skillfile/cache/` by @luantaraschi
+- **`skillfile status` checks GitLab upstreams** - locked GitLab entries are now compared against their upstream instead of always showing as `locked`, and `url` entries report `upstream n/a` since they have no upstream ref by @luantaraschi
+- **`skillfile add github ... --name` is honoured during discovery** - the custom name is now applied when discovery resolves to a single entry instead of being silently dropped, and a discovery that matches several entries is rejected with a clear message by @luantaraschi
 - **Invalid entry names and empty refs are caught while parsing** - entry names made only of dots (such as `.` or `..`) and GitHub repos written as `owner/repo@` with nothing after `@` are now skipped with a warning instead of causing confusing errors later by @Sarthak-Shreshtha01
+- **Unknown install platforms are skipped instead of failing** - `skillfile install --update`, `skillfile info`, and `skillfile status` now ignore install targets for platforms they do not recognize rather than aborting by @mayuriphad
+- **Missing GitLab directories now fail explicitly** - a 404 from the GitLab tree API is reported as an error instead of being treated as an empty directory by @SAY-5
+- **`rustls` updated for RUSTSEC-2026-0285** - bumped `rustls` to 0.23.46 and `rustls-webpki` to 0.103.17 by @Boulea7
 
 ## v1.9.2 - 31-08-2026
 

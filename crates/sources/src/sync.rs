@@ -545,6 +545,25 @@ fn resolve_remote_sha_for_entry(
     q: &ShaLookup<'_>,
     params: &SyncParams<'_>,
 ) -> Result<Option<String>, SkillfileError> {
+    // Checked before the locked SHA and the sha_cache: a `Some` here makes the
+    // caller download and replace the cache, which a dry run must never do.
+    if params.dry_run {
+        match q.locked_sha {
+            Some(ls) => progress!(
+                "{}: would re-fetch (locked sha={}) [dry-run]",
+                q.label,
+                short_sha(ls)
+            ),
+            None => progress!(
+                "{}: resolving {}@{} ... [dry-run]",
+                q.label,
+                q.owner_repo,
+                q.ref_
+            ),
+        }
+        return Ok(None);
+    }
+
     if let Some(ls) = q.locked_sha {
         progress!(
             "{}: re-fetching (locked sha={}) ...",
@@ -556,16 +575,6 @@ fn resolve_remote_sha_for_entry(
 
     if let Some(cached) = params.sha_cache.get(&q.cache_key) {
         return Ok(Some(cached.clone()));
-    }
-
-    if params.dry_run {
-        progress!(
-            "{}: resolving {}@{} ... [dry-run]",
-            q.label,
-            q.owner_repo,
-            q.ref_
-        );
-        return Ok(None);
     }
 
     // Fallback: resolve inline (single-entry mode or missed cache)
@@ -1925,6 +1934,59 @@ mod tests {
         assert!(ctx.locked.is_empty());
     }
 
+    #[test]
+    fn sync_entry_github_dry_run_with_locked_sha_skips_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = skill_entry("my-skill", "skills/my-skill.md");
+        // No responses: a fetch of the locked SHA would fail with "unexpected get_*".
+        let client = MockClient::new();
+        let mut ctx = make_sync_ctx(dir.path());
+        ctx.dry_run = true;
+        let locked = LockEntry {
+            sha: "aabbccdd1122334455667788aabbccdd11223344".into(),
+            raw_url: "https://raw.githubusercontent.com/owner/repo/aabbccdd/skills/my-skill.md"
+                .into(),
+        };
+        ctx.locked
+            .insert("github/skill/my-skill".to_string(), locked.clone());
+
+        let result = sync_entry(&client, &entry, &mut ctx);
+        assert!(result.is_ok(), "unexpected error: {result:?}");
+        assert!(!dir.path().join(VENDOR_DIR).exists());
+        assert_eq!(ctx.locked["github/skill/my-skill"], locked);
+        assert!(ctx.sha_cache.is_empty());
+    }
+
+    #[test]
+    fn sync_entry_github_dry_run_keeps_cache_newer_than_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = skill_entry("my-skill", "skills/my-skill.md");
+        let vdir = vendor_dir_for(&entry, dir.path());
+        std::fs::create_dir_all(&vdir).unwrap();
+        let meta = r#"{"source_type":"github","sha":"1111111111111111111111111111111111111111"}"#;
+        std::fs::write(vdir.join(".meta"), meta).unwrap();
+        std::fs::write(vdir.join("my-skill.md"), b"# newer").unwrap();
+
+        let client = MockClient::new();
+        let mut ctx = make_sync_ctx(dir.path());
+        ctx.dry_run = true;
+        ctx.locked.insert(
+            "github/skill/my-skill".to_string(),
+            LockEntry {
+                sha: "2222222222222222222222222222222222222222".into(),
+                raw_url: String::new(),
+            },
+        );
+
+        let result = sync_entry(&client, &entry, &mut ctx);
+        assert!(result.is_ok(), "unexpected error: {result:?}");
+        assert_eq!(std::fs::read_to_string(vdir.join(".meta")).unwrap(), meta);
+        assert_eq!(
+            std::fs::read_to_string(vdir.join("my-skill.md")).unwrap(),
+            "# newer"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // sync_entry -- github single-file entry, up-to-date (locked SHA matches meta)
     // -----------------------------------------------------------------------
@@ -3133,6 +3195,26 @@ mod tests {
         let result = sync_entry(&client, &entry, &mut ctx);
         assert!(result.is_ok());
         assert!(ctx.locked.is_empty());
+    }
+
+    #[test]
+    fn sync_entry_gitlab_dry_run_with_locked_sha_skips_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = gitlab_skill_entry("my-skill", "skills/my-skill.md");
+        let client = MockClient::new();
+        let mut ctx = make_sync_ctx(dir.path());
+        ctx.dry_run = true;
+        ctx.locked.insert(
+            "gitlab/skill/my-skill".to_string(),
+            LockEntry {
+                sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into(),
+                raw_url: String::new(),
+            },
+        );
+
+        let result = sync_entry(&client, &entry, &mut ctx);
+        assert!(result.is_ok(), "unexpected error: {result:?}");
+        assert!(!dir.path().join(VENDOR_DIR).exists());
     }
 
     // -----------------------------------------------------------------------

@@ -7,6 +7,7 @@ use skillfile_core::models::{short_sha, ConflictState};
 use skillfile_core::parser::{find_entry_in, parse_manifest, MANIFEST_NAME};
 use skillfile_core::progress;
 use skillfile_deploy::paths::{installed_dir_files, installed_path};
+use skillfile_sources::http::{HttpClient, UreqClient};
 use skillfile_sources::strategy::is_cached_dir_entry;
 use skillfile_sources::sync::{fetch_dir_at_sha, fetch_file_at_sha, vendor_dir_for};
 
@@ -163,26 +164,33 @@ fn resolve_conflicts_or_clean(
     Ok(Some(reject_conflict_markers(resolved)?))
 }
 
+/// Where the two sides of a pending conflict are fetched from.
+#[derive(Clone, Copy)]
+struct ConflictUpstream<'a> {
+    conflict: &'a ConflictState,
+    client: &'a dyn HttpClient,
+}
+
 fn resolve_single_file(
     entry: &skillfile_core::models::Entry,
-    conflict: &ConflictState,
+    upstream: &ConflictUpstream<'_>,
     repo_root: &Path,
 ) -> Result<(), SkillfileError> {
+    let ConflictUpstream { conflict, client } = *upstream;
     let filename = format!("{}.md", entry.name);
-    let client = skillfile_sources::http::UreqClient::new();
 
     progress!(
         "  fetching upstream at old sha={} (common ancestor) ...",
         short_sha(&conflict.old_sha)
     );
-    let base = fetch_file_at_sha(&client, entry, &conflict.old_sha)?;
+    let base = fetch_file_at_sha(client, entry, &conflict.old_sha)?;
     progress!("done");
 
     progress!(
         "  fetching upstream at new sha={} ...",
         short_sha(&conflict.new_sha)
     );
-    let theirs = fetch_file_at_sha(&client, entry, &conflict.new_sha)?;
+    let theirs = fetch_file_at_sha(client, entry, &conflict.new_sha)?;
     progress!("done");
 
     let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
@@ -313,23 +321,22 @@ fn write_merged_results(
 
 fn resolve_dir_entry(
     entry: &skillfile_core::models::Entry,
-    conflict: &ConflictState,
+    upstream: &ConflictUpstream<'_>,
     repo_root: &Path,
 ) -> Result<(), SkillfileError> {
-    let client = skillfile_sources::http::UreqClient::new();
-
+    let ConflictUpstream { conflict, client } = *upstream;
     progress!(
         "  fetching upstream at old sha={} (common ancestor) ...",
         short_sha(&conflict.old_sha)
     );
-    let base_files = fetch_dir_at_sha(&client, entry, &conflict.old_sha)?;
+    let base_files = fetch_dir_at_sha(client, entry, &conflict.old_sha)?;
     progress!("done");
 
     progress!(
         "  fetching upstream at new sha={} ...",
         short_sha(&conflict.new_sha)
     );
-    let theirs_files = fetch_dir_at_sha(&client, entry, &conflict.new_sha)?;
+    let theirs_files = fetch_dir_at_sha(client, entry, &conflict.new_sha)?;
     progress!("done");
 
     let manifest = crate::config::parse_and_resolve(&repo_root.join(MANIFEST_NAME))?;
@@ -401,6 +408,14 @@ pub fn cmd_resolve(
         return Ok(());
     }
 
+    resolve_entry(name, repo_root, &UreqClient::new())
+}
+
+fn resolve_entry(
+    name: Option<&str>,
+    repo_root: &Path,
+    client: &dyn HttpClient,
+) -> Result<(), SkillfileError> {
     let name = name
         .ok_or_else(|| SkillfileError::Manifest("entry name required (unless --abort)".into()))?;
 
@@ -425,20 +440,214 @@ pub fn cmd_resolve(
         Some(c) => c,
     };
 
+    let upstream = ConflictUpstream {
+        conflict: &conflict,
+        client,
+    };
     let vdir = vendor_dir_for(entry, repo_root);
     if is_cached_dir_entry(entry, &vdir) {
-        resolve_dir_entry(entry, &conflict, repo_root)
+        resolve_dir_entry(entry, &upstream, repo_root)
     } else {
-        resolve_single_file(entry, &conflict, repo_root)
+        resolve_single_file(entry, &upstream, repo_root)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_support::FakeGithub;
 
     fn write_manifest(dir: &Path, content: &str) {
         std::fs::write(dir.join(MANIFEST_NAME), content).unwrap();
+    }
+
+    const OLD_SHA: &str = "1111111111111111111111111111111111111111";
+    const NEW_SHA: &str = "2222222222222222222222222222222222222222";
+
+    const AGENT_MANIFEST: &str =
+        "install  claude-code  local\ngithub  agent  owner/repo  agents/reviewer.md\n";
+    const INSTALLED_AGENT: &str = ".claude/agents/reviewer.md";
+    const AGENT_PATCH: &str = ".skillfile/patches/agents/reviewer.patch";
+    const CONFLICT: &str = ".skillfile/conflict";
+
+    const BASE: &str = "# Reviewer\n\nBe strict.\n\nCheck tests.\n";
+    const UPSTREAM: &str = "# Reviewer\n\nBe strict.\n\nCheck tests.\nCheck docs.\n";
+    const LOCAL: &str = "# Reviewer\n\nBe kind.\n\nCheck tests.\n";
+    const LOCAL_ON_UPSTREAM: &str = "# Reviewer\n\nBe kind.\n\nCheck tests.\nCheck docs.\n";
+    /// `LOCAL` expressed as a stored pin against `BASE`.
+    const LOCAL_PATCH: &str = concat!(
+        "--- a/reviewer.md\n",
+        "+++ b/reviewer.md\n",
+        "@@ -1,5 +1,5 @@\n",
+        " # Reviewer\n",
+        " \n",
+        "-Be strict.\n",
+        "+Be kind.\n",
+        " \n",
+        " Check tests.\n",
+    );
+
+    fn write(dir: &Path, rel: &str, content: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn read(dir: &Path, rel: &str) -> String {
+        std::fs::read_to_string(dir.join(rel)).unwrap()
+    }
+
+    fn write_conflict(dir: &Path, entry: &str, entity_type: &str) {
+        write(
+            dir,
+            CONFLICT,
+            &format!(
+                r#"{{"entry": "{entry}", "entity_type": "{entity_type}", "old_sha": "{OLD_SHA}", "new_sha": "{NEW_SHA}"}}"#
+            ),
+        );
+    }
+
+    fn agent_upstream(new_content: &str) -> FakeGithub {
+        FakeGithub::new("owner/repo")
+            .at(OLD_SHA, &[("agents/reviewer.md", BASE)])
+            .at(NEW_SHA, &[("agents/reviewer.md", new_content)])
+    }
+
+    #[test]
+    fn single_file_merge_keeps_local_edit_and_takes_upstream_change() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), AGENT_MANIFEST);
+        write(dir.path(), INSTALLED_AGENT, LOCAL);
+        write_conflict(dir.path(), "reviewer", "agent");
+
+        resolve_entry(Some("reviewer"), dir.path(), &agent_upstream(UPSTREAM)).unwrap();
+
+        assert_eq!(read(dir.path(), INSTALLED_AGENT), LOCAL_ON_UPSTREAM);
+        let pin = read(dir.path(), AGENT_PATCH);
+        assert!(pin.contains("-Be strict.\n+Be kind.\n"), "pin: {pin}");
+        assert!(
+            !pin.contains("+Check docs."),
+            "upstream change must not be pinned as a local edit: {pin}"
+        );
+        assert!(!dir.path().join(CONFLICT).exists());
+    }
+
+    #[test]
+    fn single_file_merge_reads_local_edit_from_pin_not_installed_file() {
+        // After a failed `install --update`, the stored pin is the record of
+        // the user's edit; the installed file may already hold other content.
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), AGENT_MANIFEST);
+        write(dir.path(), INSTALLED_AGENT, "unrelated deployed content\n");
+        write(dir.path(), AGENT_PATCH, LOCAL_PATCH);
+        write_conflict(dir.path(), "reviewer", "agent");
+
+        resolve_entry(Some("reviewer"), dir.path(), &agent_upstream(UPSTREAM)).unwrap();
+
+        assert_eq!(read(dir.path(), INSTALLED_AGENT), LOCAL_ON_UPSTREAM);
+    }
+
+    #[test]
+    fn single_file_merge_equal_to_upstream_drops_the_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), AGENT_MANIFEST);
+        write(dir.path(), INSTALLED_AGENT, LOCAL);
+        write(dir.path(), AGENT_PATCH, LOCAL_PATCH);
+        write_conflict(dir.path(), "reviewer", "agent");
+
+        // Upstream made the very edit the user had pinned.
+        resolve_entry(Some("reviewer"), dir.path(), &agent_upstream(LOCAL)).unwrap();
+
+        assert_eq!(read(dir.path(), INSTALLED_AGENT), LOCAL);
+        assert!(!dir.path().join(AGENT_PATCH).exists());
+        assert!(!dir.path().join(CONFLICT).exists());
+    }
+
+    #[test]
+    fn failed_upstream_fetch_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), AGENT_MANIFEST);
+        write(dir.path(), INSTALLED_AGENT, LOCAL);
+        write_conflict(dir.path(), "reviewer", "agent");
+        // The new SHA is unknown upstream, so its fetch 404s.
+        let upstream = FakeGithub::new("owner/repo").at(OLD_SHA, &[("agents/reviewer.md", BASE)]);
+
+        let result = resolve_entry(Some("reviewer"), dir.path(), &upstream);
+
+        assert!(result.is_err());
+        assert_eq!(read(dir.path(), INSTALLED_AGENT), LOCAL);
+        assert!(!dir.path().join(AGENT_PATCH).exists());
+        assert!(dir.path().join(CONFLICT).exists());
+    }
+
+    #[test]
+    fn conflict_recorded_for_another_entry_is_not_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            &format!("{AGENT_MANIFEST}github  agent  owner/repo  agents/other.md\n"),
+        );
+        write_conflict(dir.path(), "other", "agent");
+
+        let err = resolve_entry(Some("reviewer"), dir.path(), &FakeGithub::new("owner/repo"))
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("no pending conflict for 'reviewer'"),
+            "{err}"
+        );
+        assert!(dir.path().join(CONFLICT).exists());
+    }
+
+    #[test]
+    fn dir_merge_pins_only_files_that_differ_from_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            "install  claude-code  local\ngithub  skill  owner/repo  skills/lint\n",
+        );
+        // Upstream changed SKILL.md; the user edited rules.md.
+        let upstream = FakeGithub::new("owner/repo")
+            .at(
+                OLD_SHA,
+                &[
+                    ("skills/lint/SKILL.md", "# Lint\n"),
+                    ("skills/lint/rules.md", "- no tabs\n"),
+                ],
+            )
+            .at(
+                NEW_SHA,
+                &[
+                    ("skills/lint/SKILL.md", "# Lint\n\nRun on save.\n"),
+                    ("skills/lint/rules.md", "- no tabs\n"),
+                ],
+            );
+        write(dir.path(), ".claude/skills/lint/SKILL.md", "# Lint\n");
+        write(
+            dir.path(),
+            ".claude/skills/lint/rules.md",
+            "- no tabs\n- no trailing spaces\n",
+        );
+        write_conflict(dir.path(), "lint", "skill");
+
+        resolve_entry(Some("lint"), dir.path(), &upstream).unwrap();
+
+        assert_eq!(
+            read(dir.path(), ".claude/skills/lint/SKILL.md"),
+            "# Lint\n\nRun on save.\n"
+        );
+        assert_eq!(
+            read(dir.path(), ".claude/skills/lint/rules.md"),
+            "- no tabs\n- no trailing spaces\n"
+        );
+        let patches = dir.path().join(".skillfile/patches/skills/lint");
+        assert!(
+            read(dir.path(), ".skillfile/patches/skills/lint/rules.md.patch")
+                .contains("+- no trailing spaces")
+        );
+        assert!(!patches.join("SKILL.md.patch").exists());
+        assert!(!dir.path().join(CONFLICT).exists());
     }
 
     #[test]

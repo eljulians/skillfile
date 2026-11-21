@@ -47,7 +47,11 @@ pub fn installed_paths(
 ) -> Result<Vec<PathBuf>, SkillfileError> {
     let mut paths = Vec::new();
     for target in &manifest.install_targets {
-        let target = resolved_target(target)?;
+        // Unknown platforms are skipped, like `deploy_all` does, so a Skillfile
+        // written for a newer version keeps working.
+        let Ok(target) = resolved_target(target) else {
+            continue;
+        };
         if !target.supports(entry.entity_type) {
             continue;
         }
@@ -77,7 +81,9 @@ pub fn installed_dir_file_sets(
 ) -> Result<Vec<HashMap<String, PathBuf>>, SkillfileError> {
     let mut file_sets = Vec::new();
     for target in &manifest.install_targets {
-        let target = resolved_target(target)?;
+        let Ok(target) = resolved_target(target) else {
+            continue;
+        };
         if !target.supports(entry.entity_type) {
             continue;
         }
@@ -270,6 +276,31 @@ mod tests {
     }
 
     #[test]
+    fn installed_paths_skips_unknown_adapter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "test".into(),
+            source: SourceFields::Github {
+                owner_repo: "o/r".into(),
+                path_in_repo: "skills/test.md".into(),
+                ref_: "main".into(),
+            },
+        };
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                InstallTarget::platform("unknown", Scope::Local),
+                InstallTarget::platform("claude-code", Scope::Local),
+            ],
+        };
+
+        let result = installed_paths(&entry, &manifest, tmp.path()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains(&tmp.path().join(".claude/skills/test/SKILL.md")));
+    }
+
+    #[test]
     fn installed_dir_files_no_targets() {
         let entry = Entry {
             entity_type: EntityType::Agent,
@@ -341,6 +372,34 @@ mod tests {
         let result = installed_dir_file_sets(&entry, &manifest, tmp.path()).unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(|files| files.contains_key("SKILL.md")));
+    }
+
+    #[test]
+    fn installed_dir_file_sets_skip_unknown_adapter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "my-skill".into(),
+            source: SourceFields::Github {
+                owner_repo: "o/r".into(),
+                path_in_repo: "skills".into(),
+                ref_: "main".into(),
+            },
+        };
+        let manifest = Manifest {
+            entries: vec![entry.clone()],
+            install_targets: vec![
+                InstallTarget::platform("unknown", Scope::Local),
+                InstallTarget::platform("claude-code", Scope::Local),
+            ],
+        };
+        let claude_dir = tmp.path().join(".claude/skills/my-skill");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("SKILL.md"), "# Skill\n").unwrap();
+
+        let result = installed_dir_file_sets(&entry, &manifest, tmp.path()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains_key("SKILL.md"));
     }
 
     #[test]
