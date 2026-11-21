@@ -6,6 +6,20 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Search loads more results as you scroll** - the `skillfile search` TUI is no longer capped at 20 results. It shows everything from the first page of each registry and fetches more agentskill.sh pages in the background as you move towards the end of the list. `PgUp`/`PgDn` move a screen at a time, and the status bar shows whether more results are loading, available, or all loaded.
+
+### Changed
+
+- **`--limit` applies to scripted search output** - `--json` and `--no-interactive` still default to 20 results, but `--limit` (1-1000) now fetches as many pages as needed. In the TUI, `--limit` is an optional cap instead of a default of 20.
+- **Search JSON includes `has_more`** - `skillfile search --json` output adds a `has_more` field indicating that more results exist beyond `items`.
+- **Security audits are fetched for visible rows only** - the search TUI no longer starts an audit request for every skills.sh result at once.
+
+### Fixed
+
+- **agentskill.sh searches return more than 10 results** - search now uses agentskill.sh's paginated skills API instead of an endpoint that silently returned at most 10 results whatever the requested limit. Results also carry GitHub coordinates more often, so adding them needs fewer extra lookups.
+
 ## v1.9.3 - 21-11-2026
 
 ### Changed

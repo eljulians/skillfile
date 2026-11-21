@@ -12,17 +12,21 @@ use skillfile_core::error::SkillfileError;
 use skillfile_core::output::Spinner;
 use skillfile_sources::http::{HttpClient, UreqClient};
 use skillfile_sources::registry::{
-    fetch_agentskill_github_meta, scrape_github_meta_from_page, search_all, search_registry,
-    RegistryId, SearchOptions, SearchResponse,
+    fetch_agentskill_github_meta, parse_registry_name, scrape_github_meta_from_page, RegistryId,
+    SearchResponse, SearchResult, SearchSession, SessionOptions,
 };
 use skillfile_sources::resolver::{fetch_github_file, try_list_repo_skill_entries, GithubFetch};
 
 use super::add::{cmd_add, entry_from_github, GithubEntryArgs};
 
+/// Result count for `--json` / `--no-interactive` when `--limit` is not given.
+pub const DEFAULT_LIMIT: usize = 20;
+
 /// CLI arguments for `skillfile search` grouped as a Parameter Object.
 pub struct SearchConfig<'a> {
     pub query: &'a str,
-    pub limit: usize,
+    /// `None`: [`DEFAULT_LIMIT`] for scripted output, unlimited in the TUI.
+    pub limit: Option<usize>,
     pub min_score: Option<u8>,
     pub json: bool,
     pub registry: Option<&'a str>,
@@ -34,37 +38,65 @@ pub struct SearchConfig<'a> {
 ///
 /// Queries registries for skills matching the query and presents results. In
 /// interactive mode (TTY attached, not `--json`, not `--no-interactive`), shows
-/// a navigable selection list that feeds into `skillfile add`. Otherwise, prints
-/// a plain-text table or JSON.
+/// a navigable selection list that loads more results on scroll and feeds into
+/// `skillfile add`. Otherwise, prints a plain-text table or JSON of up to
+/// `limit` results.
 ///
 /// # Errors
 ///
 /// Returns `SkillfileError::Network` if registries are unreachable or
 /// return unexpected data.
 pub fn cmd_search(cfg: &SearchConfig<'_>) -> Result<(), SkillfileError> {
-    let opts = SearchOptions {
-        limit: cfg.limit,
+    let interactive = !cfg.json && !cfg.no_interactive && is_interactive_tty();
+    let opts = SessionOptions {
+        registry: cfg.registry.map(parse_registry_name).transpose()?,
         min_score: cfg.min_score,
+        // Scripted output enforces the limit in `collect` instead.
+        max_results: cfg.limit.filter(|_| interactive),
     };
+    let mut session = SearchSession::new(cfg.query, &opts);
+    if interactive {
+        return search_interactive(session, cfg);
+    }
 
     let spinner = Spinner::new("Searching registries");
-    let resp = if let Some(name) = cfg.registry {
-        search_registry(name, cfg.query, &opts)
-    } else {
-        search_all(cfg.query, &opts)
-    };
+    let resp = session.collect(&UreqClient::new(), cfg.limit.unwrap_or(DEFAULT_LIMIT));
     spinner.finish();
     let resp = resp?;
 
     let mut out = std::io::stdout().lock();
     if cfg.json {
         print_json(&mut out, &resp)?;
-    } else if !cfg.no_interactive && is_interactive_tty() && !resp.items.is_empty() {
-        interactive_select(&resp, cfg.repo_root)?;
     } else {
         print_table(&mut out, &resp, cfg.registry);
     }
     Ok(())
+}
+
+/// Fetch the first page, then hand the session to the TUI so it can keep
+/// loading pages as the user scrolls.
+fn search_interactive(
+    mut session: SearchSession,
+    cfg: &SearchConfig<'_>,
+) -> Result<(), SkillfileError> {
+    let spinner = Spinner::new("Searching registries");
+    let batch = session.next_page(&UreqClient::new());
+    spinner.finish();
+    let batch = batch?;
+    for (registry, e) in &batch.failures {
+        eprintln!("warning: {registry} search failed: {e}");
+    }
+
+    if batch.items.is_empty() {
+        let empty = SearchResponse {
+            items: Vec::new(),
+            total: 0,
+            has_more: false,
+        };
+        print_table(&mut std::io::stdout().lock(), &empty, cfg.registry);
+        return Ok(());
+    }
+    interactive_select(batch.items, session, cfg.repo_root)
 }
 
 /// Returns `true` when both stdin and stderr are connected to a terminal.
@@ -84,9 +116,7 @@ fn is_interactive_tty() -> bool {
 /// For `agentskill.sh` items that lack a `source_path`, fetches the detail
 /// API to obtain the real `owner/repo` and path. For all other items the
 /// coordinates are taken directly from the search result.
-fn resolve_source_coords(
-    item: &skillfile_sources::registry::SearchResult,
-) -> (Option<String>, Option<String>) {
+fn resolve_source_coords(item: &SearchResult) -> (Option<String>, Option<String>) {
     if item.registry != RegistryId::AgentskillSh
         || item.source_repo.is_some()
         || item.source_path.is_some()
@@ -142,15 +172,18 @@ fn resolve_owner_repo(source_repo: Option<&str>) -> Result<Option<String>, Skill
 ///
 /// On selection, gathers the information needed to construct a `skillfile add`
 /// command (entity type, GitHub coordinates) and delegates to [`cmd_add`].
-fn interactive_select(resp: &SearchResponse, repo_root: &Path) -> Result<(), SkillfileError> {
-    let selected_idx = super::search_tui::run_tui(&resp.items, resp.total)
+fn interactive_select(
+    initial: Vec<SearchResult>,
+    session: SearchSession,
+    repo_root: &Path,
+) -> Result<(), SkillfileError> {
+    let selected = super::search_tui::run_tui(initial, Some(session))
         .map_err(|e| SkillfileError::Install(format!("TUI error: {e}")))?;
 
-    let Some(idx) = selected_idx else {
+    let Some(ref item) = selected else {
         return Ok(());
     };
 
-    let item = &resp.items[idx];
     let (source_repo, source_path) = resolve_source_coords(item);
 
     // Show selection context before follow-up prompts.
@@ -1168,6 +1201,7 @@ mod tests {
     fn sample_response() -> SearchResponse {
         SearchResponse {
             total: 2,
+            has_more: false,
             items: vec![
                 SearchResult {
                     name: "code-reviewer".to_string(),
@@ -1198,6 +1232,7 @@ mod tests {
     fn multi_registry_response() -> SearchResponse {
         SearchResponse {
             total: 3,
+            has_more: false,
             items: vec![
                 SearchResult {
                     name: "code-reviewer".to_string(),
@@ -1275,6 +1310,7 @@ mod tests {
     fn table_empty_results() {
         let resp = SearchResponse {
             total: 0,
+            has_more: false,
             items: vec![],
         };
         let mut buf = Vec::new();
@@ -1287,6 +1323,7 @@ mod tests {
     fn table_shows_total_when_more() {
         let resp = SearchResponse {
             total: 50,
+            has_more: false,
             items: vec![SearchResult {
                 name: "test".to_string(),
                 owner: "owner".to_string(),
@@ -1309,6 +1346,7 @@ mod tests {
     fn table_result_without_optional_fields() {
         let resp = SearchResponse {
             total: 1,
+            has_more: false,
             items: vec![SearchResult {
                 name: "minimal".to_string(),
                 owner: String::new(),
@@ -1349,6 +1387,7 @@ mod tests {
     fn json_empty() {
         let resp = SearchResponse {
             total: 0,
+            has_more: false,
             items: vec![],
         };
         let mut buf = Vec::new();

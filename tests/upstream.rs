@@ -410,6 +410,36 @@ fn search_skills_sh() {
     }
 }
 
+/// agentskill.sh pagination: a limit above one page (100) must fetch page 2.
+/// Guards against regressing to `/api/agent/search`, which caps at 10 results.
+#[test]
+fn search_agentskill_paginates() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = sf_retry(
+        dir.path(),
+        &[
+            "search",
+            "code",
+            "--limit",
+            "150",
+            "--registry",
+            "agentskill.sh",
+            "--json",
+        ],
+    );
+
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let items = parsed["items"].as_array().unwrap();
+    let urls: std::collections::HashSet<&str> =
+        items.iter().filter_map(|i| i["url"].as_str()).collect();
+    assert!(
+        urls.len() > 100,
+        "expected more than one page of unique results, got {}",
+        urls.len()
+    );
+}
+
 /// skillhub.club golden path: without API key, returns empty results gracefully.
 #[test]
 fn search_skillhub_club_no_key() {

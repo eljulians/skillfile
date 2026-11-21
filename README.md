@@ -85,14 +85,14 @@ Find community skills and agents from the CLI, then add a selection to your `Ski
 skillfile search "code review"
 ```
 
-In a terminal, search opens an interactive browser with a preview pane and an add flow for the selected skill or agent. It searches [agentskill.sh](https://agentskill.sh) and [skills.sh](https://skills.sh) by default; set `SKILLHUB_API_KEY` to include skillhub.club too.
+In a terminal, search opens an interactive browser with a preview pane and an add flow for the selected skill or agent. More results load as you scroll towards the end of the list (`PgUp`/`PgDn` jump a screen at a time). It searches [agentskill.sh](https://agentskill.sh) and [skills.sh](https://skills.sh) by default; set `SKILLHUB_API_KEY` to include skillhub.club too.
 
-Use `--min-score` to focus on higher-trust results, `--registry` to search one registry, or `--json` / `--no-interactive` for scripts and pipelines:
+Use `--min-score` to focus on higher-trust results, `--registry` to search one registry, or `--json` / `--no-interactive` for scripts and pipelines. Scripted output returns 20 results unless you pass `--limit` (up to 1000):
 
 ```bash
 skillfile search linting --min-score 80
 skillfile search docker --registry agentskill.sh --no-interactive
-skillfile search testing --json
+skillfile search testing --json --limit 200
 ```
 
 ## Update without losing local edits

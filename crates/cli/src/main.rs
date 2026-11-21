@@ -337,11 +337,13 @@ Use --registry to target a single registry. skillhub.club is included
 automatically when SKILLHUB_API_KEY is set.
 
 In interactive mode (the default when a terminal is attached), results
-are shown in a navigable TUI with a preview pane. Selecting a result
-walks you through adding it to your Skillfile via `skillfile add`.
+are shown in a navigable TUI with a preview pane. More results load
+automatically as you scroll towards the end of the list. Selecting a
+result walks you through adding it to your Skillfile via `skillfile add`.
 
 Non-interactive output (--json, --no-interactive, or piped stdout)
-prints a plain-text table or JSON without prompts.
+prints a plain-text table or JSON without prompts, limited to 20
+results unless --limit is given.
 
 Results are sorted by popularity (stars). The preview pane shows
 description, owner, stars, security score, and source repo when
@@ -352,15 +354,16 @@ Examples:
   skillfile search \"code review\"          Search across all registries
   skillfile search docker --limit 5        Limit to 5 results
   skillfile search linting --min-score 80  Only high-trust results
-  skillfile search testing --json          Machine-readable output
+  skillfile search testing --json          Machine-readable output (20 results)
+  skillfile search testing --json --limit 300
   skillfile search docker --registry agentskill.sh
   skillfile search docker --no-interactive Plain text, no TUI")]
     Search {
         /// Search query
         query: String,
-        /// Maximum number of results
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
+        /// Maximum number of results [default: 20 for --json/--no-interactive, unlimited in the TUI]
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=1000))]
+        limit: Option<u16>,
         /// Minimum security score (0-100)
         #[arg(long, value_name = "SCORE")]
         min_score: Option<u8>,
@@ -766,7 +769,7 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
             no_interactive,
         } => commands::search::cmd_search(&commands::search::SearchConfig {
             query: &query,
-            limit,
+            limit: limit.map(usize::from),
             min_score,
             json,
             registry: registry.as_deref(),
@@ -789,7 +792,7 @@ fn run_source_commands(repo_root: &Path, cmd: Command) -> Result<(), SkillfileEr
 fn run_search_tui_test() -> Result<(), SkillfileError> {
     use skillfile_sources::registry::{RegistryId, SearchResult};
 
-    let items = [SearchResult {
+    let items = vec![SearchResult {
         name: "fixture-skill".to_string(),
         owner: "skillfile".to_string(),
         description: Some("Fixture result for interactive terminal smoke tests.".to_string()),
@@ -801,7 +804,7 @@ fn run_search_tui_test() -> Result<(), SkillfileError> {
         source_path: Some("skills/fixture-skill/SKILL.md".to_string()),
     }];
 
-    commands::search_tui::run_tui(&items, items.len())
+    commands::search_tui::run_tui(items, None)
         .map(|_| ())
         .map_err(|e| SkillfileError::Install(format!("TUI error: {e}")))
 }

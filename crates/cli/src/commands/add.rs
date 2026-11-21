@@ -672,7 +672,7 @@ fn wizard_search(repo_root: &Path) -> Result<(), SkillfileError> {
 
     super::search::cmd_search(&super::search::SearchConfig {
         query: &query,
-        limit: 50,
+        limit: None,
         min_score: None,
         json: false,
         registry: None,
