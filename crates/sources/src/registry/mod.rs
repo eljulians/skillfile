@@ -1,6 +1,6 @@
 //! Registry client for searching community skills and agents.
 //!
-//! Queries multiple registries (agentskill.sh, skills.sh, skillhub.club) for
+//! Queries multiple registries (agentskill.sh, skills.sh, skillhub.club, skillsmp.com) for
 //! published skills and agents. Each registry implements the [`Registry`] trait,
 //! and results are aggregated into a unified [`SearchResponse`].
 //!
@@ -18,6 +18,7 @@
 pub mod agentskill;
 mod scrape;
 mod skillhub;
+mod skillsmp;
 mod skillssh;
 
 #[cfg(test)]
@@ -29,6 +30,7 @@ use skillfile_core::error::SkillfileError;
 // Re-export registry implementations for `all_registries()` and `search_registry_with_client()`.
 use agentskill::AgentskillSh;
 use skillhub::SkillhubClub;
+use skillsmp::SkillsmpCom;
 use skillssh::SkillsSh;
 
 // Re-export the detail API from the agentskill module.
@@ -53,6 +55,8 @@ pub enum RegistryId {
     SkillsSh,
     #[serde(rename = "skillhub.club")]
     SkillhubClub,
+    #[serde(rename = "skillsmp.com")]
+    SkillsmpCom,
 }
 
 impl RegistryId {
@@ -61,6 +65,7 @@ impl RegistryId {
             Self::AgentskillSh => "agentskill.sh",
             Self::SkillsSh => "skills.sh",
             Self::SkillhubClub => "skillhub.club",
+            Self::SkillsmpCom => "skillsmp.com",
         }
     }
 
@@ -85,6 +90,7 @@ impl std::str::FromStr for RegistryId {
             "agentskill.sh" => Ok(Self::AgentskillSh),
             "skills.sh" => Ok(Self::SkillsSh),
             "skillhub.club" => Ok(Self::SkillhubClub),
+            "skillsmp.com" => Ok(Self::SkillsmpCom),
             _ => Err(format!("unknown registry: {s}")),
         }
     }
@@ -161,7 +167,11 @@ pub(crate) trait Registry: Send + Sync {
 
 /// Returns registries to query by default (public, no auth required).
 pub(crate) fn all_registries() -> Vec<Box<dyn Registry>> {
-    let mut regs: Vec<Box<dyn Registry>> = vec![Box::new(AgentskillSh), Box::new(SkillsSh)];
+    let mut regs: Vec<Box<dyn Registry>> = vec![
+        Box::new(AgentskillSh),
+        Box::new(SkillsSh),
+        Box::new(SkillsmpCom),
+    ];
     // skillhub.club requires an API key — only include when configured.
     if std::env::var("SKILLHUB_API_KEY").is_ok_and(|k| !k.is_empty()) {
         regs.push(Box::new(SkillhubClub));
@@ -170,7 +180,12 @@ pub(crate) fn all_registries() -> Vec<Box<dyn Registry>> {
 }
 
 /// Valid registry names for `--registry` flag validation.
-pub const REGISTRY_NAMES: &[&str] = &["agentskill.sh", "skills.sh", "skillhub.club"];
+pub const REGISTRY_NAMES: &[&str] = &[
+    "agentskill.sh",
+    "skills.sh",
+    "skillhub.club",
+    "skillsmp.com",
+];
 
 // ===========================================================================
 // Public search functions
@@ -255,6 +270,7 @@ pub(crate) fn search_registry_with_client(
         "agentskill.sh" => Box::new(AgentskillSh),
         "skills.sh" => Box::new(SkillsSh),
         "skillhub.club" => Box::new(SkillhubClub),
+        "skillsmp.com" => Box::new(SkillsmpCom),
         _ => {
             return Err(SkillfileError::Manifest(format!(
                 "unknown registry '{registry_name}'. Valid registries: {}",
@@ -279,7 +295,7 @@ pub fn fetch_skill_content_for(item: &SearchResult) -> Option<String> {
     match item.registry {
         RegistryId::AgentskillSh => AgentskillSh.fetch_skill_content(&client, item),
         RegistryId::SkillsSh => SkillsSh.fetch_skill_content(&client, item),
-        RegistryId::SkillhubClub => None,
+        RegistryId::SkillhubClub | RegistryId::SkillsmpCom => None,
     }
 }
 
@@ -355,6 +371,8 @@ mod tests {
     /// Serializes tests that manipulate the `SKILLHUB_API_KEY` env var.
     static SKILLHUB_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    const SKILLSMP_EMPTY_RESPONSE: &str = r#"{"data": {"skills": []}}"#;
+
     fn agentskill_mock_response() -> String {
         r#"{
             "results": [
@@ -417,6 +435,7 @@ mod tests {
         let client = MockClient::new(vec![
             Ok(agentskill_mock_response()),
             Ok(skillssh_mock_response()),
+            Ok(SKILLSMP_EMPTY_RESPONSE.to_string()),
         ]);
         let resp = search_all_with_client(&client, "test", &SearchOptions::default()).unwrap();
         assert_eq!(resp.items.len(), 4);
@@ -432,6 +451,7 @@ mod tests {
         let client = MockClient::new(vec![
             Err("connection refused".to_string()),
             Ok(skillssh_mock_response()),
+            Ok(SKILLSMP_EMPTY_RESPONSE.to_string()),
         ]);
         let resp = search_all_with_client(&client, "test", &SearchOptions::default()).unwrap();
         assert_eq!(resp.items.len(), 2);
@@ -445,6 +465,7 @@ mod tests {
         let client = MockClient::new(vec![
             Err("agentskill unavailable".to_string()),
             Err("skills unavailable".to_string()),
+            Err("skillsmp unavailable".to_string()),
         ]);
 
         let result = search_all_with_client(&client, "test", &SearchOptions::default());
@@ -462,6 +483,7 @@ mod tests {
         let client = MockClient::new(vec![
             Ok(agentskill_mock_response()),
             Ok(skillssh_mock_response()),
+            Ok(SKILLSMP_EMPTY_RESPONSE.to_string()),
         ]);
         let opts = SearchOptions {
             limit: 10,
@@ -526,16 +548,22 @@ mod tests {
     #[test]
     fn all_registries_default_excludes_skillhub() {
         let regs = all_registries();
-        assert!(regs.len() >= 2);
+        assert!(regs.len() >= 3);
         assert_eq!(regs[0].name(), "agentskill.sh");
         assert_eq!(regs[1].name(), "skills.sh");
+        assert_eq!(regs[2].name(), "skillsmp.com");
     }
 
     #[test]
     fn registry_names_covers_all_known() {
         assert_eq!(
             REGISTRY_NAMES,
-            &["agentskill.sh", "skills.sh", "skillhub.club"]
+            &[
+                "agentskill.sh",
+                "skills.sh",
+                "skillhub.club",
+                "skillsmp.com"
+            ]
         );
     }
 
@@ -613,6 +641,7 @@ mod tests {
         let client = MockClient::new(vec![
             Ok(agentskill_mock_response()),
             Ok(skillssh_mock_response()),
+            Ok(SKILLSMP_EMPTY_RESPONSE.to_string()),
         ]);
         let resp = search_all_with_client(&client, "test", &SearchOptions::default()).unwrap();
         assert_eq!(resp.items[0].name, "docker-helper");

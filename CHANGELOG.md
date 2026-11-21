@@ -6,6 +6,10 @@ All notable changes to skillfile are documented here.
 
 ## Unreleased
 
+### Added
+
+- **skillsmp.com search** - `skillfile search` now includes [skillsmp.com](https://skillsmp.com) results by default, and `--registry skillsmp.com` searches it alone. No API key is needed; set `SKILLSMP_API_KEY` for higher rate limits. Results carry the GitHub repository and path when skillsmp.com reports them, so adding a result needs no manual repo prompt.
+
 ## v1.9.3 - 21-11-2026
 
 ### Changed
