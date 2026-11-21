@@ -406,6 +406,66 @@ fn validate_duplicate_name_reported_once() {
 }
 
 #[test]
+fn validate_warns_when_no_target_supports_an_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+    std::fs::write(dir.path().join("agents/a.md"), "# a\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  codex  local\n\
+         local  agent  a  agents/a.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).arg("validate").output().unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(
+        output.status.success(),
+        "an undeployable entry is a warning, not an error: {stderr}"
+    );
+    assert_eq!(
+        stdout, "Skillfile OK — 1 entry, 1 install target\n",
+        "unexpected validate stdout"
+    );
+    assert_eq!(
+        stderr, "warning: agent 'a' will not be installed: no install target supports agents\n",
+        "validate should warn exactly once about the undeployable entry"
+    );
+}
+
+#[test]
+fn validate_prints_warnings_before_failing_on_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+    std::fs::write(dir.path().join("agents/a.md"), "# a\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  codex  local\n\
+         install  bogus  global\n\
+         local  agent  a  agents/a.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).arg("validate").output().unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(
+        !output.status.success(),
+        "unknown platform is still an error"
+    );
+    assert_eq!(stdout, "", "error path should not write to stdout");
+    assert_eq!(
+        stderr,
+        "warning: agent 'a' will not be installed: no install target supports agents\n\
+         error: unknown platform: 'bogus'\n",
+        "warnings should still be printed when validate fails"
+    );
+}
+
+#[test]
 fn install_prints_manifest_warning_once() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("skills")).unwrap();
@@ -428,6 +488,91 @@ fn install_prints_manifest_warning_once() {
             .count(),
         1,
         "manifest parse warning should only be printed once by install, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn install_warns_when_no_target_supports_an_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+    std::fs::write(dir.path().join("agents/a.md"), "# a\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  codex  local\n\
+         local  agent  a  agents/a.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).arg("install").output().unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(output.status.success(), "install should succeed: {stderr}");
+    assert_eq!(
+        stderr
+            .matches("warning: agent 'a' will not be installed: no install target supports agents")
+            .count(),
+        1,
+        "install should warn once that the agent was deployed nowhere, got:\n{stderr}"
+    );
+    assert!(
+        !dir.path().join(".codex").exists(),
+        "nothing should be deployed for a skills-only target"
+    );
+}
+
+#[test]
+fn install_quiet_keeps_undeployable_entry_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+    std::fs::write(dir.path().join("agents/a.md"), "# a\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  codex  local\n\
+         local  agent  a  agents/a.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path())
+        .args(["--quiet", "install"])
+        .output()
+        .unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(output.status.success(), "install should succeed: {stderr}");
+    assert!(
+        !stderr.contains("Installing for"),
+        "--quiet should hide progress output, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning: agent 'a' will not be installed"),
+        "--quiet must not hide the warning, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn install_does_not_warn_when_another_target_takes_the_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+    std::fs::write(dir.path().join("agents/a.md"), "# a\n").unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  codex  local\n\
+         install  claude-code  local\n\
+         local  agent  a  agents/a.md\n",
+    )
+    .unwrap();
+
+    let output = sf(dir.path()).arg("install").output().unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+
+    assert!(output.status.success(), "install should succeed: {stderr}");
+    assert!(
+        !stderr.contains("warning:"),
+        "an entry another target installs is not a warning, got:\n{stderr}"
+    );
+    assert!(
+        dir.path().join(".claude/agents/a.md").exists(),
+        "claude-code should still receive the agent"
     );
 }
 
