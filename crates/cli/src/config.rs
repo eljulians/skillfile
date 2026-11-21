@@ -147,7 +147,7 @@ pub fn write_user_targets_to(targets: &[InstallTarget], path: &Path) -> Result<(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let existing = read_config_from(path);
+    let existing = read_existing_config(path)?;
     let config = Config {
         github_token: existing.github_token,
         gitlab_token: existing.gitlab_token,
@@ -162,10 +162,24 @@ pub fn write_user_targets_to(targets: &[InstallTarget], path: &Path) -> Result<(
 
 /// Read the raw `Config` from a file path, returning a default on any error.
 fn read_config_from(path: &Path) -> Config {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| toml::from_str(&s).ok())
-        .unwrap_or_default()
+    read_existing_config(path).unwrap_or_default()
+}
+
+/// Read the `Config` that a write is about to replace. A missing file reads as
+/// the default, but a file that can't be read or parsed is an error so the
+/// write doesn't drop the settings in it.
+fn read_existing_config(path: &Path) -> Result<Config, std::io::Error> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) => return Err(e),
+    };
+    toml::from_str(&content).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid config at {}: {e}", path.display()),
+        )
+    })
 }
 
 /// Serialise `config` to `path`, setting 0o600 permissions on Unix.
@@ -234,7 +248,7 @@ pub fn write_config_token(token: &str) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut config = read_config_from(&path);
+    let mut config = read_existing_config(&path)?;
     config.github_token = Some(token.to_string());
     write_config_to(&config, &path)
 }
@@ -257,7 +271,7 @@ fn write_gitlab_config_token_to(token: &str, path: &Path) -> Result<(), std::io:
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut config = read_config_from(path);
+    let mut config = read_existing_config(path)?;
     config.gitlab_token = Some(token.to_string());
     write_config_to(&config, path)
 }
@@ -617,6 +631,17 @@ mod tests {
         assert_eq!(result.gitlab_token.as_deref(), Some("glpat-preserved"));
         assert_eq!(result.install.len(), 1);
         assert_eq!(result.install[0].platform, "claude-code");
+    }
+
+    #[test]
+    fn write_gitlab_config_token_leaves_invalid_toml_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "github_token = \"ghp_keep\"\n[[install]\nplatform = \"claude-code\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        assert!(write_gitlab_config_token_to("glpat-new", &path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]

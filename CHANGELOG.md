@@ -10,6 +10,11 @@ All notable changes to skillfile are documented here.
 
 - **skillsmp.com search** - `skillfile search` now includes [skillsmp.com](https://skillsmp.com) results by default, and `--registry skillsmp.com` searches it alone. No API key is needed; set `SKILLSMP_API_KEY` for higher rate limits. Results carry the GitHub repository and path when skillsmp.com reports them, so adding a result needs no manual repo prompt.
 
+### Fixed
+
+- **Bulk add failures return a nonzero exit status** - selected entries continue processing, duplicates remain skips, and the summary reports failures separately by @Boulea7
+- **Entries no install target can deploy are reported** - `skillfile install` and `skillfile validate` now warn when no configured install target supports an entry's entity type (such as an `agent` entry with only skills-only platforms), instead of reporting success while the entry is installed nowhere by @costajohnt
+
 ## v1.9.3 - 21-11-2026
 
 ### Changed
