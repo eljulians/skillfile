@@ -9,6 +9,7 @@ All notable changes to skillfile are documented here.
 ### Fixed
 
 - **Invalid entry names and empty refs are caught while parsing** - entry names made only of dots (such as `.` or `..`) and GitHub repos written as `owner/repo@` with nothing after `@` are now skipped with a warning instead of causing confusing errors later by @Sarthak-Shreshtha01
+- **`--dry-run` no longer downloads locked entries** - `install --dry-run` and `sync --dry-run` now report that a locked entry would be re-fetched instead of downloading it and rewriting `.skillfile/cache/` by @luantaraschi
 
 ## v1.9.2 - 31-08-2026
 
