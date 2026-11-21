@@ -39,8 +39,10 @@ If `#` appears inside a quoted field, it is not treated as a comment.
 Fields are parsed using POSIX shell quoting rules (shlex). Quoted strings preserve spaces and special characters:
 
 ```
-local  skill  "my skills/git commit.md"
+local  skill  git-commit  "my skills/git commit.md"
 ```
+
+Use an explicit name when the filename stem contains spaces, since inferred names still follow the [name rules](#name-rules).
 
 ## Install Lines
 

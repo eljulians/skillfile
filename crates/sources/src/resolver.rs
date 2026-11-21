@@ -394,9 +394,12 @@ pub(crate) fn list_gitlab_dir_recursive(
         // directory, then page until fewer than GITLAB_TREE_PAGE_SIZE results
         // are returned.
         let url = gitlab_tree_url(gl, trimmed, page);
-        let Some(text) = gl.client.get_json(&url)? else {
-            break;
-        };
+        let text = gl.client.get_json(&url)?.ok_or_else(|| {
+            SkillfileError::Network(format!(
+                "failed to list directory {}/{trimmed}: 4xx error",
+                gl.owner_repo
+            ))
+        })?;
         // GitLab returns a flat JSON array, not {"tree": [...]} like GitHub.
         // With the `path` parameter, returned paths are still repo-absolute.
         let items: Vec<serde_json::Value> = serde_json::from_str(&text)
@@ -427,9 +430,12 @@ fn list_gitlab_root_dir_recursive(gl: &GitlabFetch<'_>) -> Result<Vec<DirEntry>,
 
     loop {
         let url = gitlab_root_tree_url(gl, page);
-        let Some(text) = gl.client.get_json(&url)? else {
-            break;
-        };
+        let text = gl.client.get_json(&url)?.ok_or_else(|| {
+            SkillfileError::Network(format!(
+                "failed to list directory {}/.: 4xx error",
+                gl.owner_repo
+            ))
+        })?;
         let items: Vec<serde_json::Value> = serde_json::from_str(&text)
             .map_err(|e| SkillfileError::Network(format!("invalid GitLab tree JSON: {e}")))?;
 
@@ -2050,7 +2056,7 @@ mod tests {
 
     #[test]
     fn collapse_empty_returns_empty() {
-        assert!(collapse_to_entries(&[]).is_empty());
+        assert_eq!(collapse_to_entries(&[]), Vec::<String>::new());
     }
 
     #[test]
@@ -2211,7 +2217,10 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json_none(&tree_url("org/repo", "main"));
         client.add_json_none(&tree_url("org/repo", "master"));
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2219,7 +2228,10 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json_err(&tree_url("org/repo", "main"), "connection refused");
         client.add_json_err(&tree_url("org/repo", "master"), "connection refused");
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2242,9 +2254,10 @@ mod tests {
         client.add_json_none(&tree_url("org/repo", "master"));
         client.add_json_none(&repo_url("org/repo"));
 
-        assert!(try_list_repo_skill_entries(&client, "org/repo")
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            try_list_repo_skill_entries(&client, "org/repo").unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2252,7 +2265,10 @@ mod tests {
         let mut client = MockClient::new();
         let json = tree_json(&[("src/main.rs", "blob"), ("Cargo.toml", "blob")]);
         client.add_json(&tree_url("org/repo", "main"), &json);
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2264,7 +2280,10 @@ mod tests {
             (".github/ISSUE_TEMPLATE.md", "blob"),
         ]);
         client.add_json(&tree_url("org/repo", "main"), &json);
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2288,7 +2307,10 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json(&tree_url("org/repo", "main"), "not valid json {{{");
         client.add_json_none(&tree_url("org/repo", "master"));
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2298,14 +2320,20 @@ mod tests {
             &tree_url("org/repo", "main"),
             r#"{"sha": "abc123", "url": "..."}"#,
         );
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn skill_entries_empty_tree_array() {
         let mut client = MockClient::new();
         client.add_json(&tree_url("org/repo", "main"), r#"{"tree": []}"#);
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2361,14 +2389,20 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json_err(&tree_url("org/repo", "main"), "timeout");
         client.add_json(&tree_url("org/repo", "master"), "{{broken}}");
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn skill_entries_main_empty_does_not_fallback() {
         let mut client = MockClient::new();
         client.add_json(&tree_url("org/repo", "main"), r#"{"tree": []}"#);
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2411,7 +2445,7 @@ mod tests {
         client.add_json(&tree_url("org/repo", "main"), &json);
 
         let entries = list_repo_skill_entries_under(&client, "org/repo", "nonexistent/");
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::<String>::new());
     }
 
     #[test]
@@ -2421,7 +2455,7 @@ mod tests {
         client.add_json_err(&tree_url("org/repo", "master"), "timeout");
 
         let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::<String>::new());
     }
 
     #[test]
@@ -2859,7 +2893,7 @@ mod tests {
     }
 
     #[test]
-    fn list_gitlab_dir_recursive_4xx_returns_empty() {
+    fn list_gitlab_dir_recursive_4xx_returns_error() {
         let owner_repo = "group/project";
         let ref_ = "main";
         let url = gitlab_tree_url(
@@ -2880,8 +2914,10 @@ mod tests {
             ref_,
             host: "gitlab.com",
         };
-        let entries = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap();
-        assert!(entries.is_empty());
+        let err = list_gitlab_dir_recursive(&gl, "skills/dir").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("failed to list directory group/project/skills/dir"));
     }
 
     #[test]

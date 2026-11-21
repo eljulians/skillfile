@@ -1798,6 +1798,38 @@ fn info_shows_missing_secondary_target() {
 }
 
 #[test]
+fn status_and_info_skip_unknown_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_multi_target_skill_fixture(root, "multi-skill");
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  claude-code  local\n\
+         install  shiny-new-tool  local\n\
+         github  skill  multi-skill  owner/repo  skills/multi-skill.md  main\n",
+    )
+    .unwrap();
+
+    let info = sf(root).args(["info", "multi-skill"]).output().unwrap();
+    let info_stderr = std::str::from_utf8(&info.stderr).unwrap();
+    assert!(
+        info.status.success(),
+        "info must skip unknown platforms: {info_stderr}"
+    );
+    let info_stdout = normalize_separators(std::str::from_utf8(&info.stdout).unwrap());
+    assert!(info_stdout.contains(".claude/skills/multi-skill/SKILL.md"));
+    assert!(!info_stdout.contains("(not installed)"));
+
+    let status = sf(root).arg("status").output().unwrap();
+    assert!(status.status.success());
+    let status_stdout = std::str::from_utf8(&status.stdout).unwrap();
+    assert!(
+        !status_stdout.contains("[not installed]"),
+        "status must not report an installed entry as missing:\n{status_stdout}"
+    );
+}
+
+#[test]
 fn info_shows_lock_pin_and_cache_details() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -2136,6 +2168,45 @@ fn upgrade_dry_run_exits_zero() {
         .args(["upgrade", "--dry-run"])
         .assert()
         .success();
+}
+
+/// A locked entry with no cache must not be fetched by `install --dry-run`.
+#[test]
+fn install_dry_run_with_lock_does_not_create_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile"),
+        "install  claude-code  local\n\
+         github  skill  my-skill  skillfile-test/does-not-exist  skills/my-skill.md\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Skillfile.lock"),
+        r#"{
+  "github/skill/my-skill": {
+    "sha": "aabbccdd1122334455667788aabbccdd11223344",
+    "raw_url": "https://raw.githubusercontent.com/skillfile-test/does-not-exist/aabbccdd1122334455667788aabbccdd11223344/skills/my-skill.md"
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = sf(dir.path())
+        .args(["install", "--dry-run"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "install --dry-run failed: {stderr}"
+    );
+    assert!(
+        stderr.contains("would re-fetch (locked sha=aabbccdd1122) [dry-run]"),
+        "unexpected output: {stderr}"
+    );
+    assert!(!dir.path().join(".skillfile/cache").exists());
 }
 
 // ---------------------------------------------------------------------------
