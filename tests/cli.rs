@@ -1653,6 +1653,38 @@ fn info_shows_missing_secondary_target() {
 }
 
 #[test]
+fn status_and_info_skip_unknown_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_multi_target_skill_fixture(root, "multi-skill");
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  claude-code  local\n\
+         install  shiny-new-tool  local\n\
+         github  skill  multi-skill  owner/repo  skills/multi-skill.md  main\n",
+    )
+    .unwrap();
+
+    let info = sf(root).args(["info", "multi-skill"]).output().unwrap();
+    let info_stderr = std::str::from_utf8(&info.stderr).unwrap();
+    assert!(
+        info.status.success(),
+        "info must skip unknown platforms: {info_stderr}"
+    );
+    let info_stdout = normalize_separators(std::str::from_utf8(&info.stdout).unwrap());
+    assert!(info_stdout.contains(".claude/skills/multi-skill/SKILL.md"));
+    assert!(!info_stdout.contains("(not installed)"));
+
+    let status = sf(root).arg("status").output().unwrap();
+    assert!(status.status.success());
+    let status_stdout = std::str::from_utf8(&status.stdout).unwrap();
+    assert!(
+        !status_stdout.contains("[not installed]"),
+        "status must not report an installed entry as missing:\n{status_stdout}"
+    );
+}
+
+#[test]
 fn info_shows_lock_pin_and_cache_details() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

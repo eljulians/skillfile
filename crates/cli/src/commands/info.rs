@@ -94,7 +94,7 @@ fn format_installed_paths(
 ) -> Result<Vec<String>, SkillfileError> {
     let vdir = vendor_dir_for(entry, repo_root);
     let locations = if is_cached_dir_entry(entry, &vdir) {
-        installed_locations_for_dir_entry(entry, manifest, repo_root)?
+        installed_locations_for_dir_entry(entry, manifest, repo_root)
     } else {
         installed_locations_for_single_file(entry, manifest, repo_root)?
     };
@@ -124,10 +124,12 @@ fn installed_locations_for_dir_entry(
     entry: &Entry,
     manifest: &Manifest,
     repo_root: &Path,
-) -> Result<Vec<InstalledLocation>, SkillfileError> {
+) -> Vec<InstalledLocation> {
     let mut locations = Vec::new();
     for target in &manifest.install_targets {
-        let resolved = ResolvedInstallTarget::from_target(target)?;
+        let Ok(resolved) = ResolvedInstallTarget::from_target(target) else {
+            continue;
+        };
         if !resolved.supports(entry.entity_type) {
             continue;
         }
@@ -145,7 +147,7 @@ fn installed_locations_for_dir_entry(
             ));
         }
     }
-    Ok(locations)
+    locations
 }
 
 fn nested_dir_location(entry: &Entry, target_dir: &Path) -> InstalledLocation {
