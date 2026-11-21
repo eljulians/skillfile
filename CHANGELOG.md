@@ -19,6 +19,8 @@ All notable changes to skillfile are documented here.
 ### Fixed
 
 - **agentskill.sh searches return more than 10 results** - search now uses agentskill.sh's paginated skills API instead of an endpoint that silently returned at most 10 results whatever the requested limit. Results also carry GitHub coordinates more often, so adding them needs fewer extra lookups.
+- **Bulk add failures return a nonzero exit status** - selected entries continue processing, duplicates remain skips, and the summary reports failures separately by @Boulea7
+- **Entries no install target can deploy are reported** - `skillfile install` and `skillfile validate` now warn when no configured install target supports an entry's entity type (such as an `agent` entry with only skills-only platforms), instead of reporting success while the entry is installed nowhere by @costajohnt
 
 ## v1.9.3 - 21-11-2026
 
