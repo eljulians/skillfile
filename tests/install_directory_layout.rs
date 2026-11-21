@@ -165,6 +165,45 @@ fn install_mixed_local_entries_normalize_consistently() {
 }
 
 // ---------------------------------------------------------------------------
+// Test: `install --update` keeps files the user added to a directory skill
+// ---------------------------------------------------------------------------
+
+#[test]
+fn install_update_keeps_files_added_to_installed_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::create_dir_all(root.join("skills/my-skill")).unwrap();
+    std::fs::write(root.join("skills/my-skill/SKILL.md"), "# My Skill\n").unwrap();
+
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  claude-code  local\n\
+         local  skill  my-skill  skills/my-skill\n",
+    )
+    .unwrap();
+
+    sf(root).arg("install").assert().success();
+    std::fs::write(root.join(".claude/skills/my-skill/notes.md"), "my notes\n").unwrap();
+    std::fs::write(root.join("skills/my-skill/SKILL.md"), "# My Skill v2\n").unwrap();
+
+    sf(root)
+        .args(["install", "--update"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("notes.md"));
+
+    assert_eq!(
+        std::fs::read_to_string(root.join(".claude/skills/my-skill/SKILL.md")).unwrap(),
+        "# My Skill v2\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".claude/skills/my-skill/notes.md")).unwrap(),
+        "my notes\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test 5: Re-installing over a legacy flat file removes the old orphan
 // ---------------------------------------------------------------------------
 //
