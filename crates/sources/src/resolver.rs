@@ -2056,7 +2056,7 @@ mod tests {
 
     #[test]
     fn collapse_empty_returns_empty() {
-        assert!(collapse_to_entries(&[]).is_empty());
+        assert_eq!(collapse_to_entries(&[]), Vec::<String>::new());
     }
 
     #[test]
@@ -2217,7 +2217,10 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json_none(&tree_url("org/repo", "main"));
         client.add_json_none(&tree_url("org/repo", "master"));
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2225,7 +2228,10 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json_err(&tree_url("org/repo", "main"), "connection refused");
         client.add_json_err(&tree_url("org/repo", "master"), "connection refused");
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2248,9 +2254,10 @@ mod tests {
         client.add_json_none(&tree_url("org/repo", "master"));
         client.add_json_none(&repo_url("org/repo"));
 
-        assert!(try_list_repo_skill_entries(&client, "org/repo")
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            try_list_repo_skill_entries(&client, "org/repo").unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2258,7 +2265,10 @@ mod tests {
         let mut client = MockClient::new();
         let json = tree_json(&[("src/main.rs", "blob"), ("Cargo.toml", "blob")]);
         client.add_json(&tree_url("org/repo", "main"), &json);
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2270,7 +2280,10 @@ mod tests {
             (".github/ISSUE_TEMPLATE.md", "blob"),
         ]);
         client.add_json(&tree_url("org/repo", "main"), &json);
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2294,7 +2307,10 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json(&tree_url("org/repo", "main"), "not valid json {{{");
         client.add_json_none(&tree_url("org/repo", "master"));
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2304,14 +2320,20 @@ mod tests {
             &tree_url("org/repo", "main"),
             r#"{"sha": "abc123", "url": "..."}"#,
         );
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn skill_entries_empty_tree_array() {
         let mut client = MockClient::new();
         client.add_json(&tree_url("org/repo", "main"), r#"{"tree": []}"#);
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -2367,14 +2389,20 @@ mod tests {
         let mut client = MockClient::new();
         client.add_json_err(&tree_url("org/repo", "main"), "timeout");
         client.add_json(&tree_url("org/repo", "master"), "{{broken}}");
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn skill_entries_main_empty_does_not_fallback() {
         let mut client = MockClient::new();
         client.add_json(&tree_url("org/repo", "main"), r#"{"tree": []}"#);
-        assert!(list_repo_skill_entries(&client, "org/repo").is_empty());
+        assert_eq!(
+            list_repo_skill_entries(&client, "org/repo"),
+            Vec::<String>::new()
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2417,7 +2445,7 @@ mod tests {
         client.add_json(&tree_url("org/repo", "main"), &json);
 
         let entries = list_repo_skill_entries_under(&client, "org/repo", "nonexistent/");
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::<String>::new());
     }
 
     #[test]
@@ -2427,7 +2455,7 @@ mod tests {
         client.add_json_err(&tree_url("org/repo", "master"), "timeout");
 
         let entries = list_repo_skill_entries_under(&client, "org/repo", "skills/");
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::<String>::new());
     }
 
     #[test]
