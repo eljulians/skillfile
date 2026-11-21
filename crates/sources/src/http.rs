@@ -233,6 +233,13 @@ pub trait HttpClient: Send + Sync {
     /// Returns `Err(SkillfileError::Network)` on HTTP errors (including 404).
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SkillfileError>;
 
+    /// GET with a custom `Authorization: Bearer` header (for non-GitHub APIs).
+    ///
+    /// Default: ignores the token and delegates to [`get_bytes`](Self::get_bytes).
+    fn get_bytes_with_bearer(&self, url: &str, _token: &str) -> Result<Vec<u8>, SkillfileError> {
+        self.get_bytes(url)
+    }
+
     /// GET a URL with `Accept: application/vnd.github.v3+json` header.
     ///
     /// Returns `Ok(None)` on 4xx client errors (used for tentative lookups
@@ -528,6 +535,24 @@ impl HttpClient for UreqClient {
                     SkillfileError::Network(format!("HTTP {code} posting to {url}"))
                 }
                 _ => transport_error(&e, "posting to", url),
+            })?;
+        response.body_mut().read_to_vec().map_err(|e| {
+            SkillfileError::Network(format!("failed to read response from {url}: {e}"))
+        })
+    }
+
+    fn get_bytes_with_bearer(&self, url: &str, token: &str) -> Result<Vec<u8>, SkillfileError> {
+        let mut response = self
+            .agent
+            .get(url)
+            .header("User-Agent", "skillfile/1.0")
+            .header("Authorization", &format!("Bearer {token}"))
+            .call()
+            .map_err(|e| match &e {
+                ureq::Error::StatusCode(code) => {
+                    SkillfileError::Network(format!("HTTP {code} fetching {url}"))
+                }
+                _ => transport_error(&e, "fetching", url),
             })?;
         response.body_mut().read_to_vec().map_err(|e| {
             SkillfileError::Network(format!("failed to read response from {url}: {e}"))

@@ -13,6 +13,7 @@ use skillfile_core::error::SkillfileError;
 pub(crate) struct MockClient {
     responses: Mutex<VecDeque<Result<String, String>>>,
     post_responses: Mutex<VecDeque<Result<String, String>>>,
+    bearer_gets: Mutex<Vec<(String, String)>>,
 }
 
 impl MockClient {
@@ -20,12 +21,17 @@ impl MockClient {
         Self {
             responses: Mutex::new(responses.into()),
             post_responses: Mutex::new(VecDeque::new()),
+            bearer_gets: Mutex::new(Vec::new()),
         }
     }
 
     pub fn with_post_responses(mut self, post_responses: Vec<Result<String, String>>) -> Self {
         self.post_responses = Mutex::new(post_responses.into());
         self
+    }
+
+    pub fn bearer_gets(&self) -> Vec<(String, String)> {
+        self.bearer_gets.lock().unwrap().clone()
     }
 }
 
@@ -41,6 +47,14 @@ impl HttpClient for MockClient {
             Ok(body) => Ok(body.into_bytes()),
             Err(msg) => Err(SkillfileError::Network(msg)),
         }
+    }
+
+    fn get_bytes_with_bearer(&self, url: &str, token: &str) -> Result<Vec<u8>, SkillfileError> {
+        self.bearer_gets
+            .lock()
+            .unwrap()
+            .push((url.to_string(), token.to_string()));
+        self.get_bytes(url)
     }
 
     fn get_json(&self, _url: &str) -> Result<Option<String>, SkillfileError> {

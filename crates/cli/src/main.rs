@@ -332,9 +332,10 @@ Examples:
     #[command(long_about = "\
 Search community registries for skills and agents.
 
-By default, queries agentskill.sh (110K+ skills, public) and skills.sh.
-Use --registry to target a single registry. skillhub.club is included
-automatically when SKILLHUB_API_KEY is set.
+By default, queries agentskill.sh (110K+ skills, public), skills.sh, and
+skillsmp.com. Use --registry to target a single registry. skillhub.club is
+included automatically when SKILLHUB_API_KEY is set. Set SKILLSMP_API_KEY
+for higher skillsmp.com rate limits.
 
 In interactive mode (the default when a terminal is attached), results
 are shown in a navigable TUI with a preview pane. Selecting a result

@@ -410,6 +410,31 @@ fn search_skills_sh() {
     }
 }
 
+/// skillsmp.com golden path: works without an API key and returns GitHub coordinates.
+#[test]
+fn search_skillsmp_com() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = sf_retry(
+        dir.path(),
+        &[
+            "search",
+            "python",
+            "--limit",
+            "3",
+            "--registry",
+            "skillsmp.com",
+            "--json",
+        ],
+    );
+
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let items = parsed["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    assert_eq!(items[0]["registry"].as_str().unwrap(), "skillsmp.com");
+    assert!(items[0]["source_repo"].is_string());
+}
+
 /// skillhub.club golden path: without API key, returns empty results gracefully.
 #[test]
 fn search_skillhub_club_no_key() {

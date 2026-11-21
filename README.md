@@ -85,7 +85,7 @@ Find community skills and agents from the CLI, then add a selection to your `Ski
 skillfile search "code review"
 ```
 
-In a terminal, search opens an interactive browser with a preview pane and an add flow for the selected skill or agent. It searches [agentskill.sh](https://agentskill.sh) and [skills.sh](https://skills.sh) by default; set `SKILLHUB_API_KEY` to include skillhub.club too.
+In a terminal, search opens an interactive browser with a preview pane and an add flow for the selected skill or agent. It searches [agentskill.sh](https://agentskill.sh), [skills.sh](https://skills.sh), and [skillsmp.com](https://skillsmp.com) by default; set `SKILLHUB_API_KEY` to include skillhub.club too, and `SKILLSMP_API_KEY` for higher skillsmp.com rate limits.
 
 Use `--min-score` to focus on higher-trust results, `--registry` to search one registry, or `--json` / `--no-interactive` for scripts and pipelines:
 

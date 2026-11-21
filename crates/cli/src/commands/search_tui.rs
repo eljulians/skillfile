@@ -693,6 +693,7 @@ fn registry_color(registry: RegistryId) -> Color {
         RegistryId::AgentskillSh => Color::Magenta,
         RegistryId::SkillsSh => Color::Cyan,
         RegistryId::SkillhubClub => Color::Green,
+        RegistryId::SkillsmpCom => Color::Blue,
     }
 }
 
@@ -1077,6 +1078,7 @@ mod tests {
         assert_eq!(registry_color(RegistryId::AgentskillSh), Color::Magenta);
         assert_eq!(registry_color(RegistryId::SkillsSh), Color::Cyan);
         assert_eq!(registry_color(RegistryId::SkillhubClub), Color::Green);
+        assert_eq!(registry_color(RegistryId::SkillsmpCom), Color::Blue);
     }
 
     #[test]
