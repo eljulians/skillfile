@@ -1260,7 +1260,7 @@ mod tests {
     fn audits_are_not_fetched_before_first_draw() {
         let items = numbered_items(10);
         let app = app_with(&items);
-        assert!(app.audit_urls_to_fetch().is_empty());
+        assert_eq!(app.audit_urls_to_fetch(), Vec::<String>::new());
     }
 
     #[test]

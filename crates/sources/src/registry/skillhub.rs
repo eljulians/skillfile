@@ -165,6 +165,6 @@ mod tests {
         let resp = SkillhubClub.search_page(&query(&client, 2)).unwrap();
         unsafe { std::env::remove_var("SKILLHUB_API_KEY") };
         assert!(resp.items.is_empty());
-        assert!(client.requested_urls().is_empty());
+        assert_eq!(client.requested_urls(), Vec::<String>::new());
     }
 }

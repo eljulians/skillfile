@@ -268,7 +268,7 @@ mod tests {
         let resp = SkillsSh.search_page(&query(&client, "docker", 2)).unwrap();
         assert!(resp.items.is_empty());
         assert!(!resp.has_more);
-        assert!(client.requested_urls().is_empty());
+        assert_eq!(client.requested_urls(), Vec::<String>::new());
     }
 
     #[test]
