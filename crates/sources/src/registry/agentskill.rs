@@ -6,17 +6,26 @@ use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
 use super::scrape::urlencoded;
-use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
+use super::{Registry, RegistryId, RegistryPage, SearchQuery, SearchResult};
 
-const AGENTSKILL_API: &str = "https://agentskill.sh/api/agent/search";
+/// Paginated skills API. Used instead of `/api/agent/search`, which returns
+/// at most 10 results regardless of `limit` and ignores offset parameters.
+const AGENTSKILL_SKILLS_API: &str = "https://agentskill.sh/api/skills";
+/// Larger values are silently capped to 100 by the API.
+const AGENTSKILL_PAGE_SIZE: usize = 100;
 
 /// The agentskill.sh registry (110K+ skills, public, no auth).
 pub struct AgentskillSh;
 
+/// `total` is a lower bound (`totalExact: false`); `hasMore` is authoritative.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApiResponse {
-    results: Vec<ApiResult>,
+    #[serde(default)]
+    data: Vec<ApiResult>,
     total: Option<usize>,
+    #[serde(default)]
+    has_more: bool,
 }
 
 #[derive(Deserialize)]
@@ -84,8 +93,8 @@ fn extract_skill_md(data: &[serde_json::Value]) -> Option<String> {
 }
 
 impl Registry for AgentskillSh {
-    fn name(&self) -> &'static str {
-        "agentskill.sh"
+    fn id(&self) -> RegistryId {
+        RegistryId::AgentskillSh
     }
 
     fn fetch_skill_content(&self, client: &dyn HttpClient, item: &SearchResult) -> Option<String> {
@@ -96,9 +105,13 @@ impl Registry for AgentskillSh {
         extract_skill_md(&data)
     }
 
-    fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError> {
+    fn search_page(&self, q: &SearchQuery<'_>) -> Result<RegistryPage, SkillfileError> {
         let (client, query) = (q.client, q.query);
-        let url = format!("{AGENTSKILL_API}?q={}&limit=100", urlencoded(query));
+        let url = format!(
+            "{AGENTSKILL_SKILLS_API}?q={}&limit={AGENTSKILL_PAGE_SIZE}&page={}",
+            urlencoded(query),
+            q.page
+        );
 
         let bytes = client.get_bytes(&url)?;
 
@@ -110,10 +123,11 @@ impl Registry for AgentskillSh {
             SkillfileError::Network(format!("failed to parse agentskill.sh results: {e}"))
         })?;
 
-        let items: Vec<SearchResult> = api.results.into_iter().filter_map(map_api_result).collect();
+        let items: Vec<SearchResult> = api.data.into_iter().filter_map(map_api_result).collect();
 
-        Ok(SearchResponse {
-            total: api.total.unwrap_or(items.len()),
+        Ok(RegistryPage {
+            total_hint: api.total,
+            has_more: api.has_more,
             items,
         })
     }
@@ -130,8 +144,6 @@ pub struct AgentskillGithubMeta {
     pub source_repo: String,
     pub source_path: String,
 }
-
-const AGENTSKILL_SKILLS_API: &str = "https://agentskill.sh/api/skills";
 
 #[derive(Deserialize)]
 struct DetailResponse {
@@ -270,11 +282,18 @@ fn extract_repo_plain(html: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::registry::test_support::MockClient;
-    use crate::registry::SearchOptions;
+
+    fn search_page(client: &MockClient, page: u32) -> Result<RegistryPage, SkillfileError> {
+        AgentskillSh.search_page(&SearchQuery {
+            client,
+            query: "code review",
+            page,
+        })
+    }
 
     fn mock_response() -> String {
         r#"{
-            "results": [
+            "data": [
                 {
                     "slug": "alice/code-reviewer",
                     "name": "code-reviewer",
@@ -302,11 +321,10 @@ mod tests {
     #[test]
     fn search_parses_response() {
         let client = MockClient::new(vec![Ok(mock_response())]);
-        let resp =
-            super::super::search_with_client(&client, "code review", &SearchOptions::default())
-                .unwrap();
+        let resp = search_page(&client, 1).unwrap();
         assert_eq!(resp.items.len(), 2);
-        assert_eq!(resp.total, 2);
+        assert_eq!(resp.total_hint, Some(2));
+        assert!(!resp.has_more);
         assert_eq!(resp.items[0].name, "code-reviewer");
         assert_eq!(resp.items[0].owner, "alice");
         assert_eq!(resp.items[0].security_score, Some(92));
@@ -316,21 +334,28 @@ mod tests {
     }
 
     #[test]
-    fn search_applies_min_score_filter() {
+    fn search_requests_the_given_page() {
         let client = MockClient::new(vec![Ok(mock_response())]);
-        let opts = SearchOptions {
-            limit: 10,
-            min_score: Some(80),
-        };
-        let resp = super::super::search_with_client(&client, "code review", &opts).unwrap();
-        assert_eq!(resp.items.len(), 1);
-        assert_eq!(resp.items[0].name, "code-reviewer");
+        search_page(&client, 3).unwrap();
+        assert_eq!(
+            client.requested_urls(),
+            ["https://agentskill.sh/api/skills?q=code+review&limit=100&page=3"]
+        );
+    }
+
+    #[test]
+    fn search_reports_has_more() {
+        let json = r#"{"data": [{"name": "a", "owner": "o"}], "total": 101, "hasMore": true}"#;
+        let client = MockClient::new(vec![Ok(json.to_string())]);
+        let resp = search_page(&client, 1).unwrap();
+        assert!(resp.has_more);
+        assert_eq!(resp.total_hint, Some(101));
     }
 
     #[test]
     fn search_handles_missing_optional_fields() {
         let json = r#"{
-            "results": [
+            "data": [
                 {
                     "slug": "alice/minimal",
                     "name": "minimal",
@@ -343,8 +368,7 @@ mod tests {
             "total": 1
         }"#;
         let client = MockClient::new(vec![Ok(json.to_string())]);
-        let resp =
-            super::super::search_with_client(&client, "test", &SearchOptions::default()).unwrap();
+        let resp = search_page(&client, 1).unwrap();
         assert_eq!(resp.items.len(), 1);
         assert_eq!(resp.items[0].name, "minimal");
         assert_eq!(resp.items[0].owner, "");
@@ -355,15 +379,14 @@ mod tests {
     #[test]
     fn search_skips_results_without_name() {
         let json = r#"{
-            "results": [
+            "data": [
                 {"slug": "x/y", "name": null, "owner": "x"},
                 {"slug": "a/b", "name": "valid", "owner": "a"}
             ],
             "total": 2
         }"#;
         let client = MockClient::new(vec![Ok(json.to_string())]);
-        let resp =
-            super::super::search_with_client(&client, "test", &SearchOptions::default()).unwrap();
+        let resp = search_page(&client, 1).unwrap();
         assert_eq!(resp.items.len(), 1);
         assert_eq!(resp.items[0].name, "valid");
     }
@@ -371,7 +394,7 @@ mod tests {
     #[test]
     fn search_returns_error_on_network_failure() {
         let client = MockClient::new(vec![Err("connection refused".to_string())]);
-        let result = super::super::search_with_client(&client, "test", &SearchOptions::default());
+        let result = search_page(&client, 1);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert_eq!(err, "connection refused");
@@ -380,7 +403,7 @@ mod tests {
     #[test]
     fn search_returns_error_on_malformed_json() {
         let client = MockClient::new(vec![Ok("not json".to_string())]);
-        let result = super::super::search_with_client(&client, "test", &SearchOptions::default());
+        let result = search_page(&client, 1);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to parse"), "got: {err}");
@@ -389,8 +412,7 @@ mod tests {
     #[test]
     fn search_constructs_url_from_slug() {
         let client = MockClient::new(vec![Ok(mock_response())]);
-        let resp =
-            super::super::search_with_client(&client, "test", &SearchOptions::default()).unwrap();
+        let resp = search_page(&client, 1).unwrap();
         assert_eq!(
             resp.items[0].url,
             "https://agentskill.sh/@alice/code-reviewer"
@@ -404,7 +426,7 @@ mod tests {
     #[test]
     fn search_uses_github_coordinates_when_present() {
         let json = r#"{
-            "results": [{
+            "data": [{
                 "slug": "openclaw/fzf-fuzzy-finder",
                 "name": "fzf-fuzzy-finder",
                 "owner": "openclaw",
@@ -419,8 +441,7 @@ mod tests {
         }"#
         .to_string();
         let client = MockClient::new(vec![Ok(json)]);
-        let resp =
-            super::super::search_with_client(&client, "fzf", &SearchOptions::default()).unwrap();
+        let resp = search_page(&client, 1).unwrap();
 
         assert_eq!(resp.items.len(), 1);
         assert_eq!(
@@ -557,7 +578,7 @@ mod tests {
     #[test]
     fn map_result_without_github_coords_does_not_use_slug_as_source_repo() {
         let json = r#"{
-            "results": [{
+            "data": [{
                 "slug": "openclaw/k8s-config-gen",
                 "name": "k8s-config-gen",
                 "owner": "openclaw",
@@ -568,8 +589,7 @@ mod tests {
             "total": 1
         }"#;
         let client = MockClient::new(vec![Ok(json.to_string())]);
-        let resp =
-            super::super::search_with_client(&client, "k8s", &SearchOptions::default()).unwrap();
+        let resp = search_page(&client, 1).unwrap();
 
         assert_eq!(resp.items.len(), 1);
         assert!(

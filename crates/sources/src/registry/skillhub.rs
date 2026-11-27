@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use skillfile_core::error::SkillfileError;
 
-use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
+use super::{Registry, RegistryId, RegistryPage, SearchQuery, SearchResult};
 
 const SKILLHUB_API: &str = "https://www.skillhub.club/api/v1/skills/search";
 
@@ -28,21 +28,18 @@ struct ApiResult {
 }
 
 impl Registry for SkillhubClub {
-    fn name(&self) -> &'static str {
-        "skillhub.club"
+    fn id(&self) -> RegistryId {
+        RegistryId::SkillhubClub
     }
 
-    fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError> {
+    /// Single-shot: skillhub.club pagination is unverified (the API needs a
+    /// key), so only page 1 is fetched and later pages are empty.
+    fn search_page(&self, q: &SearchQuery<'_>) -> Result<RegistryPage, SkillfileError> {
         let (client, query) = (q.client, q.query);
         // Gracefully skip if no API key is configured
         let api_key = match std::env::var("SKILLHUB_API_KEY") {
-            Ok(key) if !key.is_empty() => key,
-            _ => {
-                return Ok(SearchResponse {
-                    items: vec![],
-                    total: 0,
-                });
-            }
+            Ok(key) if !key.is_empty() && q.page == 1 => key,
+            _ => return Ok(RegistryPage::default()),
         };
 
         let body = serde_json::json!({
@@ -85,8 +82,9 @@ impl Registry for SkillhubClub {
             })
             .collect();
 
-        Ok(SearchResponse {
-            total: api.total.unwrap_or(items.len()),
+        Ok(RegistryPage {
+            total_hint: Some(api.total.unwrap_or(items.len())),
+            has_more: false,
             items,
         })
     }
@@ -97,11 +95,19 @@ impl Registry for SkillhubClub {
 mod tests {
     use super::*;
     use crate::registry::test_support::MockClient;
-    use crate::registry::{SearchOptions, SearchQuery};
+    use crate::registry::SearchQuery;
     use std::sync::Mutex;
 
     /// Serializes tests that manipulate the `SKILLHUB_API_KEY` env var.
     static SKILLHUB_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn query(client: &MockClient, page: u32) -> SearchQuery<'_> {
+        SearchQuery {
+            client,
+            query: "testing",
+            page,
+        }
+    }
 
     fn mock_response() -> String {
         r#"{
@@ -125,15 +131,9 @@ mod tests {
         let _guard = SKILLHUB_ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("SKILLHUB_API_KEY", "test-key-123") };
         let client = MockClient::new(vec![]).with_post_responses(vec![Ok(mock_response())]);
-        let reg = SkillhubClub;
-        let resp = reg
-            .search(&SearchQuery {
-                client: &client,
-                query: "testing",
-                opts: &SearchOptions::default(),
-            })
-            .unwrap();
+        let resp = SkillhubClub.search_page(&query(&client, 1)).unwrap();
         assert_eq!(resp.items.len(), 1);
+        assert!(!resp.has_more);
         assert_eq!(resp.items[0].name, "testing-pro");
         assert_eq!(resp.items[0].owner, "testmaster");
         assert_eq!(
@@ -152,15 +152,19 @@ mod tests {
         let _guard = SKILLHUB_ENV_LOCK.lock().unwrap();
         unsafe { std::env::remove_var("SKILLHUB_API_KEY") };
         let client = MockClient::new(vec![]);
-        let reg = SkillhubClub;
-        let resp = reg
-            .search(&SearchQuery {
-                client: &client,
-                query: "testing",
-                opts: &SearchOptions::default(),
-            })
-            .unwrap();
+        let resp = SkillhubClub.search_page(&query(&client, 1)).unwrap();
         assert_eq!(resp.items.len(), 0);
-        assert_eq!(resp.total, 0);
+        assert_eq!(resp.total_hint, None);
+    }
+
+    #[test]
+    fn later_pages_are_empty_without_a_request() {
+        let _guard = SKILLHUB_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SKILLHUB_API_KEY", "test-key-123") };
+        let client = MockClient::new(vec![]);
+        let resp = SkillhubClub.search_page(&query(&client, 2)).unwrap();
+        unsafe { std::env::remove_var("SKILLHUB_API_KEY") };
+        assert!(resp.items.is_empty());
+        assert_eq!(client.requested_urls(), Vec::<String>::new());
     }
 }

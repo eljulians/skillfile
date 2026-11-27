@@ -1,8 +1,8 @@
 ---
 source: crates/cli/src/commands/search_tui.rs
-expression: buffer_text(terminal.backend().buffer())
+expression: "render_to_text(|f| draw(f, &mut app))"
 ---
- filter: zzz_nonexistent_zzz_   0/3
+ filter: zzz_nonexistent_zzz_   0/3 · all loaded
 ┌ Results ─────────────────────┐┌ Preview ─────────────────────────────────────┐
 │                              ││No results match the filter.                  │
 │                              ││                                              │

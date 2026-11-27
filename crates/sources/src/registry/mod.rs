@@ -1,8 +1,10 @@
 //! Registry client for searching community skills and agents.
 //!
 //! Queries multiple registries (agentskill.sh, skills.sh, skillhub.club) for
-//! published skills and agents. Each registry implements the [`Registry`] trait,
-//! and results are aggregated into a unified [`SearchResponse`].
+//! published skills and agents. Each registry implements the [`Registry`] trait
+//! and serves results one page at a time. [`SearchSession`] pages through all
+//! of them incrementally; the `search_*` functions collect a fixed number of
+//! results into a [`SearchResponse`].
 //!
 //! # Example
 //!
@@ -17,8 +19,11 @@
 
 pub mod agentskill;
 mod scrape;
+mod session;
 mod skillhub;
 mod skillssh;
+
+pub use session::{SearchBatch, SearchSession, SessionOptions};
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -128,8 +133,11 @@ pub struct SearchResult {
 pub struct SearchResponse {
     /// Matching results (up to `limit`).
     pub items: Vec<SearchResult>,
-    /// Total number of matches across queried registries.
+    /// Total number of matches across queried registries. Some registries
+    /// only report a lower bound.
     pub total: usize,
+    /// Whether more results exist beyond `items`.
+    pub has_more: bool,
 }
 
 // ===========================================================================
@@ -139,13 +147,26 @@ pub struct SearchResponse {
 pub(crate) struct SearchQuery<'a> {
     pub client: &'a dyn HttpClient,
     pub query: &'a str,
-    pub opts: &'a SearchOptions,
+    /// 1-based page number.
+    pub page: u32,
+}
+
+/// One page of results from a single registry.
+#[derive(Debug, Default)]
+pub(crate) struct RegistryPage {
+    pub items: Vec<SearchResult>,
+    /// Whether requesting `page + 1` can return more results.
+    pub has_more: bool,
+    /// The registry's reported total match count, if any.
+    pub total_hint: Option<usize>,
 }
 
 pub(crate) trait Registry: Send + Sync {
-    fn name(&self) -> &str;
+    fn id(&self) -> RegistryId;
 
-    fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError>;
+    /// Registries without server-side paging return everything on page 1
+    /// with `has_more: false`.
+    fn search_page(&self, q: &SearchQuery<'_>) -> Result<RegistryPage, SkillfileError>;
 
     /// Each registry extracts the content from its own data source:
     /// agentskill.sh scrapes Nuxt hydration data, skills.sh fetches from
@@ -169,16 +190,40 @@ pub(crate) fn all_registries() -> Vec<Box<dyn Registry>> {
     regs
 }
 
+pub(crate) fn registry_for(id: RegistryId) -> Box<dyn Registry> {
+    match id {
+        RegistryId::AgentskillSh => Box::new(AgentskillSh),
+        RegistryId::SkillsSh => Box::new(SkillsSh),
+        RegistryId::SkillhubClub => Box::new(SkillhubClub),
+    }
+}
+
 /// Valid registry names for `--registry` flag validation.
 pub const REGISTRY_NAMES: &[&str] = &["agentskill.sh", "skills.sh", "skillhub.club"];
+
+/// Parse a `--registry` value.
+///
+/// # Errors
+///
+/// Returns `SkillfileError::Manifest` listing the valid names when
+/// `name` is not a known registry.
+pub fn parse_registry_name(name: &str) -> Result<RegistryId, SkillfileError> {
+    name.parse().map_err(|_| {
+        SkillfileError::Manifest(format!(
+            "unknown registry '{name}'. Valid registries: {}",
+            REGISTRY_NAMES.join(", ")
+        ))
+    })
+}
 
 // ===========================================================================
 // Public search functions
 // ===========================================================================
 
-/// Iterates over all registries, collecting results, applies `min_score`
-/// filtering, and returns the combined results. Individual registry failures
-/// are skipped with a warning, but the search fails if no registry responds.
+/// Searches all default registries, paging until `opts.limit` results are
+/// gathered, and returns them sorted by popularity. Individual registry
+/// failures are skipped with a warning, but the search fails if no registry
+/// responds.
 pub fn search_all(query: &str, opts: &SearchOptions) -> Result<SearchResponse, SkillfileError> {
     let client = UreqClient::new();
     search_all_with_client(&client, query, opts)
@@ -190,41 +235,7 @@ pub fn search_all_with_client(
     query: &str,
     opts: &SearchOptions,
 ) -> Result<SearchResponse, SkillfileError> {
-    let registries = all_registries();
-    let mut all_items = Vec::new();
-    let mut total = 0;
-    let mut failures = 0;
-
-    for reg in &registries {
-        match reg.search(&SearchQuery {
-            client,
-            query,
-            opts,
-        }) {
-            Ok(resp) => {
-                total += resp.total;
-                all_items.extend(resp.items);
-            }
-            Err(e) => {
-                failures += 1;
-                eprintln!("warning: {} search failed: {e}", reg.name());
-            }
-        }
-    }
-
-    if failures == registries.len() {
-        return Err(SkillfileError::Network(
-            "all registry searches failed".to_string(),
-        ));
-    }
-
-    let mut resp = SearchResponse {
-        items: all_items,
-        total,
-    };
-    post_process(&mut resp, opts);
-
-    Ok(resp)
+    SearchSession::new(query, &session_options(opts, None)).collect(client, opts.limit)
 }
 
 /// Search a single registry by name.
@@ -235,38 +246,9 @@ pub fn search_registry(
     query: &str,
     opts: &SearchOptions,
 ) -> Result<SearchResponse, SkillfileError> {
-    let client = UreqClient::new();
-    search_registry_with_client(
-        registry_name,
-        &SearchQuery {
-            client: &client,
-            query,
-            opts,
-        },
-    )
-}
-
-/// Search a single registry by name using an injected HTTP client (for testing).
-pub(crate) fn search_registry_with_client(
-    registry_name: &str,
-    q: &SearchQuery<'_>,
-) -> Result<SearchResponse, SkillfileError> {
-    let reg: Box<dyn Registry> = match registry_name {
-        "agentskill.sh" => Box::new(AgentskillSh),
-        "skills.sh" => Box::new(SkillsSh),
-        "skillhub.club" => Box::new(SkillhubClub),
-        _ => {
-            return Err(SkillfileError::Manifest(format!(
-                "unknown registry '{registry_name}'. Valid registries: {}",
-                REGISTRY_NAMES.join(", ")
-            )));
-        }
-    };
-
-    let mut resp = reg.search(q)?;
-    post_process(&mut resp, q.opts);
-
-    Ok(resp)
+    let registry = parse_registry_name(registry_name)?;
+    SearchSession::new(query, &session_options(opts, Some(registry)))
+        .collect(&UreqClient::new(), opts.limit)
 }
 
 /// Fetch raw SKILL.md content for a search result.
@@ -275,12 +257,7 @@ pub(crate) fn search_registry_with_client(
 /// `item.registry`. Returns `None` if the registry doesn't support
 /// content fetching or if the fetch fails.
 pub fn fetch_skill_content_for(item: &SearchResult) -> Option<String> {
-    let client = UreqClient::new();
-    match item.registry {
-        RegistryId::AgentskillSh => AgentskillSh.fetch_skill_content(&client, item),
-        RegistryId::SkillsSh => SkillsSh.fetch_skill_content(&client, item),
-        RegistryId::SkillhubClub => None,
-    }
+    registry_for(item.registry).fetch_skill_content(&UreqClient::new(), item)
 }
 
 /// Backward-compatible entry point — searches agentskill.sh only.
@@ -295,32 +272,21 @@ pub fn search_with_client(
     query: &str,
     opts: &SearchOptions,
 ) -> Result<SearchResponse, SkillfileError> {
-    let reg = AgentskillSh;
-    let mut resp = reg.search(&SearchQuery {
-        client,
-        query,
-        opts,
-    })?;
-    post_process(&mut resp, opts);
-
-    Ok(resp)
+    let session_opts = session_options(opts, Some(RegistryId::AgentskillSh));
+    SearchSession::new(query, &session_opts).collect(client, opts.limit)
 }
 
 // ===========================================================================
 // Helpers
 // ===========================================================================
 
-/// Apply post-processing to search results: filter by `min_score`, sort by
-/// popularity, and truncate to `limit`.
-///
-/// Every public search function (`search_all`, `search_registry`, `search`)
-/// pipes its raw results through this helper so behavior is consistent.
-fn post_process(resp: &mut SearchResponse, opts: &SearchOptions) {
-    if let Some(min) = opts.min_score {
-        resp.items.retain(|r| r.security_score.unwrap_or(0) >= min);
+/// `opts.limit` is enforced by `SearchSession::collect`, not as a session cap.
+fn session_options(opts: &SearchOptions, registry: Option<RegistryId>) -> SessionOptions {
+    SessionOptions {
+        registry,
+        min_score: opts.min_score,
+        max_results: None,
     }
-    sort_by_popularity(&mut resp.items);
-    resp.items.truncate(opts.limit);
 }
 
 /// Sort results by popularity (descending), then by security score (descending).
@@ -357,7 +323,7 @@ mod tests {
 
     fn agentskill_mock_response() -> String {
         r#"{
-            "results": [
+            "data": [
                 {
                     "slug": "alice/code-reviewer",
                     "name": "code-reviewer",
@@ -473,38 +439,75 @@ mod tests {
     }
 
     #[test]
-    fn search_registry_filters_by_name() {
+    fn session_with_registry_queries_only_that_registry() {
         let client = MockClient::new(vec![Ok(skillssh_mock_response())]);
-        let resp = search_registry_with_client(
-            "skills.sh",
-            &SearchQuery {
-                client: &client,
-                query: "docker",
-                opts: &SearchOptions::default(),
-            },
-        )
-        .unwrap();
+        let opts = SessionOptions {
+            registry: Some(RegistryId::SkillsSh),
+            ..SessionOptions::default()
+        };
+        let resp = SearchSession::new("docker", &opts)
+            .collect(&client, 20)
+            .unwrap();
         assert_eq!(resp.items.len(), 2);
         assert!(resp
             .items
             .iter()
             .all(|r| r.registry == RegistryId::SkillsSh));
+        assert_eq!(client.requested_urls().len(), 1);
     }
 
     #[test]
-    fn search_registry_rejects_unknown_name() {
-        let client = MockClient::new(vec![]);
-        let result = search_registry_with_client(
-            "nonexistent.io",
-            &SearchQuery {
-                client: &client,
-                query: "test",
-                opts: &SearchOptions::default(),
-            },
-        );
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+    fn parse_registry_name_rejects_unknown_name() {
+        let err = parse_registry_name("nonexistent.io")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unknown registry"), "got: {err}");
+        assert!(err.contains("skills.sh"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_registry_name_accepts_known_names() {
+        for name in REGISTRY_NAMES {
+            assert_eq!(parse_registry_name(name).unwrap().as_str(), *name);
+        }
+    }
+
+    #[test]
+    fn search_with_client_pages_until_limit() {
+        let page1 = r#"{"data": [
+            {"slug": "a/one", "name": "one", "owner": "a", "githubStars": 1},
+            {"slug": "a/two", "name": "two", "owner": "a", "githubStars": 2}
+        ], "total": 3, "hasMore": true}"#;
+        let page2 = r#"{"data": [
+            {"slug": "a/three", "name": "three", "owner": "a", "githubStars": 3}
+        ], "total": 3, "hasMore": false}"#;
+        let client = MockClient::new(vec![Ok(page1.into()), Ok(page2.into())]);
+        let opts = SearchOptions {
+            limit: 3,
+            min_score: None,
+        };
+
+        let resp = search_with_client(&client, "x", &opts).unwrap();
+
+        let names: Vec<&str> = resp.items.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["three", "two", "one"]);
+        assert!(!resp.has_more);
+        let urls = client.requested_urls();
+        assert!(urls[0].ends_with("&page=1"), "got: {urls:?}");
+        assert!(urls[1].ends_with("&page=2"), "got: {urls:?}");
+    }
+
+    #[test]
+    fn search_with_client_stops_at_limit_without_extra_pages() {
+        let client = MockClient::new(vec![Ok(agentskill_mock_response())]);
+        let opts = SearchOptions {
+            limit: 1,
+            min_score: None,
+        };
+        let resp = search_with_client(&client, "x", &opts).unwrap();
+        assert_eq!(resp.items.len(), 1);
+        assert!(resp.has_more);
+        assert_eq!(client.requested_urls().len(), 1);
     }
 
     #[test]
@@ -527,8 +530,8 @@ mod tests {
     fn all_registries_default_excludes_skillhub() {
         let regs = all_registries();
         assert!(regs.len() >= 2);
-        assert_eq!(regs[0].name(), "agentskill.sh");
-        assert_eq!(regs[1].name(), "skills.sh");
+        assert_eq!(regs[0].id(), RegistryId::AgentskillSh);
+        assert_eq!(regs[1].id(), RegistryId::SkillsSh);
     }
 
     #[test]
@@ -624,7 +627,7 @@ mod tests {
     #[test]
     fn search_with_client_sorts_results() {
         let json = r#"{
-            "results": [
+            "data": [
                 {"name": "aaa-low", "owner": "a", "githubStars": 10},
                 {"name": "bbb-high", "owner": "b", "githubStars": 500}
             ],
@@ -634,86 +637,6 @@ mod tests {
         let resp = search_with_client(&client, "test", &SearchOptions::default()).unwrap();
         assert_eq!(resp.items[0].name, "bbb-high");
         assert_eq!(resp.items[1].name, "aaa-low");
-    }
-
-    #[test]
-    fn post_process_filters_and_sorts() {
-        let mut resp = SearchResponse {
-            total: 3,
-            items: vec![
-                SearchResult {
-                    name: "low-score-low-stars".into(),
-                    security_score: Some(30),
-                    stars: Some(10),
-                    ..make_result("low-score-low-stars")
-                },
-                SearchResult {
-                    name: "high-score-high-stars".into(),
-                    security_score: Some(90),
-                    stars: Some(500),
-                    ..make_result("high-score-high-stars")
-                },
-                SearchResult {
-                    name: "mid-score-mid-stars".into(),
-                    security_score: Some(60),
-                    stars: Some(100),
-                    ..make_result("mid-score-mid-stars")
-                },
-            ],
-        };
-        let opts = SearchOptions {
-            min_score: Some(50),
-            ..Default::default()
-        };
-        post_process(&mut resp, &opts);
-
-        assert_eq!(resp.items.len(), 2);
-        assert_eq!(resp.items[0].name, "high-score-high-stars");
-        assert_eq!(resp.items[1].name, "mid-score-mid-stars");
-    }
-
-    #[test]
-    fn post_process_no_filter_only_sorts() {
-        let mut resp = SearchResponse {
-            total: 2,
-            items: vec![
-                SearchResult {
-                    name: "few".into(),
-                    stars: Some(5),
-                    ..make_result("few")
-                },
-                SearchResult {
-                    name: "many".into(),
-                    stars: Some(999),
-                    ..make_result("many")
-                },
-            ],
-        };
-        post_process(&mut resp, &SearchOptions::default());
-        assert_eq!(resp.items[0].name, "many");
-        assert_eq!(resp.items[1].name, "few");
-    }
-
-    #[test]
-    fn post_process_truncates_to_limit() {
-        let mut resp = SearchResponse {
-            total: 5,
-            items: (0..5)
-                .map(|i| SearchResult {
-                    name: format!("item-{i}"),
-                    stars: Some(100 - i),
-                    ..make_result(&format!("item-{i}"))
-                })
-                .collect(),
-        };
-        let opts = SearchOptions {
-            limit: 3,
-            ..Default::default()
-        };
-        post_process(&mut resp, &opts);
-        assert_eq!(resp.items.len(), 3);
-        assert_eq!(resp.items[0].name, "item-0");
-        assert_eq!(resp.items[2].name, "item-2");
     }
 
     /// Helper to create a minimal `SearchResult` for sorting tests.

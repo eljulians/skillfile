@@ -2,10 +2,15 @@
 //!
 //! Architecture: Elm-style Model-View-Update.
 //!
-//! - **Model** ([`App`]): immutable search results + mutable UI state
-//!   (filter text, selected index, scroll offset).
+//! - **Model** ([`App`]): search results, which only grow (new pages are
+//!   appended, existing rows never move), plus mutable UI state (filter text,
+//!   selected index, scroll offset).
 //! - **View** ([`draw`]): renders the list pane (left) and detail preview (right).
 //! - **Update** ([`handle_key`]): maps key events to state transitions.
+//!
+//! More pages load only on user intent: moving towards the end of the list
+//! sets a load request that the event loop hands to the [`Pager`]. A narrow
+//! filter therefore can't crawl every page by itself.
 //!
 //! The public entry point [`run_tui`] sets up the terminal, runs the event loop,
 //! and returns the user's selection (if any).
@@ -22,11 +27,15 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
-use skillfile_sources::registry::{RegistryId, SearchResult};
+use skillfile_sources::registry::{RegistryId, SearchResult, SearchSession};
 
+use super::search_pager::{Pager, PagerStatus};
 use super::skill_preview::{
     build_skill_content_lines, parse_skill_frontmatter, PreviewContent, PREVIEW_HR,
 };
+
+/// Request the next page once the selection is this close to the last row.
+const LOAD_AHEAD: usize = 10;
 
 // ===========================================================================
 // Model
@@ -54,9 +63,9 @@ pub enum SkillPreviewState {
     Failed,
 }
 
-pub struct App<'a> {
-    /// All search results (immutable after construction).
-    items: &'a [SearchResult],
+pub struct App {
+    /// All loaded search results. Append-only, so indices stay valid.
+    items: Vec<SearchResult>,
     /// Indices into `items` that match the current filter.
     filtered: Vec<usize>,
     filter: String,
@@ -66,8 +75,11 @@ pub struct App<'a> {
     confirmed: bool,
     /// Whether the user cancelled (Esc / q).
     cancelled: bool,
-    /// Total results across all registries (for status line).
-    total: usize,
+    pager: Pager,
+    /// Set by navigation near the end of the list; consumed by the event loop.
+    load_requested: bool,
+    /// Rows of `filtered` visible after the last draw: `(offset, height)`.
+    viewport: (usize, usize),
     /// Cache of fetched security audit results, keyed by skill URL.
     audit_cache: HashMap<String, AuditState>,
     /// Receiver for completed audit fetches from background threads.
@@ -82,8 +94,8 @@ pub struct App<'a> {
     skill_preview_tx: mpsc::Sender<(String, SkillPreviewState)>,
 }
 
-impl<'a> App<'a> {
-    pub fn new(items: &'a [SearchResult], total: usize) -> Self {
+impl App {
+    pub fn new(items: Vec<SearchResult>, pager: Pager) -> Self {
         let filtered: Vec<usize> = (0..items.len()).collect();
         let mut list_state = ListState::default();
         if !filtered.is_empty() {
@@ -98,7 +110,9 @@ impl<'a> App<'a> {
             list_state,
             confirmed: false,
             cancelled: false,
-            total,
+            pager,
+            load_requested: false,
+            viewport: (0, 0),
             audit_cache: HashMap::new(),
             audit_rx,
             audit_tx,
@@ -108,10 +122,45 @@ impl<'a> App<'a> {
         }
     }
 
-    pub fn selected(&self) -> Option<&'a SearchResult> {
+    pub fn selected(&self) -> Option<&SearchResult> {
         let idx = self.list_state.selected()?;
         let original_idx = *self.filtered.get(idx)?;
         self.items.get(original_idx)
+    }
+
+    /// Append a newly loaded page. Rows already shown keep their position
+    /// and the selection doesn't move.
+    fn append_batch(&mut self, batch: Vec<SearchResult>) {
+        let query = self.filter.to_lowercase();
+        let start = self.items.len();
+        self.items.extend(batch);
+        let items = &self.items;
+        self.filtered
+            .extend((start..items.len()).filter(|&i| item_matches_query(&items[i], &query)));
+        if self.list_state.selected().is_none() && !self.filtered.is_empty() {
+            self.list_state.select(Some(0));
+        }
+    }
+
+    /// Request more results if the selection is within [`LOAD_AHEAD`] rows
+    /// of the end.
+    fn request_more_if_near_end(&mut self) {
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        if selected + LOAD_AHEAD >= self.filtered.len() {
+            self.load_requested = true;
+        }
+    }
+
+    /// Hand pending load requests to the pager and append any finished page.
+    fn pump_pages(&mut self) {
+        if std::mem::take(&mut self.load_requested) {
+            self.pager.request();
+        }
+        if let Some(batch) = self.pager.poll() {
+            self.append_batch(batch);
+        }
     }
 
     fn refilter(&mut self) {
@@ -136,20 +185,27 @@ impl<'a> App<'a> {
         self.confirmed || self.cancelled
     }
 
-    /// Spawn background fetches for all visible skills.sh entries that
-    /// don't have cached audit results yet.
-    fn maybe_fetch_audits(&mut self) {
-        let urls_to_fetch: Vec<String> = self
-            .filtered
+    /// URLs of on-screen rows that support audits and aren't cached yet.
+    ///
+    /// Limited to the viewport: with hundreds of loaded results, fetching
+    /// audits for every filtered row would start hundreds of requests at once.
+    fn audit_urls_to_fetch(&self) -> Vec<String> {
+        let (offset, height) = self.viewport;
+        self.filtered
             .iter()
+            .skip(offset)
+            .take(height)
             .map(|&idx| &self.items[idx])
             .filter(|item| {
                 item.registry.has_security_audits() && !self.audit_cache.contains_key(&item.url)
             })
             .map(|item| item.url.clone())
-            .collect();
+            .collect()
+    }
 
-        for url in urls_to_fetch {
+    /// Spawn background audit fetches for visible rows.
+    fn maybe_fetch_audits(&mut self) {
+        for url in self.audit_urls_to_fetch() {
             self.audit_cache.insert(url.clone(), AuditState::Loading);
             spawn_audit_fetch(url, self.audit_tx.clone());
         }
@@ -166,16 +222,16 @@ impl<'a> App<'a> {
     /// Delegates content extraction to each registry's `fetch_skill_content`
     /// implementation (Strategy pattern). Only the highlighted item is fetched.
     fn maybe_fetch_skill_preview(&mut self) {
-        let Some(item) = self.selected() else {
+        let Some(item) = self
+            .selected()
+            .filter(|item| !self.skill_preview_cache.contains_key(&item.url))
+            .cloned()
+        else {
             return;
         };
         let url = item.url.clone();
-        if self.skill_preview_cache.contains_key(&url) {
-            return;
-        }
         self.skill_preview_cache
             .insert(url.clone(), SkillPreviewState::Loading);
-        let item = item.clone();
         let tx = self.skill_preview_tx.clone();
         std::thread::spawn(move || {
             let state = fetch_skill_preview_for_item(&item);
@@ -227,7 +283,7 @@ fn spawn_audit_fetch(url: String, tx: mpsc::Sender<(String, AuditState)>) {
 // Update
 // ===========================================================================
 
-pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
+pub fn handle_key(app: &mut App, key: event::KeyEvent) {
     match key.code {
         KeyCode::Esc => app.cancelled = true,
         KeyCode::Char('q') if app.filter.is_empty() => app.cancelled = true,
@@ -235,6 +291,8 @@ pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
             app.cancelled = true;
         }
         KeyCode::Enter => handle_key_enter(app),
+        KeyCode::PageDown => page_down(app),
+        KeyCode::PageUp => page_up(app),
         KeyCode::Up | KeyCode::Char('k') if app.filter.is_empty() => {
             move_selection(app, -1);
         }
@@ -259,34 +317,71 @@ pub fn handle_key(app: &mut App<'_>, key: event::KeyEvent) {
     }
 }
 
-fn handle_key_enter(app: &mut App<'_>) {
+fn handle_key_enter(app: &mut App) {
     if app.selected().is_some() {
         app.confirmed = true;
     }
 }
 
-fn handle_key_jump_top(app: &mut App<'_>) {
+fn handle_key_jump_top(app: &mut App) {
     if !app.filtered.is_empty() {
         app.list_state.select(Some(0));
     }
 }
 
-fn handle_key_jump_bottom(app: &mut App<'_>) {
+fn handle_key_jump_bottom(app: &mut App) {
     if !app.filtered.is_empty() {
         app.list_state.select(Some(app.filtered.len() - 1));
+        app.request_more_if_near_end();
     }
 }
 
-/// Move selection by `delta` rows (negative = up, positive = down), wrapping.
-fn move_selection(app: &mut App<'_>, delta: i32) {
+/// Move selection by `delta` rows (negative = up, positive = down).
+///
+/// Wraps around at either end once every result is loaded. While more
+/// results may follow, moving down from the last row stays put and requests
+/// the next page instead.
+fn move_selection(app: &mut App, delta: i32) {
     let len = app.filtered.len();
     if len == 0 {
         return;
     }
     let current = app.list_state.selected().unwrap_or(0);
+    let more_coming = app.pager.status() != PagerStatus::AllLoaded;
+    if delta > 0 && current + 1 == len && more_coming {
+        app.load_requested = true;
+        return;
+    }
     #[allow(clippy::cast_possible_wrap)] // list length is always small
     let next = (current as isize + delta as isize).rem_euclid(len as isize) as usize;
     app.list_state.select(Some(next));
+    if delta > 0 {
+        app.request_more_if_near_end();
+    }
+}
+
+/// Rows per page: the list height from the last draw, at least 1.
+fn page_size(app: &App) -> usize {
+    app.viewport.1.max(1)
+}
+
+fn page_down(app: &mut App) {
+    let Some(last) = app.filtered.len().checked_sub(1) else {
+        return;
+    };
+    let current = app.list_state.selected().unwrap_or(0);
+    app.list_state
+        .select(Some((current + page_size(app)).min(last)));
+    app.request_more_if_near_end();
+}
+
+fn page_up(app: &mut App) {
+    if app.filtered.is_empty() {
+        return;
+    }
+    let current = app.list_state.selected().unwrap_or(0);
+    app.list_state
+        .select(Some(current.saturating_sub(page_size(app))));
 }
 
 // ===========================================================================
@@ -294,7 +389,7 @@ fn move_selection(app: &mut App<'_>, delta: i32) {
 // ===========================================================================
 
 /// Render the full TUI frame: status bar + split pane (list | preview).
-pub fn draw(frame: &mut Frame, app: &mut App<'_>) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -312,23 +407,19 @@ pub fn draw(frame: &mut Frame, app: &mut App<'_>) {
     draw_preview(frame, panes[1], app);
 }
 
-fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
+fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let filter_display = if app.filter.is_empty() {
         String::from(" type to filter, Enter to select, Esc to cancel")
     } else {
         format!(" filter: {}_", app.filter)
     };
 
-    let count = if app.total > app.items.len() {
-        format!(
-            " {}/{} (of {} total) ",
-            app.filtered.len(),
-            app.items.len(),
-            app.total
-        )
-    } else {
-        format!(" {}/{} ", app.filtered.len(), app.items.len())
-    };
+    let count = format!(
+        " {}/{}{} ",
+        app.filtered.len(),
+        app.items.len(),
+        pager_status_text(&app.pager)
+    );
 
     let bar = Line::from(vec![
         Span::styled(filter_display, Style::default().fg(Color::Yellow)),
@@ -336,6 +427,18 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App<'_>) {
         Span::styled(count, Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(bar), area);
+}
+
+fn pager_status_text(pager: &Pager) -> String {
+    let status = match pager.status() {
+        PagerStatus::Loading => " \u{b7} loading more\u{2026}",
+        PagerStatus::MoreAvailable => " \u{b7} \u{2193} more",
+        PagerStatus::AllLoaded => " \u{b7} all loaded",
+    };
+    match pager.last_error() {
+        Some(error) => format!("{status} \u{b7} {error}"),
+        None => status.to_string(),
+    }
 }
 
 fn build_list_item_audit_spans<'a>(
@@ -376,7 +479,7 @@ fn audit_provider_icon(passed: bool) -> (&'static str, Color) {
     }
 }
 
-fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
+fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let items: Vec<ListItem<'_>> = app
         .filtered
         .iter()
@@ -414,9 +517,12 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App<'_>) {
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(list, area, &mut app.list_state);
+    // Rendering scrolls `list_state` to keep the selection visible.
+    let inner_height = usize::from(area.height.saturating_sub(2));
+    app.viewport = (app.list_state.offset(), inner_height);
 }
 
-fn draw_preview(frame: &mut Frame, area: Rect, app: &App<'_>) {
+fn draw_preview(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title(" Preview ");
 
     let content = match app.selected() {
@@ -709,22 +815,26 @@ fn score_color(score: u8) -> Color {
 // Terminal lifecycle
 // ===========================================================================
 
-fn resolve_selection(app: &App<'_>) -> Option<usize> {
+fn resolve_selection(app: &App) -> Option<usize> {
     app.list_state
         .selected()
         .and_then(|i| app.filtered.get(i).copied())
 }
 
-fn process_terminal_event(app: &mut App<'_>) -> Result<(), std::io::Error> {
+fn process_terminal_event(app: &mut App) -> Result<(), std::io::Error> {
     if let Event::Key(key) = event::read()? {
         handle_key(app, key);
     }
     Ok(())
 }
 
-/// Run the TUI event loop. Returns the selected SearchResult index (into the
-/// original `items` slice), or `None` if the user cancelled.
-pub fn run_tui(items: &[SearchResult], total: usize) -> Result<Option<usize>, std::io::Error> {
+/// Run the TUI event loop over `initial` results, loading further pages from
+/// `session` on demand. Returns the selected result, or `None` if the user
+/// cancelled.
+pub fn run_tui(
+    initial: Vec<SearchResult>,
+    session: Option<SearchSession>,
+) -> Result<Option<SearchResult>, std::io::Error> {
     // Set up terminal
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stderr();
@@ -749,10 +859,11 @@ pub fn run_tui(items: &[SearchResult], total: usize) -> Result<Option<usize>, st
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(items, total);
+    let mut app = App::new(initial, Pager::new(session));
 
     // Event loop — polls with timeout so background fetches can land.
     let result = loop {
+        app.pump_pages();
         app.maybe_fetch_audits();
         app.poll_audits();
         app.maybe_fetch_skill_preview();
@@ -780,7 +891,7 @@ pub fn run_tui(items: &[SearchResult], total: usize) -> Result<Option<usize>, st
     terminal.show_cursor()?;
     let _ = std::panic::take_hook(); // drop TUI hook, restores default
 
-    Ok(result)
+    Ok(result.map(|idx| app.items.swap_remove(idx)))
 }
 
 // ===========================================================================
@@ -790,6 +901,43 @@ pub fn run_tui(items: &[SearchResult], total: usize) -> Result<Option<usize>, st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skillfile_sources::registry::SessionOptions;
+
+    /// App with every result already loaded.
+    fn app_with(items: &[SearchResult]) -> App {
+        App::new(items.to_vec(), Pager::new(None))
+    }
+
+    /// App whose pager reports more results. Nothing is fetched unless the
+    /// event loop calls `pump_pages`, so these tests stay offline.
+    fn app_with_more(items: &[SearchResult]) -> App {
+        let opts = SessionOptions {
+            registry: Some(RegistryId::SkillsSh),
+            ..SessionOptions::default()
+        };
+        let pager = Pager::new(Some(SearchSession::new("q", &opts)));
+        App::new(items.to_vec(), pager)
+    }
+
+    fn numbered_items(n: usize) -> Vec<SearchResult> {
+        (0..n)
+            .map(|i| SearchResult {
+                name: format!("skill-{i}"),
+                owner: "owner".to_string(),
+                description: None,
+                security_score: None,
+                stars: None,
+                url: format!("https://skills.sh/owner/repo/skill-{i}"),
+                registry: RegistryId::SkillsSh,
+                source_repo: None,
+                source_path: None,
+            })
+            .collect()
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        handle_key(app, event::KeyEvent::new(code, KeyModifiers::NONE));
+    }
 
     fn sample_items() -> Vec<SearchResult> {
         vec![
@@ -834,7 +982,7 @@ mod tests {
     #[test]
     fn app_new_selects_first_item() {
         let items = sample_items();
-        let app = App::new(&items, 3);
+        let app = app_with(&items);
         assert_eq!(app.list_state.selected(), Some(0));
         assert_eq!(app.filtered.len(), 3);
     }
@@ -842,7 +990,7 @@ mod tests {
     #[test]
     fn app_new_empty_items() {
         let items: Vec<SearchResult> = vec![];
-        let app = App::new(&items, 0);
+        let app = app_with(&items);
         assert_eq!(app.list_state.selected(), None);
         assert_eq!(app.filtered, Vec::<usize>::new());
     }
@@ -850,7 +998,7 @@ mod tests {
     #[test]
     fn app_selected_returns_correct_item() {
         let items = sample_items();
-        let app = App::new(&items, 3);
+        let app = app_with(&items);
         let selected = app.selected().unwrap();
         assert_eq!(selected.name, "code-reviewer");
     }
@@ -860,7 +1008,7 @@ mod tests {
     #[test]
     fn filter_narrows_results() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "docker".to_string();
         app.refilter();
         assert_eq!(app.filtered.len(), 1);
@@ -870,7 +1018,7 @@ mod tests {
     #[test]
     fn filter_no_match_clears_selection() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "zzz_nonexistent_zzz".to_string();
         app.refilter();
         assert_eq!(app.filtered, Vec::<usize>::new());
@@ -880,7 +1028,7 @@ mod tests {
     #[test]
     fn filter_by_registry_name() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "skillhub".to_string();
         app.refilter();
         assert_eq!(app.filtered.len(), 1);
@@ -890,7 +1038,7 @@ mod tests {
     #[test]
     fn filter_multi_word() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "alice review".to_string();
         app.refilter();
         assert_eq!(app.filtered.len(), 1);
@@ -900,7 +1048,7 @@ mod tests {
     #[test]
     fn filter_case_insensitive() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "DOCKER".to_string();
         app.refilter();
         assert_eq!(app.filtered.len(), 1);
@@ -909,7 +1057,7 @@ mod tests {
     #[test]
     fn clear_filter_restores_all() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "docker".to_string();
         app.refilter();
         assert_eq!(app.filtered.len(), 1);
@@ -924,7 +1072,7 @@ mod tests {
     #[test]
     fn move_selection_down() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         move_selection(&mut app, 1);
         assert_eq!(app.list_state.selected(), Some(1));
     }
@@ -932,7 +1080,7 @@ mod tests {
     #[test]
     fn move_selection_wraps_bottom_to_top() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.list_state.select(Some(2));
         move_selection(&mut app, 1);
         assert_eq!(app.list_state.selected(), Some(0));
@@ -941,7 +1089,7 @@ mod tests {
     #[test]
     fn move_selection_wraps_top_to_bottom() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         move_selection(&mut app, -1);
         assert_eq!(app.list_state.selected(), Some(2));
     }
@@ -949,9 +1097,179 @@ mod tests {
     #[test]
     fn move_selection_empty_list() {
         let items: Vec<SearchResult> = vec![];
-        let mut app = App::new(&items, 0);
+        let mut app = app_with(&items);
         move_selection(&mut app, 1); // should not panic
         assert!(app.list_state.selected().is_none());
+    }
+
+    // -- Lazy loading tests -----------------------------------------------------
+
+    #[test]
+    fn down_at_bottom_requests_more_instead_of_wrapping() {
+        let items = sample_items();
+        let mut app = app_with_more(&items);
+        app.list_state.select(Some(2));
+        move_selection(&mut app, 1);
+        assert_eq!(app.list_state.selected(), Some(2));
+        assert!(app.load_requested);
+    }
+
+    #[test]
+    fn down_while_loading_does_not_wrap() {
+        let items = sample_items();
+        let mut app = App::new(items.clone(), Pager::loading());
+        app.list_state.select(Some(2));
+        move_selection(&mut app, 1);
+        assert_eq!(app.list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn moving_near_the_end_requests_more() {
+        // After moving down, the selection (row 1) is LOAD_AHEAD rows from the end.
+        let items = numbered_items(LOAD_AHEAD + 1);
+        let mut app = app_with_more(&items);
+        press(&mut app, KeyCode::Down);
+        assert!(app.load_requested);
+    }
+
+    #[test]
+    fn moving_far_from_the_end_does_not_request_more() {
+        let items = numbered_items(LOAD_AHEAD + 20);
+        let mut app = app_with_more(&items);
+        press(&mut app, KeyCode::Down);
+        assert!(!app.load_requested);
+    }
+
+    #[test]
+    fn moving_up_never_requests_more() {
+        let items = sample_items();
+        let mut app = app_with_more(&items);
+        app.list_state.select(Some(2));
+        press(&mut app, KeyCode::Up);
+        assert!(!app.load_requested);
+    }
+
+    #[test]
+    fn jump_to_bottom_requests_more() {
+        let items = numbered_items(50);
+        let mut app = app_with_more(&items);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.list_state.selected(), Some(49));
+        assert!(app.load_requested);
+    }
+
+    #[test]
+    fn pump_pages_consumes_the_request_flag() {
+        let items = sample_items();
+        let mut app = app_with(&items);
+        app.load_requested = true;
+        app.pump_pages();
+        assert!(!app.load_requested);
+    }
+
+    #[test]
+    fn append_batch_keeps_selection_and_existing_rows() {
+        let items = numbered_items(3);
+        let mut app = app_with_more(&items);
+        app.list_state.select(Some(1));
+
+        app.append_batch(numbered_items(6).split_off(3));
+
+        assert_eq!(app.items.len(), 6);
+        assert_eq!(app.filtered, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(app.selected().unwrap().name, "skill-1");
+    }
+
+    #[test]
+    fn append_batch_applies_the_active_filter() {
+        let items = sample_items();
+        let mut app = app_with_more(&items);
+        app.filter = "docker".to_string();
+        app.refilter();
+
+        let mut more = numbered_items(2);
+        more[1].name = "docker-compose".to_string();
+        app.append_batch(more);
+
+        let names: Vec<&str> = app
+            .filtered
+            .iter()
+            .map(|&i| app.items[i].name.as_str())
+            .collect();
+        assert_eq!(names, ["docker-helper", "docker-compose"]);
+        assert_eq!(app.selected().unwrap().name, "docker-helper");
+    }
+
+    #[test]
+    fn append_batch_selects_first_match_when_nothing_was_selected() {
+        let items = sample_items();
+        let mut app = app_with_more(&items);
+        app.filter = "skill-1".to_string();
+        app.refilter();
+        assert!(app.selected().is_none());
+
+        app.append_batch(numbered_items(2));
+
+        assert_eq!(app.selected().unwrap().name, "skill-1");
+    }
+
+    #[test]
+    fn page_down_moves_by_viewport_and_clamps() {
+        let items = numbered_items(30);
+        let mut app = app_with(&items);
+        app.viewport = (0, 10);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.list_state.selected(), Some(10));
+        press(&mut app, KeyCode::PageDown);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.list_state.selected(), Some(29));
+    }
+
+    #[test]
+    fn page_up_moves_by_viewport_and_clamps() {
+        let items = numbered_items(30);
+        let mut app = app_with(&items);
+        app.viewport = (0, 10);
+        app.list_state.select(Some(15));
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.list_state.selected(), Some(5));
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn page_down_near_end_requests_more() {
+        let items = numbered_items(30);
+        let mut app = app_with_more(&items);
+        app.viewport = (0, 25);
+        press(&mut app, KeyCode::PageDown);
+        assert!(app.load_requested);
+    }
+
+    #[test]
+    fn audits_are_fetched_only_for_visible_rows() {
+        let items = numbered_items(100);
+        let mut app = app_with(&items);
+        app.viewport = (40, 5);
+        let urls = app.audit_urls_to_fetch();
+        let expected: Vec<String> = items[40..45].iter().map(|i| i.url.clone()).collect();
+        assert_eq!(urls, expected);
+    }
+
+    #[test]
+    fn audits_are_not_fetched_before_first_draw() {
+        let items = numbered_items(10);
+        let app = app_with(&items);
+        assert_eq!(app.audit_urls_to_fetch(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn draw_records_viewport() {
+        let items = numbered_items(100);
+        let mut app = app_with(&items);
+        render_to_text(|f| draw(f, &mut app));
+        assert_eq!(app.viewport.0, 0);
+        assert!(app.viewport.1 > 0);
     }
 
     // -- Key handling tests ----------------------------------------------------
@@ -959,7 +1277,7 @@ mod tests {
     #[test]
     fn esc_cancels() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let key = event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         handle_key(&mut app, key);
         assert!(app.cancelled);
@@ -969,7 +1287,7 @@ mod tests {
     #[test]
     fn enter_confirms_selection() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let key = event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         handle_key(&mut app, key);
         assert!(app.confirmed);
@@ -979,7 +1297,7 @@ mod tests {
     #[test]
     fn enter_on_empty_does_not_confirm() {
         let items: Vec<SearchResult> = vec![];
-        let mut app = App::new(&items, 0);
+        let mut app = app_with(&items);
         let key = event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         handle_key(&mut app, key);
         assert!(!app.confirmed);
@@ -989,7 +1307,7 @@ mod tests {
     #[test]
     fn q_cancels_when_filter_empty() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let key = event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         handle_key(&mut app, key);
         assert!(app.cancelled);
@@ -998,7 +1316,7 @@ mod tests {
     #[test]
     fn q_types_into_filter_when_filter_has_text() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "doc".to_string();
         let key = event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         handle_key(&mut app, key);
@@ -1009,7 +1327,7 @@ mod tests {
     #[test]
     fn ctrl_c_cancels() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let key = event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         handle_key(&mut app, key);
         assert!(app.cancelled);
@@ -1018,7 +1336,7 @@ mod tests {
     #[test]
     fn typing_updates_filter() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         for c in "doc".chars() {
             let key = event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
             handle_key(&mut app, key);
@@ -1030,7 +1348,7 @@ mod tests {
     #[test]
     fn backspace_removes_from_filter() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "doc".to_string();
         app.refilter();
         let key = event::KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
@@ -1041,7 +1359,7 @@ mod tests {
     #[test]
     fn j_k_navigate_when_filter_empty() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let j = event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
         handle_key(&mut app, j);
         assert_eq!(app.list_state.selected(), Some(1));
@@ -1054,7 +1372,7 @@ mod tests {
     #[test]
     fn g_jumps_to_top() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.list_state.select(Some(2));
         let key = event::KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
         handle_key(&mut app, key);
@@ -1064,7 +1382,7 @@ mod tests {
     #[test]
     fn shift_g_jumps_to_bottom() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let key = event::KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE);
         handle_key(&mut app, key);
         assert_eq!(app.list_state.selected(), Some(2));
@@ -1209,7 +1527,7 @@ mod tests {
         let items = sample_items();
         // testing-pro (index 2) is skillhub.club — no source_repo.
         // With Strategy pattern dispatch, all items go through the thread.
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.list_state.select(Some(2));
 
         app.maybe_fetch_skill_preview();
@@ -1228,7 +1546,7 @@ mod tests {
     fn skill_preview_loading_set_for_item_with_source_repo() {
         let items = sample_items();
         // code-reviewer (index 0) has source_repo = Some("alice/code-reviewer").
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         // index 0 is already selected by default.
 
         app.maybe_fetch_skill_preview();
@@ -1244,7 +1562,7 @@ mod tests {
     #[test]
     fn skill_preview_not_cached_twice() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
 
         // First call inserts Loading.
         app.maybe_fetch_skill_preview();
@@ -1347,7 +1665,7 @@ mod tests {
     #[test]
     fn poll_skill_previews_drains_channel() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let url = items[0].url.clone();
 
         // Send a result directly via the tx.
@@ -1370,14 +1688,14 @@ mod tests {
     #[test]
     fn render_initial_state() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
     #[test]
     fn render_filtered() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "docker".to_string();
         app.refilter();
         insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
@@ -1386,17 +1704,23 @@ mod tests {
     #[test]
     fn render_empty_filter() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.filter = "zzz_nonexistent_zzz".to_string();
         app.refilter();
         insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
-    /// Status bar shows "(of N total)" when total exceeds displayed items.
+    /// Status bar hints that scrolling down loads more results.
     #[test]
-    fn render_total_exceeds_displayed() {
+    fn render_more_available() {
         let items = sample_items();
-        let mut app = App::new(&items, 42);
+        let mut app = app_with_more(&items);
+        insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
+    }
+
+    #[test]
+    fn render_loading_more() {
+        let mut app = App::new(sample_items(), Pager::loading());
         insta::assert_snapshot!(render_to_text(|f| draw(f, &mut app)));
     }
 
@@ -1404,7 +1728,7 @@ mod tests {
     #[test]
     fn render_with_loaded_audits() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let url = items[1].url.clone();
         app.audit_cache.insert(
             url,
@@ -1426,7 +1750,7 @@ mod tests {
     #[test]
     fn render_with_loaded_skill_preview() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         let url = items[0].url.clone();
         app.skill_preview_cache.insert(
             url,
@@ -1445,7 +1769,7 @@ mod tests {
     #[test]
     fn render_with_failed_audits() {
         let items = sample_items();
-        let mut app = App::new(&items, 3);
+        let mut app = app_with(&items);
         app.list_state.select(Some(1));
         let url = items[1].url.clone();
         app.audit_cache.insert(url, AuditState::Failed);

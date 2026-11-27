@@ -6,9 +6,11 @@ use crate::http::HttpClient;
 use skillfile_core::error::SkillfileError;
 
 use super::scrape::{html_to_markdown, json_string_end, urlencoded};
-use super::{Registry, RegistryId, SearchQuery, SearchResponse, SearchResult};
+use super::{Registry, RegistryId, RegistryPage, SearchQuery, SearchResult};
 
 const SKILLSSH_API: &str = "https://skills.sh/api/search";
+/// Larger values are silently capped to 200 by the API.
+const SKILLSSH_MAX_LIMIT: usize = 200;
 
 /// The skills.sh registry (public, no auth, minimal fields).
 pub struct SkillsSh;
@@ -138,8 +140,8 @@ fn map_api_result(r: ApiResult) -> Option<SearchResult> {
 }
 
 impl Registry for SkillsSh {
-    fn name(&self) -> &'static str {
-        "skills.sh"
+    fn id(&self) -> RegistryId {
+        RegistryId::SkillsSh
     }
 
     fn fetch_skill_content(&self, client: &dyn HttpClient, item: &SearchResult) -> Option<String> {
@@ -155,9 +157,17 @@ impl Registry for SkillsSh {
         scrape_skill_page(client, &item.url)
     }
 
-    fn search(&self, q: &SearchQuery<'_>) -> Result<SearchResponse, SkillfileError> {
+    /// skills.sh has no offset or page parameter, so everything comes in one
+    /// request at the API's maximum `limit` (200); later pages are empty.
+    fn search_page(&self, q: &SearchQuery<'_>) -> Result<RegistryPage, SkillfileError> {
+        if q.page > 1 {
+            return Ok(RegistryPage::default());
+        }
         let (client, query) = (q.client, q.query);
-        let url = format!("{SKILLSSH_API}?q={}", urlencoded(query));
+        let url = format!(
+            "{SKILLSSH_API}?q={}&limit={SKILLSSH_MAX_LIMIT}",
+            urlencoded(query)
+        );
 
         let bytes = client.get_bytes(&url)?;
 
@@ -172,8 +182,9 @@ impl Registry for SkillsSh {
         let results = api.skills.unwrap_or_default();
         let items: Vec<SearchResult> = results.into_iter().filter_map(map_api_result).collect();
 
-        Ok(SearchResponse {
-            total: api.count.unwrap_or(items.len()),
+        Ok(RegistryPage {
+            total_hint: Some(api.count.unwrap_or(items.len())),
+            has_more: false,
             items,
         })
     }
@@ -183,7 +194,15 @@ impl Registry for SkillsSh {
 mod tests {
     use super::*;
     use crate::registry::test_support::MockClient;
-    use crate::registry::{SearchOptions, SearchQuery};
+    use crate::registry::SearchQuery;
+
+    fn query<'a>(client: &'a MockClient, q: &'a str, page: u32) -> SearchQuery<'a> {
+        SearchQuery {
+            client,
+            query: q,
+            page,
+        }
+    }
 
     fn mock_response() -> String {
         r#"{
@@ -214,16 +233,9 @@ mod tests {
     #[test]
     fn search_parses_response() {
         let client = MockClient::new(vec![Ok(mock_response())]);
-        let reg = SkillsSh;
-        let resp = reg
-            .search(&SearchQuery {
-                client: &client,
-                query: "docker",
-                opts: &SearchOptions::default(),
-            })
-            .unwrap();
+        let resp = SkillsSh.search_page(&query(&client, "docker", 1)).unwrap();
         assert_eq!(resp.items.len(), 2);
-        assert_eq!(resp.total, 2);
+        assert_eq!(resp.total_hint, Some(2));
         assert_eq!(resp.items[0].name, "docker-helper");
         assert_eq!(resp.items[0].owner, "dockerfan");
         assert!(resp.items[0].description.is_none());
@@ -240,50 +252,41 @@ mod tests {
     }
 
     #[test]
-    fn search_returns_all_results() {
+    fn first_page_requests_max_limit_and_is_final() {
         let client = MockClient::new(vec![Ok(mock_response())]);
-        let reg = SkillsSh;
-        let opts = SearchOptions {
-            limit: 1,
-            min_score: None,
-        };
-        // Per-registry search returns all results; limit is applied globally by post_process.
-        let resp = reg
-            .search(&SearchQuery {
-                client: &client,
-                query: "docker",
-                opts: &opts,
-            })
-            .unwrap();
-        assert_eq!(resp.items.len(), 2);
+        let resp = SkillsSh.search_page(&query(&client, "docker", 1)).unwrap();
+        assert!(!resp.has_more);
+        assert_eq!(
+            client.requested_urls(),
+            ["https://skills.sh/api/search?q=docker&limit=200"]
+        );
+    }
+
+    #[test]
+    fn later_pages_are_empty_without_a_request() {
+        let client = MockClient::new(vec![]);
+        let resp = SkillsSh.search_page(&query(&client, "docker", 2)).unwrap();
+        assert!(resp.items.is_empty());
+        assert!(!resp.has_more);
+        assert_eq!(client.requested_urls(), Vec::<String>::new());
     }
 
     #[test]
     fn search_handles_empty_results() {
         let json = r#"{"skills": [], "count": 0}"#;
         let client = MockClient::new(vec![Ok(json.to_string())]);
-        let reg = SkillsSh;
-        let resp = reg
-            .search(&SearchQuery {
-                client: &client,
-                query: "nonexistent",
-                opts: &SearchOptions::default(),
-            })
+        let resp = SkillsSh
+            .search_page(&query(&client, "nonexistent", 1))
             .unwrap();
         assert_eq!(resp.items.len(), 0);
-        assert_eq!(resp.total, 0);
+        assert_eq!(resp.total_hint, Some(0));
     }
 
     #[test]
     fn search_returns_unprefixed_network_error() {
         let client = MockClient::new(vec![Err("connection refused".to_string())]);
-        let reg = SkillsSh;
 
-        let result = reg.search(&SearchQuery {
-            client: &client,
-            query: "docker",
-            opts: &SearchOptions::default(),
-        });
+        let result = SkillsSh.search_page(&query(&client, "docker", 1));
 
         assert_eq!(result.unwrap_err().to_string(), "connection refused");
     }

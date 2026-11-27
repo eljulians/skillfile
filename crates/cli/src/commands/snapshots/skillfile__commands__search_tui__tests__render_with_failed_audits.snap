@@ -1,8 +1,8 @@
 ---
 source: crates/cli/src/commands/search_tui.rs
-expression: buffer_text(terminal.backend().buffer())
+expression: "render_to_text(|f| draw(f, &mut app))"
 ---
- type to filter, Enter to select, Esc to cancel   3/3
+ type to filter, Enter to select, Esc to cancel   3/3 · all loaded
 ┌ Results ─────────────────────┐┌ Preview ─────────────────────────────────────┐
 │  code-reviewer  ★150  🛡 92  a││docker-helper                                 │
 │> docker-helper  ★500  skills.││                                              │
