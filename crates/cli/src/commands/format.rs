@@ -192,10 +192,7 @@ pub fn sorted_manifest_text(manifest: &Manifest, raw_text: &str) -> String {
 pub fn cmd_format(repo_root: &Path, dry_run: bool) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
-        return Err(SkillfileError::Manifest(format!(
-            "{MANIFEST_NAME} not found in {}. Create one and run `skillfile init`.",
-            repo_root.display()
-        )));
+        return Err(skillfile_core::parser::missing_manifest_error(repo_root));
     }
 
     let result = parse_manifest(&manifest_path)?;

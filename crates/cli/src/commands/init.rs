@@ -4,7 +4,7 @@ use std::process::Command;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::models::EntityType;
-use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
+use skillfile_core::parser::{find_ancestor_manifest_dir, parse_manifest, MANIFEST_NAME};
 use skillfile_deploy::adapter::{adapters, known_adapters};
 
 const GITIGNORE_ENTRIES: &[&str] = &[".skillfile/cache/", ".skillfile/conflict"];
@@ -507,6 +507,12 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     // Create Skillfile if missing
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
+        if let Some(dir) = find_ancestor_manifest_dir(repo_root) {
+            cliclack::log::warning(format!(
+                "A Skillfile already exists in {}; this creates a separate one here.",
+                dir.display()
+            ))?;
+        }
         std::fs::write(&manifest_path, "")?;
         cliclack::log::info(format!("Created {MANIFEST_NAME}"))?;
     }

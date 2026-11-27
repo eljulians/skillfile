@@ -577,6 +577,33 @@ fn install_does_not_warn_when_another_target_takes_the_entry() {
 }
 
 #[test]
+fn status_from_subdirectory_names_ancestor_manifest() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("Skillfile"), "").unwrap();
+    let sub = root.path().join("subdir");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let output = sf(&sub).arg("status").output().unwrap();
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+    let root_name = root
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    assert!(!output.status.success(), "status should fail: {stderr}");
+    assert!(
+        stderr.contains("Found one in") && stderr.contains(&root_name),
+        "error should name the ancestor Skillfile: {stderr}"
+    );
+    assert!(
+        !stderr.contains("not found in .."),
+        "error should not print a relative path: {stderr}"
+    );
+}
+
+#[test]
 fn status_output_is_plain_text_when_captured() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

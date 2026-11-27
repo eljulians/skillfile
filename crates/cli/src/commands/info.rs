@@ -206,10 +206,7 @@ fn format_cache_path(entry: &Entry, repo_root: &Path) -> String {
 pub fn cmd_info(name: &str, repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
-        return Err(SkillfileError::Manifest(format!(
-            "{MANIFEST_NAME} not found in {}. Create one and run `skillfile init`.",
-            repo_root.display()
-        )));
+        return Err(skillfile_core::parser::missing_manifest_error(repo_root));
     }
 
     let manifest = crate::config::parse_and_resolve(&manifest_path)?;
