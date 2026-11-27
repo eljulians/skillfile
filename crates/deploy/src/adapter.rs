@@ -443,11 +443,58 @@ fn copy_to_destination(op: &PlaceOp<'_>) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
+    if op.is_dir && is_real_dir(op.dest) {
+        return refresh_dir(op.source, op.dest);
+    }
     remove_existing_path(op.dest)?;
     if op.is_dir {
         copy_dir_recursive(op.source, op.dest)
     } else {
         std::fs::copy(op.source, op.dest).map(|_| ())
+    }
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+}
+
+/// Overwrite what `source` provides inside an existing `dest`, and keep files
+/// the user added there instead of wiping the whole directory.
+fn refresh_dir(source: &Path, dest: &Path) -> std::io::Result<()> {
+    clear_source_paths(source, dest)?;
+    copy_dir_recursive(source, dest)?;
+    warn_kept_files(source, dest);
+    Ok(())
+}
+
+/// Remove every path in `dest` that `source` is about to write, so the copy
+/// never writes through a symlink, while leaving other files alone.
+fn clear_source_paths(source: &Path, dest: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let target = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() && is_real_dir(&target) {
+            clear_source_paths(&entry.path(), &target)?;
+        } else {
+            remove_existing_path(&target)?;
+        }
+    }
+    Ok(())
+}
+
+fn warn_kept_files(source: &Path, dest: &Path) {
+    let kept: Vec<String> = walkdir(dest)
+        .iter()
+        .filter_map(|file| file.strip_prefix(dest).ok())
+        .filter(|rel| !source.join(rel).is_file())
+        .map(|rel| rel.display().to_string())
+        .collect();
+    if !kept.is_empty() {
+        eprintln!(
+            "warning: kept files in {} that are not part of the source: {}",
+            dest.display(),
+            kept.join(", ")
+        );
     }
 }
 
@@ -1519,6 +1566,76 @@ mod tests {
             "# Skill"
         );
         assert!(dest.join("OLD.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deploy_entry_overwrite_keeps_files_added_to_existing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join(".skillfile/cache/skills/my-skill");
+        std::fs::create_dir_all(source.join("scripts")).unwrap();
+        std::fs::write(source.join("SKILL.md"), "# New").unwrap();
+        std::fs::write(source.join("scripts/tool.py"), "new\n").unwrap();
+        let dest = dir.path().join(".claude/skills/my-skill");
+        std::fs::create_dir_all(dest.join("scripts")).unwrap();
+        std::fs::write(dest.join("SKILL.md"), "# Old").unwrap();
+        std::fs::write(dest.join("scripts/tool.py"), "old\n").unwrap();
+        std::fs::write(dest.join("notes.md"), "my notes\n").unwrap();
+        std::fs::write(dest.join("scripts/extra.py"), "mine\n").unwrap();
+
+        let result = deploy_dir(&source, dir.path(), true);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "# New"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("scripts/tool.py")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("notes.md")).unwrap(),
+            "my notes\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("scripts/extra.py")).unwrap(),
+            "mine\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deploy_entry_overwrite_replaces_symlinks_inside_existing_dir_without_following() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join(".skillfile/cache/skills/my-skill");
+        std::fs::create_dir_all(source.join("scripts")).unwrap();
+        std::fs::write(source.join("SKILL.md"), "# Skill\n").unwrap();
+        std::fs::write(source.join("scripts/tool.py"), "pass\n").unwrap();
+        let outside_file = dir.path().join("outside.md");
+        std::fs::write(&outside_file, "# Outside\n").unwrap();
+        let outside_dir = dir.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let dest = dir.path().join(".claude/skills/my-skill");
+        std::fs::create_dir_all(&dest).unwrap();
+        symlink(&outside_file, dest.join("SKILL.md")).unwrap();
+        symlink(&outside_dir, dest.join("scripts")).unwrap();
+
+        let result = deploy_dir(&source, dir.path(), true);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(&outside_file).unwrap(),
+            "# Outside\n"
+        );
+        assert!(!outside_dir.join("tool.py").exists());
+        assert!(!std::fs::symlink_metadata(dest.join("SKILL.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(dest.join("scripts/tool.py").is_file());
     }
 
     #[cfg(unix)]
