@@ -7,6 +7,32 @@ use crate::models::{EntityType, Entry, InstallTarget, Manifest, Scope, SourceFie
 pub const MANIFEST_NAME: &str = "Skillfile";
 const KNOWN_SOURCES: &[&str] = &["github", "gitlab", "local", "url"];
 
+/// Nearest ancestor directory of `dir` (excluding `dir` itself) containing a manifest.
+pub fn find_ancestor_manifest_dir(dir: &Path) -> Option<std::path::PathBuf> {
+    let abs = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    abs.ancestors()
+        .skip(1)
+        .find(|a| a.join(MANIFEST_NAME).is_file())
+        .map(Path::to_path_buf)
+}
+
+/// Error for a missing manifest in `repo_root`, naming an ancestor manifest when one exists.
+pub fn missing_manifest_error(repo_root: &Path) -> SkillfileError {
+    let abs = std::path::absolute(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let hint = find_ancestor_manifest_dir(&abs)
+        .map(|a| {
+            format!(
+                " Found one in {}; run skillfile from that directory instead.",
+                a.display()
+            )
+        })
+        .unwrap_or_default();
+    SkillfileError::Manifest(format!(
+        "{MANIFEST_NAME} not found in {}. Create one and run `skillfile init`.{hint}",
+        abs.display()
+    ))
+}
+
 /// Result of parsing a Skillfile: the manifest plus any warnings.
 #[derive(Debug)]
 pub struct ParseResult {
@@ -1551,5 +1577,20 @@ mod tests {
         let r = parse_manifest(&p).unwrap();
         assert_eq!(r.manifest.entries, Vec::new());
         assert!(r.warnings.iter().any(|w| w.contains("warning")));
+    }
+
+    #[test]
+    fn missing_manifest_error_names_ancestor_for_relative_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(MANIFEST_NAME), "").unwrap();
+        let sub = root.path().join("subdir");
+        fs::create_dir_all(&sub).unwrap();
+
+        let msg = missing_manifest_error(&sub).to_string();
+        assert!(msg.contains("Found one in"), "{msg}");
+        assert!(msg.contains(&root.path().display().to_string()), "{msg}");
+
+        let cwd_msg = missing_manifest_error(Path::new(".")).to_string();
+        assert!(!cwd_msg.contains("in .."), "{cwd_msg}");
     }
 }

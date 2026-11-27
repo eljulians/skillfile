@@ -4,7 +4,7 @@ use std::process::Command;
 
 use skillfile_core::error::SkillfileError;
 use skillfile_core::models::EntityType;
-use skillfile_core::parser::{parse_manifest, MANIFEST_NAME};
+use skillfile_core::parser::{find_ancestor_manifest_dir, parse_manifest, MANIFEST_NAME};
 use skillfile_deploy::adapter::{adapters, known_adapters};
 
 const GITIGNORE_ENTRIES: &[&str] = &[".skillfile/cache/", ".skillfile/conflict"];
@@ -491,6 +491,15 @@ fn init_guard_error(is_ci: bool, has_interactive_terminal: bool) -> Option<&'sta
     }
 }
 
+fn ancestor_manifest_warning(repo_root: &Path) -> Option<String> {
+    find_ancestor_manifest_dir(repo_root).map(|dir| {
+        format!(
+            "A Skillfile already exists in {}; this creates a separate one here.",
+            dir.display()
+        )
+    })
+}
+
 pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     // TTY guard: cliclack requires an interactive terminal. Check stdin, stdout,
     // and the CI env var because some CI runners (macOS GitHub Actions) report
@@ -507,6 +516,9 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
     // Create Skillfile if missing
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
+        if let Some(warning) = ancestor_manifest_warning(repo_root) {
+            cliclack::log::warning(warning)?;
+        }
         std::fs::write(&manifest_path, "")?;
         cliclack::log::info(format!("Created {MANIFEST_NAME}"))?;
     }
@@ -561,6 +573,20 @@ pub fn cmd_init(repo_root: &Path) -> Result<(), SkillfileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ancestor_manifest_warning_names_parent_skillfile() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(MANIFEST_NAME), "").unwrap();
+        let sub = root.path().join("subdir");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let warning = ancestor_manifest_warning(&sub).expect("ancestor Skillfile should warn");
+        assert!(
+            warning.contains(&root.path().display().to_string()),
+            "{warning}"
+        );
+    }
 
     #[test]
     fn init_guard_distinguishes_ci_from_missing_terminal() {

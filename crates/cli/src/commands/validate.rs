@@ -171,10 +171,7 @@ fn should_promote_parse_warning(warning: &str) -> bool {
 pub fn cmd_validate(repo_root: &Path) -> Result<(), SkillfileError> {
     let manifest_path = repo_root.join(MANIFEST_NAME);
     if !manifest_path.exists() {
-        return Err(SkillfileError::Manifest(format!(
-            "{MANIFEST_NAME} not found in {}. Create one and run `skillfile init`.",
-            repo_root.display()
-        )));
+        return Err(skillfile_core::parser::missing_manifest_error(repo_root));
     }
 
     let result = parse_manifest(&manifest_path)?;
