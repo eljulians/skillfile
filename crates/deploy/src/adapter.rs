@@ -254,7 +254,7 @@ impl PlatformAdapter for FileSystemAdapter {
         // Migration: nested-mode installs may leave behind a legacy flat {name}.md from an older
         // layout. Remove it after a successful install to avoid duplicate skill loading.
         if self.cleanup_legacy_flat_files && !self.is_flat_mode(req.entry.entity_type) {
-            remove_orphan_flat_file(&req.entry.name, &target_dir);
+            remove_orphan_flat_file(req, &target_dir);
         }
 
         if is_dir {
@@ -297,9 +297,32 @@ impl PlatformAdapter for FileSystemAdapter {
 
 /// Remove legacy flat {name}.md file if it exists, warning on failure.
 /// Used during migration to prevent duplicate skill loading.
-fn remove_orphan_flat_file(entry_name: &str, target_dir: &Path) {
-    let orphan = target_dir.join(format!("{entry_name}.md"));
-    if orphan.is_file() && std::fs::remove_file(&orphan).is_err() {
+///
+/// The file is only treated as a leftover when it holds the content being
+/// installed (the source file, or `SKILL.md` of a directory source). Anything
+/// else may be a user's own file that merely shares the name, so it is kept.
+fn remove_orphan_flat_file(req: &DeployRequest<'_>, target_dir: &Path) {
+    let orphan = target_dir.join(format!("{}.md", req.entry.name));
+    if !orphan.is_file() {
+        return;
+    }
+    let installed = if req.source.is_dir() {
+        req.source.join("SKILL.md")
+    } else {
+        req.source.to_path_buf()
+    };
+    let is_leftover = matches!(
+        (std::fs::read(&orphan), std::fs::read(&installed)),
+        (Ok(old), Ok(new)) if old == new
+    );
+    if !is_leftover {
+        eprintln!(
+            "warning: left {} in place: it differs from {} '{}'. Delete it if it is a leftover from the old flat layout.",
+            orphan.display(),
+            req.entry.entity_type,
+            req.entry.name
+        );
+    } else if std::fs::remove_file(&orphan).is_err() {
         eprintln!("warning: failed to remove {}", orphan.display());
     }
 }
@@ -1787,7 +1810,7 @@ mod tests {
 
         let target_dir = dir.path().join(".claude/skills");
         std::fs::create_dir_all(&target_dir).unwrap();
-        std::fs::write(target_dir.join("my-skill.md"), "# Legacy flat\n").unwrap();
+        std::fs::write(target_dir.join("my-skill.md"), "# Skill\n").unwrap();
 
         let entry = Entry {
             entity_type: EntityType::Skill,
@@ -1810,6 +1833,69 @@ mod tests {
         assert!(result.contains_key("SKILL.md"));
         assert!(target_dir.join("my-skill/SKILL.md").exists());
         assert!(!target_dir.join("my-skill.md").exists());
+    }
+
+    /// Deploys local skill `my-skill` from `source_rel` over a pre-existing
+    /// `.claude/skills/my-skill.md` holding `flat_content`, and returns that path.
+    fn deploy_over_flat_file(root: &Path, source_rel: &str, flat_content: &str) -> PathBuf {
+        use skillfile_core::models::{EntityType, SourceFields};
+
+        let flat = root.join(".claude/skills/my-skill.md");
+        std::fs::create_dir_all(flat.parent().unwrap()).unwrap();
+        std::fs::write(&flat, flat_content).unwrap();
+        let entry = Entry {
+            entity_type: EntityType::Skill,
+            name: "my-skill".into(),
+            source: SourceFields::Local {
+                path: source_rel.into(),
+            },
+        };
+        let result = adapters()
+            .get("claude-code")
+            .unwrap()
+            .deploy_entry(&DeployRequest {
+                entry: &entry,
+                source: &root.join(source_rel),
+                scope: Scope::Local,
+                repo_root: root,
+                opts: &InstallOptions::default(),
+            });
+        assert!(root.join(".claude/skills/my-skill/SKILL.md").exists());
+        assert!(!result.is_empty());
+        flat
+    }
+
+    #[test]
+    fn deploy_entry_removes_legacy_flat_file_matching_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+        std::fs::write(dir.path().join("skills/my-skill.md"), "# Skill\n").unwrap();
+
+        let flat = deploy_over_flat_file(dir.path(), "skills/my-skill.md", "# Skill\n");
+
+        assert!(!flat.exists());
+    }
+
+    #[test]
+    fn deploy_entry_keeps_flat_file_that_differs_from_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("skills")).unwrap();
+        std::fs::write(dir.path().join("skills/my-skill.md"), "# Skill\n").unwrap();
+
+        let flat = deploy_over_flat_file(dir.path(), "skills/my-skill.md", "# My notes\n");
+
+        assert_eq!(std::fs::read_to_string(&flat).unwrap(), "# My notes\n");
+    }
+
+    #[test]
+    fn deploy_entry_keeps_flat_file_that_differs_from_a_directory_source() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("skills/my-skill")).unwrap();
+        std::fs::write(dir.path().join("skills/my-skill/SKILL.md"), "# Skill\n").unwrap();
+
+        let flat = deploy_over_flat_file(dir.path(), "skills/my-skill", "# My notes\n");
+
+        assert_eq!(std::fs::read_to_string(&flat).unwrap(), "# My notes\n");
     }
 
     // -- antigravity adapter --

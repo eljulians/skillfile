@@ -172,6 +172,7 @@ fn install_mixed_local_entries_normalize_consistently() {
 // skillfile which deployed skills as flat .md files (e.g. .claude/skills/my-skill.md).
 // After upgrading and re-running `skillfile install`, the old flat file must be
 // removed so agents that scan the directory broadly do not load both versions.
+// It is recognised as a leftover because it holds the content being installed.
 
 #[test]
 fn install_removes_orphan_flat_file_on_migration() {
@@ -191,11 +192,7 @@ fn install_removes_orphan_flat_file_on_migration() {
 
     // Pre-create the legacy flat file as if placed by an older skillfile version
     std::fs::create_dir_all(root.join(".claude/skills")).unwrap();
-    std::fs::write(
-        root.join(".claude/skills/my-skill.md"),
-        "# My Skill (old flat version)\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".claude/skills/my-skill.md"), "# My Skill\n").unwrap();
 
     sf(root).arg("install").assert().success();
 
@@ -209,5 +206,41 @@ fn install_removes_orphan_flat_file_on_migration() {
     assert!(
         !root.join(".claude/skills/my-skill.md").exists(),
         "legacy flat .md file must be removed on migration"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: A same-named flat file skillfile did not write survives install
+// ---------------------------------------------------------------------------
+
+#[test]
+fn install_keeps_unrelated_flat_file_and_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::create_dir_all(root.join("skills")).unwrap();
+    std::fs::write(root.join("skills/my-skill.md"), "# My Skill\n").unwrap();
+
+    std::fs::write(
+        root.join("Skillfile"),
+        "install  claude-code  local\n\
+         local  skill  my-skill  skills/my-skill.md\n",
+    )
+    .unwrap();
+
+    // A hand-written file that only shares the entry's name
+    std::fs::create_dir_all(root.join(".claude/skills")).unwrap();
+    std::fs::write(root.join(".claude/skills/my-skill.md"), "# My notes\n").unwrap();
+
+    sf(root)
+        .arg("install")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("my-skill.md in place"));
+
+    assert!(root.join(".claude/skills/my-skill/SKILL.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join(".claude/skills/my-skill.md")).unwrap(),
+        "# My notes\n"
     );
 }
