@@ -48,7 +48,7 @@ similar = "3"
 shlex = "=2.0.1"
 
 # HTML entity decoding
-html-escape = "0.2"
+html-escape = "0.3"
 
 # Interactive prompts
 inquire = "0.9"
